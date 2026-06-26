@@ -1,6 +1,6 @@
 # datablix
 
-When did this dataset last get updated, and what is actually in it? datablix answers both from the command line, reporting data freshness and a glossary of categories for any CSV, with nothing to install.
+Know whether your data can be trusted at a glance. Datablix reads a CSV and prints two reports: a freshness check that flags how out-of-date your records are, and a categorical glossary that lists every column's values and catches inconsistent spellings.
 
 It answers two everyday questions about a spreadsheet:
 
