@@ -19,22 +19,13 @@ Here you go: https://lindaxeva.github.io/datablix/
 
 ## Why you might want this
 
-Imagine you open a spreadsheet you have not touched
-in months to send out an update. It seems to look fine. But half
-the entries are quietly out of date, and nothing on the screen warns you. You
-find out the hard way, right after you hit send.
+Maybe your date column has entries that have not been updated in months, but nothing on the screen makes that obvious.
 
-Or you try to count how many people are marked "Active". The total comes out
-weird. Turns out one row says "Active", another says "active", and a third
-went all in with "ACTIVE". To the spreadsheet, those are three completely
-different things, so your count splits across all of them. The spreadsheet is
-not wrong, exactly. It is just being extremely literal at the worst possible
-moment.
+Maybe your category column has values like “Active,” “active,” and “ACTIVE.” To you, they mean the same thing. To a spreadsheet, they are three different categories.
 
-This stuff is almost impossible to catch by eye, all the time. So let Datablix
-do the squinting. It reads the file, tells you how old the data is, and flags
-the values that are really the same thing wearing different hats. Saving you from 
-unpaid detective work.
+That means your counts, summaries, and reports can quietly become unreliable.
+
+Datablix helps you catch those issues faster. It checks your CSV, shows what data may be out of date, and flags categories that look like the same value written in different ways.
 
 ## Getting started
 
