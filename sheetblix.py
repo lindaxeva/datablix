@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-datablix: a tiny, dependency-free helper for understanding tabular data.
+sheetblix: a tiny, dependency-free helper for understanding your spreadsheet.
 
 It reads a CSV file and produces two plain-language reports:
 
@@ -9,17 +9,17 @@ It reads a CSV file and produces two plain-language reports:
                             are they, and which values look inconsistent?
 
 The goal is to turn a raw CSV into an "at a glance" summary that a
-non-technical person can read and act on, without opening a spreadsheet
+user can read and act on, without opening a spreadsheet
 or writing any code.
 
 Only Python's standard library is used, so the script runs anywhere
 Python 3.8+ is installed. No "pip install" required.
 
 Usage:
-    python3 datablix.py data.csv
-    python3 datablix.py data.csv --format markdown --output report.md
-    python3 datablix.py data.csv --glossary-only
-    python3 datablix.py data.csv --stale-days 60 --today 2026-06-26
+    python3 sheetblix.py data.csv
+    python3 sheetblix.py data.csv --format markdown --output report.md
+    python3 sheetblix.py data.csv --glossary-only
+    python3 sheetblix.py data.csv --stale-days 60 --today 2026-06-26
 
 Author: built for the GLOCAL Foundation "Automate a Useful Task" volunteer task.
 License: MIT
@@ -35,7 +35,7 @@ from collections import Counter, OrderedDict
 from datetime import datetime, date
 
 
-# Date formats datablix will try, in order, when guessing date columns.
+# Date formats sheetblix will try, in order, when guessing date columns.
 DATE_FORMATS = (
     "%Y-%m-%d",
     "%Y/%m/%d",
@@ -129,7 +129,7 @@ def parse_number(value):
 def normalize_label(value):
     """Collapse a value to a comparison key for spotting inconsistent entries.
 
-    'Yes', ' yes ', and 'YES' all normalize to 'yes', so datablix can flag
+    'Yes', ' yes ', and 'YES' all normalize to 'yes', so sheetblix can flag
     them as the same category written three different ways.
     """
     return re.sub(r"\s+", " ", value.strip().lower())
@@ -289,7 +289,7 @@ def build_glossary(headers, rows, types, max_categories, top_n):
 def render_text(meta, freshness, glossary):
     out = []
     out.append("=" * 64)
-    out.append("DATABLIX REPORT")
+    out.append("SHEETBLIX REPORT")
     out.append("=" * 64)
     out.append("File      : %s" % meta["file"])
     out.append("Rows      : %d" % meta["rows"])
@@ -351,7 +351,7 @@ def render_text(meta, freshness, glossary):
 
 def render_markdown(meta, freshness, glossary):
     out = []
-    out.append("# datablix report")
+    out.append("# sheetblix report")
     out.append("")
     out.append("| Field | Value |")
     out.append("| --- | --- |")
@@ -441,7 +441,7 @@ def parse_today(value):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="datablix",
+        prog="sheetblix",
         description="Summarize data freshness and categorical values in a CSV.",
     )
     parser.add_argument("csv_file", help="Path to the CSV file to analyze.")
