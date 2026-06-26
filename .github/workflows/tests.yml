@@ -26,4 +26,4 @@ jobs:
         run: python -m unittest -v
 
       - name: Smoke test on the sample data
-        run: python datablix.py sample_data.csv --today 2026-06-26
+        run: python sheetblix.py sample_data.csv --today 2026-06-26
