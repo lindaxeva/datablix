@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for datablix.
+Tests for sheetblix.
 
 Run from the project folder with:
 
@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from datetime import date
 
-import datablix
+import sheetblix
 
 
 class TestValueParsing(unittest.TestCase):
