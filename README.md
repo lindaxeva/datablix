@@ -12,13 +12,11 @@ there is nothing to install. If you have Python 3.8 or newer, you are good to
 go. 
 
 And if the command line makes you nervous, relax, there is a web version
-that runs right in your browser. 
-
-                              Want to just try it? 
+that runs right in your browser. Want to just try it? Here we go:
 
 <p align="center">
   <a href="https://lindaxeva.github.io/datablix/">
-    <img src="https://img.shields.io/badge/Try%20the%20live%20demo-6d28d9?style=for-the-badge" alt="Try the live demo">
+    <img src="https://img.shields.io/badge/Try%20the%20live%20demo%20now-6d28d9?style=for-the-badge" alt="Try the live demo now">
   </a>
 </p>
 
