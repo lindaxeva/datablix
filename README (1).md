@@ -1,7 +1,7 @@
 # datablix
 
-A tiny, dependency-free command-line tool that turns a raw CSV into an
-"at a glance" summary a non-technical person can actually read and act on.
+A dependency-free command-line tool that turns a raw CSV into an
+"at a glance" summary a user can actually read and act on.
 
 It answers two everyday questions about a spreadsheet:
 
