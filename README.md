@@ -1,15 +1,13 @@
 # Datablix
 
-Spot stale data and messy categories before they cause problems. Datablix reads a CSV and prints two reports: a freshness check that flags how out-of-date your records are, and a categorical glossary that lists every column's values and catches inconsistent spellings.
-
-It answers two everyday questions about a spreadsheet:
+Spot stale data and messy categories before they cause problems. Datablix reads a CSV and helps answer two everyday questions about a dataset:
 
 1. **Is this data still fresh?** How recent is it, and how much of it is stale?
 2. **What categories are in here?** What values appear in each column, how
    common are they, and which ones look like the same thing typed two
    different ways?
 
-datablix uses **only the Python standard library**, so there is nothing to
+Datablix uses **only the Python standard library**, so there is nothing to
 install. If you have Python 3.8 or newer, it runs.
 
 ## The problem it solves
