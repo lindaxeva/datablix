@@ -1,6 +1,6 @@
 # Datablix
 
-Meet Datablix. You hand it a CSV file, and it answers two 
+Meet Datablix. You hand it your CSV file, and it answers two 
 questions you probably should be asking yourself:
 
 1. **Is this data still fresh, or has it gone off?**
