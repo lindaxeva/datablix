@@ -1,13 +1,13 @@
-# Datablix
+# Sheetblix
 
-Meet Datablix. You hand it your CSV file, and it answers two 
+Meet Sheetblix. You hand it your CSV file, and it answers two 
 questions you probably should be asking yourself:
 
 1. **Is this data still fresh, or has it gone off?**
 2. **What is actually in each column, and is anything secretly typed five
    different ways?**
 
-The best part: Datablix only uses tools that already come with Python, so
+The best part: Sheetblix only uses tools that already come with Python, so
 there is nothing to install. If you have Python 3.8 or newer, you are good to
 go. 
 
@@ -15,7 +15,7 @@ And if the command line makes you nervous, relax, there is a web version
 that runs right in your browser. Want to just try it today? 
 
 <p align="center">
-  <a href="https://lindaxeva.github.io/datablix/">
+  <a href="https://lindaxeva.github.io/sheetblix/">
     <img src="https://img.shields.io/badge/Try%20the%20live%20demo%20now-6d28d9?style=for-the-badge" alt="Try the live demo now">
   </a>
 </p>
@@ -28,7 +28,7 @@ Maybe your category column has values like “Active,” “active,” and “AC
 
 That means your counts, summaries, and reports can quietly become unreliable.
 
-Datablix helps you catch those issues faster. It checks your CSV, shows what data may be out of date, and flags categories that look like the same value written in different ways.
+Sheetblix helps you catch those issues faster. It checks your CSV, shows what data may be out of date, and flags categories that look like the same value written in different ways.
 
 ## Getting started
 
@@ -36,43 +36,43 @@ There is nothing to install. Copy the project to your
 computer and run it:
 
 ```bash
-git clone https://github.com/lindaxeva/datablix.git
-cd datablix
-python3 datablix.py sample_data.csv
+git clone https://github.com/lindaxeva/sheetblix.git
+cd sheetblix
+python3 sheetblix.py sample_data.csv
 ```
 
 The `sample_data.csv` that comes with the tool has a few old dates and a few
 mismatched spellings planted on purpose, like a tiny crime scene, so you can
-watch Datablix solve it on your very first run.
+watch Sheetblix solve it on your very first run.
 
 ## How to use it
 
 The shape of every command is the same:
 
 ```bash
-python3 datablix.py YOUR_FILE.csv [options]
+python3 sheetblix.py YOUR_FILE.csv [options]
 ```
 
 And here are the things you will actually reach for:
 
 ```bash
 # The full report (freshness and categories)
-python3 datablix.py sample_data.csv
+python3 sheetblix.py sample_data.csv
 
 # Just the freshness check
-python3 datablix.py sample_data.csv --freshness-only
+python3 sheetblix.py sample_data.csv --freshness-only
 
 # Just the list of categories
-python3 datablix.py sample_data.csv --glossary-only
+python3 sheetblix.py sample_data.csv --glossary-only
 
 # Save it as a Markdown file you can share
-python3 datablix.py sample_data.csv --format markdown --output report.md
+python3 sheetblix.py sample_data.csv --format markdown --output report.md
 
 # Get it as JSON, if you want to feed it into something else
-python3 datablix.py sample_data.csv --format json
+python3 sheetblix.py sample_data.csv --format json
 
 # Count anything older than 60 days as old, measured from a set date
-python3 datablix.py sample_data.csv --stale-days 60 --today 2026-06-26
+python3 sheetblix.py sample_data.csv --stale-days 60 --today 2026-06-26
 ```
 
 ## The options, if you want to tweak things
@@ -91,7 +91,7 @@ python3 datablix.py sample_data.csv --stale-days 60 --today 2026-06-26
 
 ## What it is doing behind the scenes
 
-First, Datablix takes a look at each column and figures out what kind of value
+First, Sheetblix takes a look at each column and figures out what kind of value
 it holds:
 
 | Kind | How it decides |
@@ -116,7 +116,7 @@ themselves away.
 ## The web version (no command line, promise)
 
 If typing commands is not your thing, the project includes a browser version
-anyone can use here: https://lindaxeva.github.io/datablix/. 
+anyone can use here: https://lindaxeva.github.io/sheetblix/. 
 
 One thing worth knowing: the web version does everything inside your own
 browser. Whatever file you open stays on your device and is never sent
