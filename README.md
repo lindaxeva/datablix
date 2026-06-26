@@ -20,8 +20,8 @@ Here you go: https://lindaxeva.github.io/datablix/
 
 ## Why you might want this
 
-Here is a scene you may recognize. You open a spreadsheet you have not touched
-in months to send out an update. It looks fine. It always looks fine. But half
+Imagine you open a spreadsheet you have not touched
+in months to send out an update. It seems to look fine. But half
 the entries are quietly out of date, and nothing on the screen warns you. You
 find out the hard way, right after you hit send.
 
@@ -32,14 +32,14 @@ different things, so your count splits across all of them. The spreadsheet is
 not wrong, exactly. It is just being extremely literal at the worst possible
 moment.
 
-This stuff is easy to do and almost impossible to catch by eye. So let Datablix
+This stuff is almost impossible to catch by eye, all the time. So let Datablix
 do the squinting. It reads the file, tells you how old the data is, and flags
-the values that are really the same thing wearing different hats. One step,
-plain words, no detective work required.
+the values that are really the same thing wearing different hats. Saving you from 
+unpaid detective work.
 
 ## Getting started
 
-There is nothing to install, so this is quick. Copy the project to your
+There is nothing to install. Copy the project to your
 computer and run it:
 
 ```bash
@@ -48,7 +48,7 @@ cd datablix
 python3 datablix.py sample_data.csv
 ```
 
-The `sample_data.csv` that comes with it has a few old dates and a few
+The `sample_data.csv` that comes with the tool has a few old dates and a few
 mismatched spellings planted on purpose, like a tiny crime scene, so you can
 watch Datablix solve it on your very first run.
 
@@ -123,7 +123,7 @@ themselves away.
 ## The web version (no command line, promise)
 
 If typing commands is not your thing, the project includes a browser version
-anyone can use: https://lindaxeva.github.io/datablix/. 
+anyone can use here: https://lindaxeva.github.io/datablix/. 
 
 One thing worth knowing: the web version does everything inside your own
 browser. Whatever file you open stays on your device and is never sent
@@ -155,7 +155,7 @@ checkmark on the project page when they pass.
   as plain text.
 - It catches spacing and capital-letter mismatches, but not typos or different
   words for the same thing. It will not guess that "BC" and "British Columbia"
-  are the same place. It is thorough, not psychic.
+  are the same place. 
 
 ## License
 
