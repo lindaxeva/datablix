@@ -1,2 +1,2 @@
 # datablix
-Free CSV data freshness and categorical glossary tool
+Free CSV data freshness and glossary tool
