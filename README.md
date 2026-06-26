@@ -31,7 +31,7 @@ command and explains what it found in plain language.
 No installation needed. Clone the repository and run the script directly:
 
 ```bash
-git clone https://github.com/<your-username>/datablix.git
+git clone https://github.com/lindaxeva/datablix.git
 cd datablix
 python3 datablix.py sample_data.csv
 ```
