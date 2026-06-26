@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>datablix: check your spreadsheet's health</title>
+<meta name="description" content="Drop a CSV to see how fresh your data is and what categories live inside it. Everything runs in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #eeecf5;
+    --surface: #ffffff;
+    --ink: #1c1830;
+    --muted: #645d78;
+    --hair: #e3dff0;
+    --purple: #6d28d9;
+    --purple-dark: #5b21b6;
+    --purple-soft: #ece7fb;
+    --fresh: #15803d;
+    --fresh-soft: #dcf3e4;
+    --aging: #b45309;
+    --aging-soft: #fbecd6;
+    --stale: #b91c1c;
+    --stale-soft: #fbe0e0;
+    --display: "Space Grotesk", system-ui, sans-serif;
+    --body: "Inter", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--body);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--purple-dark); }
+
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 20px; }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 22px 0; border-bottom: 1px solid var(--hair);
+  }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .brand .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: var(--purple);
+    position: relative; flex: none;
+  }
+  .brand .mark::after {
+    content: ""; position: absolute; inset: 8px 8px auto auto;
+    width: 6px; height: 6px; border-radius: 50%; background: #fff;
+  }
+  .brand .name { font-family: var(--display); font-weight: 700; font-size: 19px; letter-spacing: -0.01em; }
+  .topbar .repo { font-size: 13.5px; color: var(--muted); text-decoration: none; }
+  .topbar .repo:hover { color: var(--ink); }
+
+  /* Hero */
+  .hero { padding: 56px 0 34px; }
+  .hero .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--purple-dark); margin: 0 0 14px;
+  }
+  .hero h1 {
+    font-family: var(--display); font-weight: 700;
+    font-size: clamp(30px, 5vw, 46px); line-height: 1.05;
+    letter-spacing: -0.025em; margin: 0 0 16px; max-width: 16ch;
+  }
+  .hero p.lead { font-size: 17px; color: var(--muted); margin: 0; max-width: 56ch; }
+
+  /* Drop zone */
+  .dropzone {
+    display: block; cursor: pointer;
+    margin-top: 30px; background: var(--surface);
+    border: 1.5px dashed var(--hair); border-radius: 16px;
+    padding: 38px 28px; text-align: center; transition: border-color .15s, background .15s;
+  }
+  .dropzone.drag { border-color: var(--purple); background: var(--purple-soft); }
+  .dropzone .dz-title { font-family: var(--display); font-weight: 600; font-size: 18px; margin: 0 0 6px; }
+  .dropzone .dz-sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
+  .btn-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--body); font-weight: 600; font-size: 14.5px;
+    border-radius: 10px; padding: 11px 20px; cursor: pointer;
+    border: 1px solid transparent; transition: background .15s, border-color .15s, color .15s;
+  }
+  .btn-primary { background: var(--purple); color: #fff; }
+  .btn-primary:hover { background: var(--purple-dark); }
+  .btn-ghost { background: transparent; color: var(--purple-dark); border-color: var(--hair); }
+  .btn-ghost:hover { border-color: var(--purple); }
+  input[type=file] { display: none; }
+
+  /* Settings */
+  details.settings { margin-top: 18px; }
+  details.settings > summary {
+    cursor: pointer; font-size: 13.5px; color: var(--muted);
+    font-family: var(--mono); letter-spacing: 0.02em; list-style: none;
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  details.settings > summary::-webkit-details-marker { display: none; }
+  details.settings > summary::before { content: "+"; font-weight: 600; color: var(--purple-dark); }
+  details.settings[open] > summary::before { content: "\2212"; }
+  .settings-grid {
+    margin-top: 16px; display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    background: var(--surface); border: 1px solid var(--hair);
+    border-radius: 12px; padding: 18px;
+  }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+  .field input {
+    width: 100%; font-family: var(--mono); font-size: 14px; color: var(--ink);
+    padding: 8px 10px; border: 1px solid var(--hair); border-radius: 8px; background: #fbfcfd;
+  }
+  .field input:focus { outline: 2px solid var(--purple); outline-offset: 1px; border-color: var(--purple); }
+
+  /* Results */
+  .results { padding: 8px 0 60px; animation: rise .35s ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .summary {
+    display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px;
+    margin: 8px 0 30px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--hair);
+    border-radius: 14px; padding: 20px 22px;
+  }
+  .filecard .fname { font-family: var(--mono); font-weight: 600; font-size: 15px; word-break: break-all; }
+  .filecard .counts { display: flex; gap: 26px; margin-top: 16px; }
+  .filecard .counts .n { font-family: var(--display); font-weight: 700; font-size: 26px; line-height: 1; }
+  .filecard .counts .l { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  .verdict { display: flex; flex-direction: column; justify-content: center; }
+  .verdict .vlabel { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 9px; align-self: flex-start;
+    font-family: var(--display); font-weight: 600; font-size: 19px;
+    padding: 8px 16px; border-radius: 999px;
+  }
+  .pill .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+  .pill.Fresh { background: var(--fresh-soft); color: var(--fresh); }
+  .pill.Aging { background: var(--aging-soft); color: var(--aging); }
+  .pill.Stale { background: var(--stale-soft); color: var(--stale); }
+  .verdict .vmeta { font-size: 13.5px; color: var(--muted); margin-top: 12px; }
+  .verdict .vmeta strong { color: var(--ink); font-family: var(--mono); font-weight: 600; }
+
+  .section-head {
+    display: flex; align-items: baseline; gap: 12px; margin: 36px 0 14px;
+  }
+  .section-head h2 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .section-head .hint { font-size: 13px; color: var(--muted); }
+
+  table.fresh { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--hair); border-radius: 14px; overflow: hidden; }
+  table.fresh th, table.fresh td { text-align: left; padding: 13px 16px; font-size: 14px; border-bottom: 1px solid var(--hair); }
+  table.fresh th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; background: #f8fafc; }
+  table.fresh tr:last-child td { border-bottom: none; }
+  table.fresh td.col { font-family: var(--mono); font-weight: 500; }
+  table.fresh td.num { font-family: var(--mono); }
+  .tag { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+  .tag .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .tag.Fresh { background: var(--fresh-soft); color: var(--fresh); }
+  .tag.Aging { background: var(--aging-soft); color: var(--aging); }
+  .tag.Stale { background: var(--stale-soft); color: var(--stale); }
+
+  .stalebar { position: relative; height: 6px; border-radius: 999px; background: #edf1f5; margin-top: 6px; overflow: hidden; }
+  .stalebar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--stale); border-radius: 999px; }
+  .stale-cell .lbl { font-family: var(--mono); font-size: 12.5px; }
+
+  /* Glossary */
+  .gloss-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .gcard { background: var(--surface); border: 1px solid var(--hair); border-radius: 14px; padding: 18px 20px; }
+  .gcard h3 { font-family: var(--mono); font-weight: 600; font-size: 15px; margin: 0 0 4px; }
+  .gcard .meta { font-size: 12.5px; color: var(--muted); margin-bottom: 14px; }
+  .vrow { margin: 9px 0; }
+  .vrow .top { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; margin-bottom: 4px; }
+  .vrow .val { word-break: break-word; }
+  .vrow .cnt { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+  .vbar { height: 7px; border-radius: 999px; background: #edf1f5; overflow: hidden; }
+  .vbar > span { display: block; height: 100%; background: var(--purple); border-radius: 999px; }
+  .more { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+
+  .flags { margin-top: 14px; border-top: 1px solid var(--hair); padding-top: 12px; }
+  .flags .flag-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--aging); margin-bottom: 9px; }
+  .flag-group { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chip { font-family: var(--mono); font-size: 12px; background: var(--aging-soft); color: var(--aging); padding: 3px 9px; border-radius: 7px; }
+  .flag-eq { color: var(--muted); align-self: center; font-size: 12px; }
+
+  .empty { background: var(--surface); border: 1px solid var(--hair); border-radius: 14px; padding: 22px; color: var(--muted); font-size: 14px; }
+
+  .restart { margin: 30px 0 0; }
+
+  footer { border-top: 1px solid var(--hair); padding: 26px 0 50px; color: var(--muted); font-size: 13px; }
+  footer .priv { display: flex; align-items: center; gap: 8px; }
+  footer .priv .lock { color: var(--purple-dark); }
+
+  .err { background: var(--stale-soft); color: var(--stale); border-radius: 12px; padding: 14px 16px; font-size: 14px; margin-top: 18px; }
+
+  @media (max-width: 620px) {
+    .summary { grid-template-columns: 1fr; }
+    table.fresh { display: block; overflow-x: auto; white-space: nowrap; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .results { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="name">datablix</span>
+    </div>
+    <a class="repo" id="repoLink" href="#" target="_blank" rel="noopener">View on GitHub</a>
+  </header>
+</div>
+
+<main class="wrap">
+  <section class="hero" id="hero">
+    <p class="eyebrow">CSV health check</p>
+    <h1>See if your spreadsheet can still be trusted.</h1>
+    <p class="lead">datablix reads a CSV and tells you two things in plain language: how out of date the data is, and what categories live inside each column. Nothing is uploaded anywhere. The file is read right here in your browser.</p>
+
+    <label class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose a CSV file or drop one here">
+      <p class="dz-title">Drop a CSV here, or choose a file</p>
+      <p class="dz-sub">Your data stays on your device. It is never sent over the internet.</p>
+      <span class="btn-row">
+        <span class="btn btn-primary">Choose a CSV file</span>
+        <span class="btn btn-ghost" id="sampleBtn" role="button" tabindex="0">Try the sample</span>
+      </span>
+      <input type="file" id="fileInput" accept=".csv,text/csv">
+    </label>
+
+    <details class="settings">
+      <summary>Advanced settings</summary>
+      <div class="settings-grid">
+        <div class="field">
+          <label for="refDate">Reference date</label>
+          <input type="date" id="refDate">
+        </div>
+        <div class="field">
+          <label for="freshDays">Fresh within (days)</label>
+          <input type="number" id="freshDays" value="30" min="1">
+        </div>
+        <div class="field">
+          <label for="staleDays">Stale after (days)</label>
+          <input type="number" id="staleDays" value="90" min="1">
+        </div>
+        <div class="field">
+          <label for="maxCats">Max categories</label>
+          <input type="number" id="maxCats" value="20" min="2">
+        </div>
+      </div>
+    </details>
+
+    <div id="errBox"></div>
+  </section>
+
+  <section class="results" id="results" hidden></section>
+</main>
+
+<footer>
+  <div class="wrap priv">
+    <span class="lock" aria-hidden="true">&#128274;</span>
+    <span>Every file you open is analyzed locally in your browser and never leaves your device.</span>
+  </div>
+</footer>
+
+<script src="datablix.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // Update this to your repository once it is published.
+  var REPO_URL = "https://github.com/your-username/datablix";
+  document.getElementById("repoLink").href = REPO_URL;
+
+  var SAMPLE = [
+    "volunteer_id,name,region,status,active,last_active,signup_date",
+    "V001,Amara Okafor,Ontario,Active,yes,2026-06-20,2025-01-12",
+    "V002,Liam Tremblay,Quebec,active,Yes,2026-06-18,2025-02-03",
+    "V003,Sofia Rossi,Ontario,Inactive,no,2026-02-10,2024-11-22",
+    "V004,Noah Smith,British Columbia,Active,YES,2026-06-22,2025-03-15",
+    "V005,Mei Chen,Quebec,active,no,2025-12-01,2024-09-30",
+    "V006,Omar Haddad,Alberta,Pending,No,2026-01-05,2025-05-19",
+    "V007,Ava Johnson,ontario,Active,yes,2026-06-25,2025-06-01",
+    "V008,Lucas Silva,Manitoba,Inactive,,2025-08-14,2024-08-08",
+    "V009,Priya Patel,Quebec,Pending,No,2026-03-30,2025-04-11",
+    "V010,Ethan Brown,Ontario,Active,Yes,2026-06-19,2025-02-27",
+    "V011,Hana Kim,British Columbia,active,yes,2026-06-21,2025-01-30",
+    "V012,Diego Morales,Alberta,Inactive,no,2025-07-02,2024-07-15"
+  ].join("\n");
+
+  var db = window.datablix;
+  var els = {
+    hero: document.getElementById("hero"),
+    results: document.getElementById("results"),
+    dropzone: document.getElementById("dropzone"),
+    fileInput: document.getElementById("fileInput"),
+    sampleBtn: document.getElementById("sampleBtn"),
+    refDate: document.getElementById("refDate"),
+    freshDays: document.getElementById("freshDays"),
+    staleDays: document.getElementById("staleDays"),
+    maxCats: document.getElementById("maxCats"),
+    errBox: document.getElementById("errBox")
+  };
+
+  // Default the reference date to today.
+  var t = db.todayYmd();
+  els.refDate.value = db.isoString(t);
+
+  var lastText = null;
+  var lastName = null;
+
+  function currentOptions() {
+    var ref = db.ymdFromIso(els.refDate.value) || db.todayYmd();
+    return {
+      today: ref,
+      freshDays: Math.max(1, parseInt(els.freshDays.value, 10) || 30),
+      staleDays: Math.max(1, parseInt(els.staleDays.value, 10) || 90),
+      maxCategories: Math.max(2, parseInt(els.maxCats.value, 10) || 20),
+      top: 10
+    };
+  }
+
+  function showError(msg) {
+    els.errBox.innerHTML = '<div class="err">' + esc(msg) + "</div>";
+  }
+  function clearError() { els.errBox.innerHTML = ""; }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function fmtPct(n) { return (Math.round(n * 10) / 10) + "%"; }
+
+  function run() {
+    if (lastText === null) return;
+    clearError();
+    var result;
+    try {
+      result = db.analyze(lastText, currentOptions());
+    } catch (e) {
+      showError("Could not read that file as a CSV. Check that it is a comma separated file and try again.");
+      return;
+    }
+    render(result);
+  }
+
+  function loadText(text, name) {
+    lastText = text;
+    lastName = name;
+    run();
+  }
+
+  function readFile(file) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () { loadText(String(reader.result), file.name); };
+    reader.onerror = function () { showError("That file could not be read. Try a different CSV."); };
+    reader.readAsText(file);
+  }
+
+  // Render -------------------------------------------------------------
+
+  function render(r) {
+    var html = "";
+    html += renderSummary(r);
+    html += renderFreshness(r.freshness);
+    html += renderGlossary(r.glossary);
+    html += '<div class="restart"><button class="btn btn-ghost" id="resetBtn">Analyze another file</button></div>';
+    els.results.innerHTML = html;
+    els.results.hidden = false;
+    els.hero.hidden = true;
+    document.getElementById("resetBtn").addEventListener("click", reset);
+    els.results.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderSummary(r) {
+    var v = r.freshness.overall;
+    var verdict;
+    if (v) {
+      verdict =
+        '<div class="vlabel">Overall freshness</div>' +
+        '<span class="pill ' + v.status + '"><span class="dot"></span>' + v.status + "</span>" +
+        '<div class="vmeta">Most recent value <strong>' + esc(v.most_recent_value) + "</strong>, " +
+        "<strong>" + v.days_since + "</strong> day(s) ago, from column <strong>" + esc(v.driven_by_column) + "</strong>.</div>";
+    } else {
+      verdict = '<div class="vlabel">Overall freshness</div>' +
+        '<span class="pill Aging"><span class="dot"></span>No dates found</span>' +
+        '<div class="vmeta">No date columns were detected, so freshness could not be measured.</div>';
+    }
+    return '<div class="summary">' +
+      '<div class="card filecard">' +
+        '<div class="fname">' + esc(lastName || "your file") + "</div>" +
+        '<div class="counts">' +
+          '<div><div class="n">' + r.meta.rows + '</div><div class="l">rows</div></div>' +
+          '<div><div class="n">' + r.meta.columns + '</div><div class="l">columns</div></div>' +
+        "</div>" +
+      "</div>" +
+      '<div class="card verdict">' + verdict + "</div>" +
+    "</div>";
+  }
+
+  function renderFreshness(f) {
+    var head = '<div class="section-head"><h2>Data freshness</h2>' +
+      '<span class="hint">Fresh within ' + f.fresh_threshold_days +
+      ' days, stale after ' + f.stale_threshold_days + ' days</span></div>';
+
+    if (!f.date_columns.length) {
+      return head + '<div class="empty">No date columns were detected in this file.</div>';
+    }
+    var rows = f.date_columns.map(function (c) {
+      return "<tr>" +
+        '<td class="col">' + esc(c.column) + "</td>" +
+        '<td class="num">' + c.oldest + "</td>" +
+        '<td class="num">' + c.newest + "</td>" +
+        '<td class="num">' + c.days_since_newest + "</td>" +
+        '<td><span class="tag ' + c.status + '"><span class="dot"></span>' + c.status + "</span></td>" +
+        '<td class="stale-cell"><div class="lbl">' + c.stale_rows + " of " + c.rows_with_dates +
+          " (" + fmtPct(c.stale_share_pct) + ')</div><div class="stalebar"><span style="width:' +
+          Math.min(100, c.stale_share_pct) + '%"></span></div></td>' +
+      "</tr>";
+    }).join("");
+
+    return head + '<table class="fresh"><thead><tr>' +
+      "<th>Column</th><th>Oldest</th><th>Newest</th><th>Days since</th><th>Status</th><th>Stale rows</th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table>";
+  }
+
+  function renderGlossary(g) {
+    var head = '<div class="section-head"><h2>Categorical glossary</h2>' +
+      '<span class="hint">Columns with a small set of repeating values</span></div>';
+    if (!g.length) {
+      return head + '<div class="empty">No categorical columns were detected in this file.</div>';
+    }
+    var cards = g.map(function (col) {
+      var maxShare = col.top_values.reduce(function (m, e) { return Math.max(m, e.share_pct); }, 0) || 1;
+      var rows = col.top_values.map(function (e) {
+        var w = Math.max(3, 100 * e.share_pct / maxShare);
+        return '<div class="vrow"><div class="top"><span class="val">' + esc(e.value) +
+          '</span><span class="cnt">' + e.count + " &middot; " + fmtPct(e.share_pct) + "</span></div>" +
+          '<div class="vbar"><span style="width:' + w + '%"></span></div></div>';
+      }).join("");
+
+      var more = col.more_values_not_shown
+        ? '<div class="more">and ' + col.more_values_not_shown + " more value(s) not shown</div>" : "";
+
+      var flags = "";
+      if (col.inconsistent_value_groups.length) {
+        var groups = col.inconsistent_value_groups.map(function (grp) {
+          var chips = grp.map(function (val, i) {
+            return (i ? '<span class="flag-eq">=</span>' : "") + '<span class="chip">' + esc(val) + "</span>";
+          }).join("");
+          return '<div class="flag-group">' + chips + "</div>";
+        }).join("");
+        flags = '<div class="flags"><div class="flag-title">' +
+          '<span aria-hidden="true">&#9888;</span> Possible inconsistencies</div>' + groups + "</div>";
+      }
+
+      var missing = col.missing_cells
+        ? ", " + col.missing_cells + " missing (" + fmtPct(col.missing_share_pct) + ")" : "";
+
+      return '<div class="gcard"><h3>' + esc(col.column) + "</h3>" +
+        '<div class="meta">' + col.distinct_values + " distinct value(s)" + missing + "</div>" +
+        rows + more + flags + "</div>";
+    }).join("");
+
+    return head + '<div class="gloss-grid">' + cards + "</div>";
+  }
+
+  function reset() {
+    els.results.hidden = true;
+    els.results.innerHTML = "";
+    els.hero.hidden = false;
+    els.fileInput.value = "";
+    lastText = null; lastName = null;
+    clearError();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Events -------------------------------------------------------------
+
+  els.fileInput.addEventListener("change", function (e) {
+    readFile(e.target.files[0]);
+  });
+
+  els.sampleBtn.addEventListener("click", function (e) {
+    e.preventDefault(); e.stopPropagation();
+    loadText(SAMPLE, "sample_data.csv");
+  });
+  els.sampleBtn.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); loadText(SAMPLE, "sample_data.csv"); }
+  });
+
+  ["dragenter", "dragover"].forEach(function (ev) {
+    els.dropzone.addEventListener(ev, function (e) { e.preventDefault(); els.dropzone.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    els.dropzone.addEventListener(ev, function (e) { e.preventDefault(); els.dropzone.classList.remove("drag"); });
+  });
+  els.dropzone.addEventListener("drop", function (e) {
+    if (e.dataTransfer && e.dataTransfer.files.length) readFile(e.dataTransfer.files[0]);
+  });
+
+  // Re-run when any setting changes and a file is already loaded.
+  [els.refDate, els.freshDays, els.staleDays, els.maxCats].forEach(function (input) {
+    input.addEventListener("change", run);
+  });
+})();
+</script>
+</body>
+</html>
