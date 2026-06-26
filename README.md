@@ -1,31 +1,43 @@
 # Datablix
 
-Spot stale data and messy categories before they cause problems. Datablix reads a CSV and helps answer two everyday questions about a dataset:
+Meet Datablix. You hand it a CSV file (that is a spreadsheet saved as plain
+text), and it answers two questions you probably should be asking but never
+quite have time for:
 
-1. **Is this data still fresh?** How recent is it, and how much of it is stale?
-2. **What categories are in here?** What values appear in each column, how
-   common are they, and which ones look like the same thing typed two
-   different ways?
+1. **Is this data still fresh, or has it gone off?**
+2. **What is actually in each column, and is anything secretly typed five
+   different ways?**
 
-Datablix uses **only the Python standard library**, so there is nothing to
-install. If you have Python 3.8 or newer, it runs.
+The best part: Datablix only uses tools that already come with Python, so
+there is nothing to install. If you have Python 3.8 or newer, you are good to
+go. And if the command line makes you nervous, relax, there is a web version
+that runs right in your browser.
 
-## The problem it solves
+**Want to just try it?** Here you go: https://lindaxeva.github.io/datablix/
 
-Lists and records drift over time. Two common failure modes show up again
-and again in volunteer, community, and small-office settings:
+## Why you might want this
 
-- A contact list, roster, or tracker quietly goes out of date, and nobody
-  notices until it causes a problem.
-- The same category gets typed inconsistently ("Active", "active", "ACTIVE"),
-  which breaks filters, counts, and reports without anyone realizing.
+Here is a scene you may recognize. You open a spreadsheet you have not touched
+in months to send out an update. It looks fine. It always looks fine. But half
+the entries are quietly out of date, and nothing on the screen warns you. You
+find out the hard way, right after you hit send.
 
-Checking for these by eye is slow and error-prone. datablix does it in one
-command and explains what it found in plain language.
+Or you try to count how many people are marked "Active". The total comes out
+weird. Turns out one row says "Active", another says "active", and a third
+went all in with "ACTIVE". To the spreadsheet, those are three completely
+different things, so your count splits across all of them. The spreadsheet is
+not wrong, exactly. It is just being extremely literal at the worst possible
+moment.
 
-## Install
+This stuff is easy to do and almost impossible to catch by eye. So let Datablix
+do the squinting. It reads the file, tells you how old the data is, and flags
+the values that are really the same thing wearing different hats. One step,
+plain words, no detective work required.
 
-No installation needed. Clone the repository and run the script directly:
+## Getting started
+
+There is nothing to install, so this is quick. Copy the project to your
+computer and run it:
 
 ```bash
 git clone https://github.com/lindaxeva/datablix.git
@@ -33,81 +45,124 @@ cd datablix
 python3 datablix.py sample_data.csv
 ```
 
-## Usage
+The `sample_data.csv` that comes with it has a few old dates and a few
+mismatched spellings planted on purpose, like a tiny crime scene, so you can
+watch Datablix solve it on your very first run.
+
+## How to use it
+
+The shape of every command is the same:
 
 ```bash
 python3 datablix.py YOUR_FILE.csv [options]
 ```
 
-### Common examples
+And here are the things you will actually reach for:
 
 ```bash
-# Full report (freshness + glossary) to the screen
+# The full report (freshness and categories)
 python3 datablix.py sample_data.csv
 
-# Only the freshness section
+# Just the freshness check
 python3 datablix.py sample_data.csv --freshness-only
 
-# Only the categorical glossary
+# Just the list of categories
 python3 datablix.py sample_data.csv --glossary-only
 
-# Save a shareable Markdown report
+# Save it as a Markdown file you can share
 python3 datablix.py sample_data.csv --format markdown --output report.md
 
-# Get machine-readable JSON (for piping into other tools)
+# Get it as JSON, if you want to feed it into something else
 python3 datablix.py sample_data.csv --format json
 
-# Treat anything older than 60 days as stale, using a fixed reference date
+# Count anything older than 60 days as old, measured from a set date
 python3 datablix.py sample_data.csv --stale-days 60 --today 2026-06-26
 ```
 
-## Options
+## The options, if you want to tweak things
 
 | Option | What it does | Default |
 | --- | --- | --- |
-| `--format` | Output style: `text`, `markdown`, or `json` | `text` |
-| `--output` | Write the report to a file instead of the screen | screen |
-| `--freshness-only` | Show only the freshness section | off |
-| `--glossary-only` | Show only the categorical glossary | off |
-| `--max-categories` | Max distinct values for a column to count as categorical | 20 |
-| `--top` | How many top values to list per column | 10 |
-| `--fresh-days` | Data newer than this many days is "Fresh" | 30 |
-| `--stale-days` | Data older than this many days is "Stale" | 90 |
-| `--today` | Reference date (YYYY-MM-DD) for freshness math | system date |
+| `--format` | Pick the output style: `text`, `markdown`, or `json` | `text` |
+| `--output` | Save the report to a file instead of showing it on screen | screen |
+| `--freshness-only` | Show only the freshness check | off |
+| `--glossary-only` | Show only the list of categories | off |
+| `--max-categories` | How many different values a column can have and still count as a category | 20 |
+| `--top` | How many of the most common values to show per column | 10 |
+| `--fresh-days` | Data newer than this many days counts as fresh | 30 |
+| `--stale-days` | Data older than this many days counts as old | 90 |
+| `--today` | The date to measure freshness from (defaults to today) | today |
 
-## How it works
+## What it is doing behind the scenes
 
-datablix reads the CSV and gives each column a type by looking at its values:
+First, Datablix takes a look at each column and figures out what kind of value
+it holds:
 
-| Type | How it is detected |
+| Kind | How it decides |
 | --- | --- |
-| date | At least 80% of non-empty cells match a known date format |
-| numeric | At least 80% of non-empty cells parse as numbers ($, %, commas allowed) |
-| categorical | Few distinct values (within `--max-categories`) with real repetition |
-| text | Many distinct values or long free text (treated as names, IDs, notes) |
-| empty | The column has no values |
+| date | Most of the values look like dates |
+| number | Most of the values are numbers (it ignores $, %, and commas) |
+| category | Only a few different values, and they keep repeating |
+| text | Lots of different values or long text, like names or notes |
+| empty | The column has nothing in it |
 
-**Freshness** is computed per date column: the oldest and newest values,
-how many days have passed since the newest, an overall status (Fresh,
-Aging, or Stale), and the share of rows that are past the stale threshold.
+Then, for the **freshness check**, it goes through each date column and tells
+you the oldest and newest dates, how many days have gone by since that newest
+one, an overall label (Fresh, Aging, or Old), and how many rows have slipped
+past the cutoff for old.
 
-**The glossary** lists each categorical column's values with counts and
-percentages, flags missing cells, and groups values that normalize to the
-same key (after trimming spaces and ignoring case) so inconsistent spellings
-surface automatically.
+And for the **list of categories**, it shows you each category column's values
+and how often each one turns up, points out any blank cells, and quietly
+groups together the values that are really the same once you stop caring about
+capital letters and stray spaces. That is how the mismatched spellings give
+themselves away.
 
-## Supported date formats
+## The web version (no command line, promise)
+
+If typing commands is not your thing, the project includes a browser version
+anyone can use:
+
+- `index.html` is the page you open.
+- `datablix.js` runs the same checks as the Python tool, just written for the
+  browser.
+
+Open `index.html` in any browser, or use the online version at
+https://lindaxeva.github.io/datablix/. Want your own copy online for free? In
+the project on GitHub, open **Settings**, then **Pages**, point the source at
+the `main` branch, and save. Give it a minute and it goes live at
+`https://lindaxeva.github.io/datablix/`.
+
+One thing worth knowing: the web version does everything inside your own
+browser. Whatever file you open stays on your device and is never sent
+anywhere. No uploads, no servers, no funny business.
+
+## Dates it can read
 
 `YYYY-MM-DD`, `YYYY/MM/DD`, `DD-MM-YYYY`, `DD/MM/YYYY`, `MM/DD/YYYY`,
 `MM-DD-YYYY`, `YYYY-MM-DD HH:MM:SS`, ISO timestamps, `12 Jan 2026`,
 `January 12, 2026`, and `YYYYMMDD`.
 
-## Limitations
+## Want to check it really works?
 
-- Designed for CSV input. Convert other formats to CSV first.
-- Date guessing is format-based, so an unusual format may be read as text.
-- Inconsistency detection catches case and whitespace differences, not
-  spelling mistakes or synonyms (for example "BC" versus "British Columbia").
+It comes with its own set of tests, and again, nothing to install. From the
+project folder, run:
+
+```bash
+python3 -m unittest -v
+```
+
+Every test should come back with `OK`. These same tests also run on their own
+over on GitHub every time you upload a change, and you will see a little
+checkmark on the project page when they pass.
+
+## A few honest limits
+
+- It works with CSV files, so save other formats as CSV first.
+- It spots dates by their format, so a really unusual date style might get read
+  as plain text.
+- It catches spacing and capital-letter mismatches, but not typos or different
+  words for the same thing. It will not guess that "BC" and "British Columbia"
+  are the same place. It is thorough, not psychic.
 
 ## License
 
