@@ -128,7 +128,7 @@ anywhere. No uploads, no servers, no funny business.
 `MM-DD-YYYY`, `YYYY-MM-DD HH:MM:SS`, ISO timestamps, `12 Jan 2026`,
 `January 12, 2026`, and `YYYYMMDD`.
 
-## Want to check it really works?
+## Want to check if it really works?
 
 It comes with its own set of tests, and again, nothing to install. From the
 project folder, run:
