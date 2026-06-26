@@ -1,12 +1,12 @@
 /*
- * datablix.js
+ * sheetblix.js
  *
- * Browser port of the datablix analysis logic. It mirrors the Python tool:
+ * Browser port of the sheetblix analysis logic. It mirrors the Python tool:
  * the same column type detection, freshness report, and categorical glossary.
  * All work happens in memory, so a CSV opened in the web page never leaves
  * the visitor's computer.
  *
- * Works in the browser (attaches to window.datablix) and in Node (exports),
+ * Works in the browser (attaches to window.sheetblix) and in Node (exports),
  * so the same file can be unit tested from the command line.
  */
 (function (root) {
@@ -319,6 +319,6 @@
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
-  else root.datablix = api;
+  else root.sheetblix = api;
 
 })(typeof self !== "undefined" ? self : this);
