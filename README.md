@@ -14,9 +14,7 @@ go.
 And if the command line makes you nervous, relax, there is a web version
 that runs right in your browser. 
 
-                  **Want to just try it? No setup, no download.**
-
-
+                              Want to just try it? 
 
 <p align="center">
   <a href="https://lindaxeva.github.io/datablix/">
