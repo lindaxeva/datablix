@@ -1,7 +1,6 @@
 # datablix
 
-A dependency-free command-line tool that turns a raw CSV into an
-"at a glance" summary a user can actually read and act on.
+When did this dataset last get updated, and what is actually in it? datablix answers both from the command line, reporting data freshness and a glossary of categories for any CSV, with nothing to install.
 
 It answers two everyday questions about a spreadsheet:
 
