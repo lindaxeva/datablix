@@ -17,6 +17,12 @@ that runs right in your browser.
 **Want to just try it?** 
 Here you go: https://lindaxeva.github.io/datablix/
 
+<p align="center">
+  <a href="https://lindaxeva.github.io/datablix/">
+    <img src="https://img.shields.io/badge/Try%20the%20live%20demo-6d28d9?style=for-the-badge" alt="Try the live demo">
+  </a>
+</p>
+
 ## Why you might want this
 
 Maybe your date column has entries that have not been updated in months, but nothing on the screen makes that obvious.
