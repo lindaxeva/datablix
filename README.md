@@ -1,8 +1,7 @@
 # Datablix
 
 Meet Datablix. You hand it a CSV file (that is a spreadsheet saved as plain
-text), and it answers two questions you probably should be asking but never
-quite have time for:
+text), and it answers two questions you probably should be asking yourself:
 
 1. **Is this data still fresh, or has it gone off?**
 2. **What is actually in each column, and is anything secretly typed five
