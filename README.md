@@ -10,10 +10,11 @@ quite have time for:
 
 The best part: Datablix only uses tools that already come with Python, so
 there is nothing to install. If you have Python 3.8 or newer, you are good to
-go. And if the command line makes you nervous, relax, there is a web version
-that runs right in your browser.
+go. 
 
-**Want to just try it?** Here you go: https://lindaxeva.github.io/datablix/
+And if the command line makes you nervous, relax, there is a web version
+that runs right in your browser. **Want to just try it?** 
+Here you go: https://lindaxeva.github.io/datablix/
 
 ## Why you might want this
 
@@ -120,17 +121,7 @@ themselves away.
 ## The web version (no command line, promise)
 
 If typing commands is not your thing, the project includes a browser version
-anyone can use:
-
-- `index.html` is the page you open.
-- `datablix.js` runs the same checks as the Python tool, just written for the
-  browser.
-
-Open `index.html` in any browser, or use the online version at
-https://lindaxeva.github.io/datablix/. Want your own copy online for free? In
-the project on GitHub, open **Settings**, then **Pages**, point the source at
-the `main` branch, and save. Give it a minute and it goes live at
-`https://lindaxeva.github.io/datablix/`.
+anyone can use: https://lindaxeva.github.io/datablix/. 
 
 One thing worth knowing: the web version does everything inside your own
 browser. Whatever file you open stays on your device and is never sent
