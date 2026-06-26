@@ -1,4 +1,4 @@
-# datablix
+# Datablix
 
 Know whether your data can be trusted at a glance. Datablix reads a CSV and prints two reports: a freshness check that flags how out-of-date your records are, and a categorical glossary that lists every column's values and catches inconsistent spellings.
 
