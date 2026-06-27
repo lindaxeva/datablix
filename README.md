@@ -1,4 +1,4 @@
-# Sheetblix
+# Sheetblix (Prototype)
 
 Meet Sheetblix. You hand it your CSV file, and it answers two 
 questions you probably should be asking yourself:
