@@ -21,28 +21,28 @@ import sheetblix
 class TestValueParsing(unittest.TestCase):
 
     def test_parse_date_common_formats(self):
-        self.assertIsNotNone(datablix.parse_date("2026-06-26"))
-        self.assertIsNotNone(datablix.parse_date("26/06/2026"))
-        self.assertIsNotNone(datablix.parse_date("June 26, 2026"))
+        self.assertIsNotNone(sheetblix.parse_date("2026-06-26"))
+        self.assertIsNotNone(sheetblix.parse_date("26/06/2026"))
+        self.assertIsNotNone(sheetblix.parse_date("June 26, 2026"))
 
     def test_parse_date_rejects_non_dates(self):
-        self.assertIsNone(datablix.parse_date("not a date"))
-        self.assertIsNone(datablix.parse_date(""))
+        self.assertIsNone(sheetblix.parse_date("not a date"))
+        self.assertIsNone(sheetblix.parse_date(""))
 
     def test_parse_number_handles_symbols(self):
-        self.assertEqual(datablix.parse_number("1,250"), 1250.0)
-        self.assertEqual(datablix.parse_number("$45.50"), 45.50)
-        self.assertEqual(datablix.parse_number("80%"), 80.0)
+        self.assertEqual(sheetblix.parse_number("1,250"), 1250.0)
+        self.assertEqual(sheetblix.parse_number("$45.50"), 45.50)
+        self.assertEqual(sheetblix.parse_number("80%"), 80.0)
 
     def test_parse_number_rejects_text(self):
-        self.assertIsNone(datablix.parse_number("hello"))
-        self.assertIsNone(datablix.parse_number(""))
+        self.assertIsNone(sheetblix.parse_number("hello"))
+        self.assertIsNone(sheetblix.parse_number(""))
 
     def test_normalize_label_collapses_case_and_space(self):
-        self.assertEqual(datablix.normalize_label("  Active "), "active")
-        self.assertEqual(datablix.normalize_label("YES"), "yes")
+        self.assertEqual(sheetblix.normalize_label("  Active "), "active")
+        self.assertEqual(sheetblix.normalize_label("YES"), "yes")
         self.assertEqual(
-            datablix.normalize_label("British   Columbia"),
+            sheetblix.normalize_label("British   Columbia"),
             "british columbia",
         )
 
@@ -59,7 +59,7 @@ class TestColumnClassification(unittest.TestCase):
         ]
 
     def test_types_detected(self):
-        types = datablix.classify_columns(self.headers, self.rows, max_categories=20)
+        types = sheetblix.classify_columns(self.headers, self.rows, max_categories=20)
         self.assertEqual(types["joined"], "date")
         self.assertEqual(types["region"], "categorical")
         # Every id is unique, so it should not be treated as categorical.
@@ -74,8 +74,8 @@ class TestFreshness(unittest.TestCase):
             {"updated": "2026-06-20"},  # recent
             {"updated": "2026-01-01"},  # old
         ]
-        types = datablix.classify_columns(headers, rows, max_categories=20)
-        report = datablix.build_freshness(
+        types = sheetblix.classify_columns(headers, rows, max_categories=20)
+        report = sheetblix.build_freshness(
             headers, rows, types,
             today=date(2026, 6, 26),
             fresh_days=30, stale_days=90,
@@ -89,8 +89,8 @@ class TestFreshness(unittest.TestCase):
     def test_no_date_columns(self):
         headers = ["name"]
         rows = [{"name": "Alex"}, {"name": "Sam"}]
-        types = datablix.classify_columns(headers, rows, max_categories=20)
-        report = datablix.build_freshness(
+        types = sheetblix.classify_columns(headers, rows, max_categories=20)
+        report = sheetblix.build_freshness(
             headers, rows, types,
             today=date(2026, 6, 26),
             fresh_days=30, stale_days=90,
@@ -109,8 +109,8 @@ class TestGlossary(unittest.TestCase):
             {"status": "Inactive"},
             {"status": ""},
         ]
-        types = datablix.classify_columns(headers, rows, max_categories=20)
-        glossary = datablix.build_glossary(
+        types = sheetblix.classify_columns(headers, rows, max_categories=20)
+        glossary = sheetblix.build_glossary(
             headers, rows, types, max_categories=20, top_n=10,
         )
         self.assertEqual(len(glossary), 1)
@@ -132,7 +132,7 @@ class TestReadCsv(unittest.TestCase):
         try:
             tmp.write(content)
             tmp.close()
-            headers, rows = datablix.read_csv(tmp.name)
+            headers, rows = sheetblix.read_csv(tmp.name)
             self.assertEqual(headers, ["a", "b"])
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["a"], "1")
@@ -141,7 +141,7 @@ class TestReadCsv(unittest.TestCase):
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
-            datablix.read_csv("definitely_not_here.csv")
+            sheetblix.read_csv("definitely_not_here.csv")
 
 
 if __name__ == "__main__":
