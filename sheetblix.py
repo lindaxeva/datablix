@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-sheetblix: a tiny, dependency-free helper for understanding your spreadsheet.
+sheetblix: a dependency-free helper for understanding your spreadsheet.
 
 It reads a CSV file and produces two plain-language reports:
 
