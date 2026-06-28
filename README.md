@@ -24,7 +24,7 @@ that runs right in your browser. Want to just try it today?
 
 Maybe your date column has entries that have not been updated in months, but nothing on the screen makes that obvious.
 
-Maybe your category column has values like “Active,” “active,” and “ACTIVE.” To you, they mean the same thing. To a spreadsheet, they are three different categories.
+Maybe your category column has values like “Active,” “active,” and “ACTIVE.” To you, they might mean the same thing. To a spreadsheet, they are three different categories.
 
 That means your counts, summaries, and reports can quietly become unreliable.
 
