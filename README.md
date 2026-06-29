@@ -30,7 +30,7 @@ That means your counts, summaries, and reports can quietly become unreliable.
 
 Sheetblix helps you catch those issues faster. It checks your CSV, shows what data may be out of date, and flags categories that look like the same value written in different ways.
 
-Once the issues are visible, you can review them and decide the right next step, whether that means updating old records, removing outdated rows, or standardizing repeated category labels into one clean version.
+Once the issues are visible, you can self-review them and decide the right next step, whether that means updating old records, removing outdated rows, or standardizing repeated category labels into one clean version.
 
 ## Getting started
 
