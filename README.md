@@ -143,9 +143,9 @@ Every test should come back with `OK`. These same tests also run on their own
 over on GitHub every time you upload a change, and you will see a little
 checkmark on the project page when they pass.
 
-## Limitations
+## Notice
 
-- It works with CSV files, so save other formats as CSV first.
+- It works with CSV files, so save other formats (Google/Excel sheets) as CSV first.
 - It spots dates by their format, so a really unusual date style might get read
   as plain text.
 - It catches spacing and capital-letter mismatches, but not typos or different
