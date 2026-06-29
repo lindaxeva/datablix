@@ -1,6 +1,6 @@
 # Sheetblix (Prototype)
 
-Meet Sheetblix. You hand it your CSV file, and it answers two 
+Meet Sheetblix. You hand it your spreadsheet-style CSV file, and it answers two 
 questions you probably should be asking yourself:
 
 1. **Is this data still fresh, or has it gone off?**
