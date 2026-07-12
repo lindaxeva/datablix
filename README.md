@@ -12,7 +12,7 @@ It's a human-in-the-loop tool that identifies missing fields, possible duplicate
 |---|---|
 | Business Need | Prepare publicly sourced senior-living information for consistent review |
 | Primary Challenge | Manual spreadsheet review is repetitive, time-consuming, and difficult to track |
-| Stakeholders | Researchers, reviewers, project coordinators, directory administrators, and the project sponsor |
+| Users | Researchers, reviewers, project coordinators, directory administrators, and the project sponsor |
 | Proposed Solution | Human-in-the-loop data-quality and verification application |
 | Solution Lead and Developer | Linda Eva Seuna |
 | Inputs | CSV and Excel files |
@@ -43,19 +43,7 @@ The solution will help:
 - Preserve source and review information
 - Support human verification
 - Produce organized outputs for follow-up
-
----
-
-## User Needs
-
-| User | Need |
-|---|---|
-| Researcher | Record information consistently and preserve the source |
-| Data Reviewer | Understand each flag and document a decision |
-| Project Coordinator | Monitor data quality and outstanding work |
-| Directory Administrator | Receive structured, review-ready records |
-| Project Sponsor | Obtain a consistent and traceable project output |
-
+  
 ---
 
 ## Scope
