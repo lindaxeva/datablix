@@ -4,7 +4,7 @@ Datablix was developed to support the **Ontario Senior Living Directory Developm
 
 It's a human-in-the-loop tool that identifies missing fields, possible duplicates, invalid source links, and questionable research dates while keeping reviewer decisions and notes connected to each record. 
 
-**Live Demo:** [Open Datablix](https://datablix.streamlit.app/)
+**Live Demo:** [Open Datablix 1.0](https://datablix.streamlit.app/)
 
 ## Project Snapshot
 
