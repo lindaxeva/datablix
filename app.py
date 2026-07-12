@@ -109,12 +109,9 @@ def render_brand_header():
         logo_class = "datablix-brand-logo padded-png"
     else:
         st.title("Datablix")
-        st.subheader(
-            "Research Intake, Source Tracking, and Verification Assistant"
-        )
         st.write(
-            "Build research records, track sources, correct data-quality "
-            "issues, and export a review-ready directory."
+            "Turn your raw research data into a structured," 
+            "trackable, and review-ready directory."
         )
         st.caption("Version 3")
         return
@@ -227,13 +224,9 @@ def render_brand_header():
                 >
             </div>
 
-            <div class="datablix-brand-subtitle">
-                Research Intake, Source Tracking, and Verification Assistant
-            </div>
-
             <div class="datablix-brand-description">
-                Build research records, track source progress, correct
-                data-quality issues, and export a review-ready directory.
+                Turn your raw research data into a structured, trackable, 
+                and review-ready directory.
             </div>
 
             <div class="datablix-version-badge">
