@@ -4,8 +4,6 @@ Datablix 3.0 was developed to strengthen the research workflow supporting the **
 
 It extends the data-quality and verification process by allowing users to create research records, track research ownership and progress, monitor source status and freshness, correct issues, re-run validation, and export a focused research log.
 
-All public samples are fictional or generalized. No confidential project information is included.
-
 **Live Demo:** [Open Datablix 3.0](https://datablix-v3.streamlit.app/)
 
 ---
