@@ -191,7 +191,7 @@ def render_brand_header():
             </div>
 
             <div class="datablix-brand-description">
-                Turn a research spreadsheet into a structured,
+                Turn your research spreadsheet into a structured,
                 review-ready directory.
             </div>
         </div>
