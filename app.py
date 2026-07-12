@@ -185,12 +185,8 @@ def render_brand_header():
                 >
             </div>
 
-            <div class="datablix-brand-subtitle">
-                Data Quality and Verification Assistant
-            </div>
-
             <div class="datablix-brand-description">
-                Turn your research spreadsheet into a structured,
+                Turn your raw research data into a structured, trackable, and
                 review-ready directory.
             </div>
         </div>
