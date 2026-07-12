@@ -28,7 +28,7 @@ DATABLIX_COLUMNS = [
 ]
 
 
-# Fields that every research record should contain
+# Fields required for every directory record
 REQUIRED_FIELDS = [
     "Name",
     "Category",
@@ -39,19 +39,25 @@ REQUIRED_FIELDS = [
 ]
 
 
+# Accepted verification values
+VALID_VERIFICATION_STATUSES = [
+    "Not Reviewed",
+    "Needs Review",
+    "Verified",
+]
+
+
 def prepare_data(dataframe):
     """
-    Clean column names and convert blank cells into missing values.
+    Clean column headings and convert blank cells into missing values.
     """
     cleaned_data = dataframe.copy()
 
-    # Remove extra spaces from column headings
     cleaned_data.columns = [
         str(column).strip()
         for column in cleaned_data.columns
     ]
 
-    # Convert blank or whitespace-only cells into missing values
     cleaned_data = cleaned_data.replace(
         r"^\s*$",
         pd.NA,
@@ -61,17 +67,174 @@ def prepare_data(dataframe):
     return cleaned_data
 
 
-def find_missing_fields(row, missing_columns):
+def build_qa_flags(dataframe):
     """
-    Return the names of required fields missing from one record.
+    Check each record and create QA flags.
     """
-    missing_fields = list(missing_columns)
+    qa_data = dataframe.copy()
 
+    record_flags = pd.Series(
+        [[] for _ in range(len(qa_data))],
+        index=qa_data.index,
+        dtype="object",
+    )
+
+    def add_flag(mask, message):
+        """
+        Add one flag message to every record matching the condition.
+        """
+        safe_mask = mask.fillna(False)
+
+        for row_index in qa_data.index[safe_mask]:
+            record_flags.at[row_index].append(message)
+
+    # Check required columns and required cells
     for field in REQUIRED_FIELDS:
-        if field in row.index and pd.isna(row[field]):
-            missing_fields.append(field)
+        if field not in qa_data.columns:
+            for row_index in qa_data.index:
+                record_flags.at[row_index].append(
+                    f"Missing column: {field}"
+                )
 
-    return ", ".join(missing_fields)
+        else:
+            add_flag(
+                qa_data[field].isna(),
+                f"Missing {field}",
+            )
+
+    # Check duplicate Name + City combinations
+    if (
+        "Name" in qa_data.columns
+        and "City" in qa_data.columns
+    ):
+        normalized_name = (
+            qa_data["Name"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+
+        normalized_city = (
+            qa_data["City"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+
+        duplicate_keys = pd.DataFrame(
+            {
+                "Name": normalized_name,
+                "City": normalized_city,
+            },
+            index=qa_data.index,
+        )
+
+        duplicate_mask = (
+            normalized_name.ne("")
+            & normalized_city.ne("")
+            & duplicate_keys.duplicated(keep=False)
+        )
+
+        add_flag(
+            duplicate_mask,
+            "Possible duplicate: same Name and City",
+        )
+
+    # Check source URL format
+    if "Source URL" in qa_data.columns:
+        source_urls = (
+            qa_data["Source URL"]
+            .astype("string")
+            .str.strip()
+            .str.lower()
+        )
+
+        invalid_url_mask = (
+            qa_data["Source URL"].notna()
+            & ~source_urls.str.startswith(
+                ("http://", "https://"),
+                na=False,
+            )
+        )
+
+        add_flag(
+            invalid_url_mask,
+            "Invalid Source URL",
+        )
+
+    # Check research dates
+    if "Date Researched" in qa_data.columns:
+        original_dates = qa_data["Date Researched"]
+
+        parsed_dates = pd.to_datetime(
+            original_dates,
+            errors="coerce",
+        )
+
+        invalid_date_mask = (
+            original_dates.notna()
+            & parsed_dates.isna()
+        )
+
+        add_flag(
+            invalid_date_mask,
+            "Invalid Date Researched",
+        )
+
+        today = pd.Timestamp.today().normalize()
+
+        future_date_mask = (
+            parsed_dates.notna()
+            & (parsed_dates > today)
+        )
+
+        add_flag(
+            future_date_mask,
+            "Date Researched is in the future",
+        )
+
+    # Check verification status
+    if "Verification Status" in qa_data.columns:
+        normalized_status = (
+            qa_data["Verification Status"]
+            .astype("string")
+            .str.strip()
+            .str.lower()
+        )
+
+        accepted_statuses = [
+            status.lower()
+            for status in VALID_VERIFICATION_STATUSES
+        ]
+
+        invalid_status_mask = (
+            qa_data["Verification Status"].notna()
+            & ~normalized_status.isin(accepted_statuses)
+        )
+
+        add_flag(
+            invalid_status_mask,
+            "Unrecognized Verification Status",
+        )
+
+    # Create final QA columns
+    qa_data["QA Flag Count"] = record_flags.apply(len)
+
+    qa_data["QA Flags"] = record_flags.apply(
+        lambda flags: "; ".join(flags)
+        if flags
+        else "No issues found"
+    )
+
+    qa_data["QA Status"] = qa_data["QA Flag Count"].apply(
+        lambda count: "Review"
+        if count > 0
+        else "Pass"
+    )
+
+    return qa_data
 
 
 st.title("Datablix")
@@ -126,7 +289,11 @@ if uploaded_file is None:
 
 else:
     try:
-        file_extension = uploaded_file.name.rsplit(".", 1)[-1].lower()
+        file_extension = (
+            uploaded_file.name
+            .rsplit(".", 1)[-1]
+            .lower()
+        )
 
         if file_extension == "csv":
             data = pd.read_csv(uploaded_file)
@@ -139,10 +306,12 @@ else:
 
         data = prepare_data(data)
 
-        st.success(f"{uploaded_file.name} uploaded successfully.")
+        st.success(
+            f"{uploaded_file.name} uploaded successfully."
+        )
 
 
-        # Data preview
+        # Data preview section
         st.subheader("Data preview")
 
         st.write(
@@ -165,7 +334,7 @@ else:
             st.caption("Showing the first 20 rows.")
 
 
-            # Missing-field checks
+            # Missing-column checks
             st.subheader("Missing-field checks")
 
             missing_standard_columns = [
@@ -174,15 +343,9 @@ else:
                 if column not in data.columns
             ]
 
-            missing_required_columns = [
-                column
-                for column in REQUIRED_FIELDS
-                if column not in data.columns
-            ]
-
             if missing_standard_columns:
                 st.warning(
-                    "Some standard Datablix columns are not present: "
+                    "Standard Datablix columns not found: "
                     + ", ".join(missing_standard_columns)
                 )
 
@@ -192,7 +355,7 @@ else:
                 )
 
 
-            # Build required-field summary
+            # Required-field summary
             field_summary = []
 
             for field in REQUIRED_FIELDS:
@@ -206,7 +369,9 @@ else:
                     )
 
                 else:
-                    missing_count = int(data[field].isna().sum())
+                    missing_count = int(
+                        data[field].isna().sum()
+                    )
 
                     if missing_count == 0:
                         status = "Complete"
@@ -221,7 +386,9 @@ else:
                         }
                     )
 
-            field_summary_data = pd.DataFrame(field_summary)
+            field_summary_data = pd.DataFrame(
+                field_summary
+            )
 
             st.write("#### Required-field summary")
 
@@ -232,49 +399,74 @@ else:
             )
 
 
-            # Identify records requiring review
-            review_data = data.copy()
+            # QA checks
+            st.subheader("Quality assurance flags")
 
-            review_data["Missing Required Fields"] = review_data.apply(
-                lambda row: find_missing_fields(
-                    row,
-                    missing_required_columns,
-                ),
-                axis=1,
-            )
+            qa_data = build_qa_flags(data)
 
-            review_data = review_data[
-                review_data["Missing Required Fields"] != ""
+            flagged_records = qa_data[
+                qa_data["QA Status"] == "Review"
             ].copy()
 
-            st.write("#### Records with missing required fields")
+            passed_records = qa_data[
+                qa_data["QA Status"] == "Pass"
+            ].copy()
 
-            if review_data.empty:
+            st.write(
+                f"**Passed records:** {len(passed_records):,}  \n"
+                f"**Records requiring review:** "
+                f"{len(flagged_records):,}"
+            )
+
+            if flagged_records.empty:
                 st.success(
-                    "No missing required fields were found."
+                    "All records passed the current QA checks."
                 )
 
             else:
-                review_data.insert(
+                flagged_records.insert(
                     0,
                     "Data Row",
-                    review_data.index + 1,
+                    flagged_records.index + 1,
                 )
 
                 st.error(
-                    f"{len(review_data):,} record(s) require review."
+                    f"{len(flagged_records):,} record(s) "
+                    "require review."
                 )
 
+                review_columns = [
+                    "Data Row",
+                    "QA Status",
+                    "QA Flag Count",
+                    "QA Flags",
+                ]
+
+                for column in [
+                    "Record ID",
+                    "Name",
+                    "Category",
+                    "City",
+                    "Province",
+                    "Source URL",
+                    "Date Researched",
+                    "Verification Status",
+                ]:
+                    if column in flagged_records.columns:
+                        review_columns.append(column)
+
                 st.dataframe(
-                    review_data,
+                    flagged_records[review_columns],
                     width="stretch",
                     hide_index=True,
                 )
 
-    except Exception:
+    except Exception as error:
         st.error(
             """
             Datablix could not read this file. Check that it is a valid
             CSV or Excel .xlsx file with column headings.
             """
         )
+
+        st.caption(f"Technical detail: {error}")
