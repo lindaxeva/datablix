@@ -1,6 +1,6 @@
 # Datablix 1.0
 
-## Executive Summary
+## Project Overview
 
 Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is reviewed, validated, and organized.
 
@@ -11,8 +11,6 @@ All sample records used in the repository and public demonstration are fictional
 **Live Demo:** [Open Datablix](https://datablix.streamlit.app/)
 
 > Use only fictional, approved, or non-confidential information in the public application.
-
-## Project Overview
 
 | Area | Summary |
 |---|---|
