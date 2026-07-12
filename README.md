@@ -29,6 +29,8 @@ Each demo preserves a stage in the evolution of Datablix.
 | Solution Lead and Developer | Linda Eva Seuna |
 | Inputs | Manual entries, CSV files, and Excel files |
 | Outputs | Updated directory, research log, review queue, passed, unresolved, and verified records |
+| In Scope | Manual research intake; CSV and Excel upload; Researcher and source tracking; Freshness and data-quality checks; Record correction and re-validation; Human verification and reviewer notes; Progress metrics and filters; Downloadable directory and research outputs |
+| Out of Scope | Automated website scraping; Automatic factual verification; User authentication; Permanent database storage; Multi-user collaboration; Formal approval routing; Confidential production data; Full audit history |
 
 ---
 
@@ -57,33 +59,6 @@ Datablix was designed to:
 - Identify missing, duplicate, invalid, or outdated information
 - Support human verification without replacing judgment
 - Produce organized outputs for follow-up and handoff
-
----
-
-## Project Role
-
-| Area | Contribution |
-|---|---|
-| Discovery | Defined the problem, stakeholders, bottlenecks, scope, and desired outcomes |
-| Requirements | Documented business, stakeholder, functional, non-functional, and transition requirements |
-| Process Design | Mapped the current state and designed the future-state workflow |
-| Solution Design | Created the data structure, validation rules, statuses, filters, and outputs |
-| Delivery | Built, tested, documented, deployed, and stabilized the application |
-
----
-
-## Scope
-
-| In Scope | Out of Scope |
-|---|---|
-| Manual research intake | Automated website scraping |
-| CSV and Excel upload | Automatic factual verification |
-| Researcher and source tracking | User authentication |
-| Freshness and data-quality checks | Permanent database storage |
-| Record correction and re-validation | Multi-user collaboration |
-| Human verification and reviewer notes | Formal approval routing |
-| Progress metrics and filters | Confidential production data |
-| Downloadable directory and research outputs | Full audit history |
 
 ---
 
