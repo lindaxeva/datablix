@@ -39,7 +39,7 @@ REQUIRED_FIELDS = [
 ]
 
 
-# Accepted verification values
+# Accepted manual verification values
 VALID_VERIFICATION_STATUSES = [
     "Not Reviewed",
     "Needs Review",
@@ -67,6 +67,31 @@ def prepare_data(dataframe):
     return cleaned_data
 
 
+def dataframe_to_csv_bytes(dataframe):
+    """
+    Convert a DataFrame into downloadable CSV bytes.
+    """
+    return dataframe.to_csv(
+        index=False
+    ).encode("utf-8-sig")
+
+
+def create_safe_filename(filename):
+    """
+    Create a simple filename without spaces or special characters.
+    """
+    base_name = filename.rsplit(".", 1)[0].strip()
+
+    safe_name = "".join(
+        character
+        if character.isalnum() or character in ["-", "_"]
+        else "_"
+        for character in base_name
+    )
+
+    return safe_name or "datablix_directory"
+
+
 def build_qa_flags(dataframe):
     """
     Check every record and create QA flags.
@@ -88,7 +113,7 @@ def build_qa_flags(dataframe):
         for row_index in qa_data.index[safe_mask]:
             record_flags.at[row_index].append(message)
 
-    # Check required columns and required cells
+    # Check required columns and cells
     for field in REQUIRED_FIELDS:
         if field not in qa_data.columns:
             for row_index in qa_data.index:
@@ -230,7 +255,9 @@ def build_qa_flags(dataframe):
         )
     )
 
-    qa_data["QA Status"] = qa_data["QA Flag Count"].apply(
+    qa_data["QA Status"] = qa_data[
+        "QA Flag Count"
+    ].apply(
         lambda count: (
             "Review"
             if count > 0
@@ -239,6 +266,33 @@ def build_qa_flags(dataframe):
     )
 
     return qa_data
+
+
+def add_missing_standard_columns(dataframe):
+    """
+    Add blank standard Datablix columns that were missing.
+    """
+    completed_data = dataframe.copy()
+
+    for column in DATABLIX_COLUMNS:
+        if column not in completed_data.columns:
+            completed_data[column] = pd.NA
+
+    standard_columns = [
+        column
+        for column in DATABLIX_COLUMNS
+        if column in completed_data.columns
+    ]
+
+    additional_columns = [
+        column
+        for column in completed_data.columns
+        if column not in DATABLIX_COLUMNS
+    ]
+
+    return completed_data[
+        standard_columns + additional_columns
+    ]
 
 
 st.title("Datablix")
@@ -275,11 +329,10 @@ template_data = pd.DataFrame(
 
 st.download_button(
     label="Download blank Datablix CSV template",
-    data=template_data.to_csv(
-        index=False
-    ).encode("utf-8"),
+    data=dataframe_to_csv_bytes(template_data),
     file_name="datablix_directory_template.csv",
     mime="text/csv",
+    key="download_blank_template",
 )
 
 
@@ -348,6 +401,21 @@ else:
 
             # Run QA checks
             qa_data = build_qa_flags(data)
+
+            # Add review columns if they were missing
+            if "Verification Status" not in qa_data.columns:
+                qa_data["Verification Status"] = (
+                    "Not Reviewed"
+                )
+
+            if "Reviewer Notes" not in qa_data.columns:
+                qa_data["Reviewer Notes"] = ""
+
+            qa_data["Reviewer Notes"] = (
+                qa_data["Reviewer Notes"]
+                .fillna("")
+                .astype(str)
+            )
 
             flagged_records = qa_data[
                 qa_data["QA Status"] == "Review"
@@ -495,6 +563,9 @@ else:
                 """
             )
 
+            final_data = qa_data.copy()
+            edited_review_queue = pd.DataFrame()
+
             if flagged_records.empty:
                 st.success(
                     "The manual review queue is empty."
@@ -509,16 +580,6 @@ else:
                     review_queue.index + 1,
                 )
 
-                # Add missing review columns when necessary
-                if "Verification Status" not in review_queue.columns:
-                    review_queue["Verification Status"] = (
-                        "Needs Review"
-                    )
-
-                if "Reviewer Notes" not in review_queue.columns:
-                    review_queue["Reviewer Notes"] = ""
-
-                # Standardize verification status values
                 status_map = {
                     status.lower(): status
                     for status in VALID_VERIFICATION_STATUSES
@@ -593,12 +654,14 @@ else:
                         "Verification Status":
                             st.column_config.SelectboxColumn(
                                 "Verification Status",
-                                options=VALID_VERIFICATION_STATUSES,
+                                options=(
+                                    VALID_VERIFICATION_STATUSES
+                                ),
                                 required=True,
                                 width="medium",
                                 help=(
-                                    "Select the current review status "
-                                    "for this record."
+                                    "Select the current review "
+                                    "status for this record."
                                 ),
                             ),
                         "Reviewer Notes":
@@ -607,13 +670,28 @@ else:
                                 width="large",
                                 max_chars=500,
                                 help=(
-                                    "Add corrections, questions, or "
-                                    "verification notes."
+                                    "Add corrections, questions, "
+                                    "or verification notes."
                                 ),
                             ),
                     },
                     key="manual_review_queue",
                 )
+
+                # Copy review edits back into the full directory
+                final_data.loc[
+                    edited_review_queue.index,
+                    "Verification Status",
+                ] = edited_review_queue[
+                    "Verification Status"
+                ]
+
+                final_data.loc[
+                    edited_review_queue.index,
+                    "Reviewer Notes",
+                ] = edited_review_queue[
+                    "Reviewer Notes"
+                ]
 
                 verified_in_queue = int(
                     (
@@ -640,12 +718,106 @@ else:
                     f"{remaining_in_queue:,}"
                 )
 
-                st.info(
-                    """
-                    Your edits currently remain inside the app session.
-                    The next step will add downloadable reviewed CSV files.
-                    """
+
+            # Prepare downloadable files
+            final_data = add_missing_standard_columns(
+                final_data
+            )
+
+            passed_download = final_data[
+                final_data["QA Status"] == "Pass"
+            ].copy()
+
+            safe_filename = create_safe_filename(
+                uploaded_file.name
+            )
+
+
+            # Download section
+            st.subheader("Download results")
+
+            st.write(
+                """
+                Download the complete review-ready directory or separate
+                QA result files.
+                """
+            )
+
+            (
+                full_download_column,
+                queue_download_column,
+                passed_download_column,
+            ) = st.columns(3)
+
+            with full_download_column:
+                st.download_button(
+                    label="Download complete directory",
+                    data=dataframe_to_csv_bytes(
+                        final_data
+                    ),
+                    file_name=(
+                        f"{safe_filename}"
+                        "_review_ready.csv"
+                    ),
+                    mime="text/csv",
+                    key="download_complete_directory",
                 )
+
+            with queue_download_column:
+                if edited_review_queue.empty:
+                    st.download_button(
+                        label="Download review queue",
+                        data=dataframe_to_csv_bytes(
+                            edited_review_queue
+                        ),
+                        file_name=(
+                            f"{safe_filename}"
+                            "_review_queue.csv"
+                        ),
+                        mime="text/csv",
+                        disabled=True,
+                        key="download_empty_review_queue",
+                    )
+
+                    st.caption(
+                        "No flagged records to download."
+                    )
+
+                else:
+                    st.download_button(
+                        label="Download review queue",
+                        data=dataframe_to_csv_bytes(
+                            edited_review_queue
+                        ),
+                        file_name=(
+                            f"{safe_filename}"
+                            "_review_queue.csv"
+                        ),
+                        mime="text/csv",
+                        key="download_review_queue",
+                    )
+
+            with passed_download_column:
+                st.download_button(
+                    label="Download passed records",
+                    data=dataframe_to_csv_bytes(
+                        passed_download
+                    ),
+                    file_name=(
+                        f"{safe_filename}"
+                        "_passed_records.csv"
+                    ),
+                    mime="text/csv",
+                    key="download_passed_records",
+                )
+
+            st.info(
+                """
+                The complete directory includes the automated QA results
+                and any verification status or reviewer-note edits made
+                during this app session.
+                """
+            )
 
     except Exception as error:
         st.error(
