@@ -1,9 +1,9 @@
 # Datablix 1.0 
 
-Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is reviewed and organized.
+Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is reviewed and organized without replacing research or human judgment..
 
-It's a human-in-the-loop tool that identifies missing fields, possible duplicates, invalid source links, and questionable research dates while keeping reviewer decisions and notes connected to each record. 
-
+It's a human-in-the-loop tool that identifies missing fields, possible duplicates, invalid source links, and questionable research dates while keeping reviewer decisions and notes connected to each record.  
+ 
 **Live Demo:** [Open Datablix 1.0](https://datablix.streamlit.app/)
 
 ## Project Snapshot
@@ -17,6 +17,8 @@ It's a human-in-the-loop tool that identifies missing fields, possible duplicate
 | Solution Lead and Developer | Linda Eva Seuna |
 | Inputs | CSV and Excel files |
 | Outputs | Complete directory, review queue, and passed-record file |
+| In Scope | CSV and Excel upload; Data preview and quality metrics;  Missing-field, duplicate, URL, and date checks;  Manual verification and reviewer notes; Downloadable outputs |
+| Out of Scope | CSV and Excel upload; Data preview and quality metrics;  Missing-field, duplicate, URL, and date checks;  Manual verification and reviewer notes; Downloadable outputs |
 
 ---
 
@@ -43,20 +45,6 @@ The solution will help:
 - Preserve source and review information
 - Support human verification
 - Produce organized outputs for follow-up
-  
----
-
-## Scope
-
-| In Scope | Out of Scope |
-|---|---|
-| CSV and Excel upload | Automated website scraping |
-| Data preview and quality metrics | Automatic confirmation of factual accuracy |
-| Missing-field, duplicate, URL, and date checks | Permanent database storage |
-| Manual verification and reviewer notes | Multi-user approval workflows |
-| Downloadable outputs | Confidential production data |
-
-The scope focused on improving spreadsheet review without replacing research or human judgment.
 
 ---
 
