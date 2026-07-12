@@ -1,8 +1,8 @@
-# Datablix — Data Quality and Verification Assistant
+# Datablix 1.0
 
-## Executive Summary
+## Project Overview
 
-Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is reviewed, validated, and organized.
+Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is reviewed and organized.
 
 The tool identifies missing fields, possible duplicates, invalid source links, and questionable research dates while keeping reviewer decisions and notes connected to each record. It supports human judgment rather than replacing it.
 
@@ -20,9 +20,10 @@ All public samples are fictional or generalized. No confidential project informa
 | Primary Challenge | Manual spreadsheet review was repetitive and difficult to track |
 | Users | Researchers, reviewers, project coordinators, and directory administrators |
 | Solution | Human-in-the-loop data-quality and verification application |
+| Solution Lead and Developer | Linda Eva Seuna
 | Inputs | CSV and Excel files |
 | Outputs | Complete directory, review queue, and passed records |
-| Role | Project Lead and Developer |
+
 
 ---
 
@@ -47,17 +48,6 @@ All public samples are fictional or generalized. No confidential project informa
 - Preserve source and review information
 - Support human verification
 - Produce organized outputs for follow-up
-
----
-
-## Project Role
-
-| Area | Contribution |
-|---|---|
-| Discovery | Defined the problem, users, bottlenecks, scope, and desired outcomes |
-| Requirements | Documented data-quality, usability, privacy, and export needs |
-| Design | Created the data structure, validation rules, and review workflow |
-| Delivery | Built, tested, documented, deployed, and stabilized the application |
 
 ---
 
@@ -164,4 +154,4 @@ Python · pandas · Streamlit · CSV · Excel · GitHub · Streamlit Community C
 
 Use only fictional, approved, or non-confidential information.
 
-Do not upload confidential user information or private project files to the public application.
+Do not upload confidential stakeholder information or private project files to the public application.
