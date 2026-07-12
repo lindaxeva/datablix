@@ -8,7 +8,7 @@ The tool helps identify missing fields, possible duplicates, source issues, and 
 
 All sample records used in the repository and public demonstration are fictional or generalized. No confidential project information, private communications, or proprietary data is included.
 
-**Live Demo:** [Open Datablix](https://datablix.streamlit.app/)
+**Live Demo:** [Open Datablix 1.0](https://datablix.streamlit.app/)
 
 > Use only fictional, approved, or non-confidential information in the public application.
 
