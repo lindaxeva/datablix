@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 
-# All standard Datablix directory columns
+# Standard Datablix directory columns
 DATABLIX_COLUMNS = [
     "Record ID",
     "Name",
@@ -69,7 +69,7 @@ def prepare_data(dataframe):
 
 def build_qa_flags(dataframe):
     """
-    Check each record and create QA flags.
+    Check every record and create QA flags.
     """
     qa_data = dataframe.copy()
 
@@ -81,7 +81,7 @@ def build_qa_flags(dataframe):
 
     def add_flag(mask, message):
         """
-        Add one flag message to every matching record.
+        Add a flag message to records matching a condition.
         """
         safe_mask = mask.fillna(False)
 
@@ -102,7 +102,7 @@ def build_qa_flags(dataframe):
                 f"Missing {field}",
             )
 
-    # Check duplicate Name + City combinations
+    # Check duplicate Name and City combinations
     if (
         "Name" in qa_data.columns
         and "City" in qa_data.columns
@@ -321,7 +321,7 @@ else:
         )
 
 
-        # Data preview section
+        # Data preview
         st.subheader("Data preview")
 
         st.write(
@@ -360,9 +360,7 @@ else:
 
             # Calculate KPI values
             total_records = len(qa_data)
-
             passed_count = len(passed_records)
-
             review_count = len(flagged_records)
 
             total_qa_flags = int(
@@ -376,7 +374,7 @@ else:
             )
 
 
-            # KPI card section
+            # KPI cards
             st.subheader("Quality overview")
 
             (
@@ -487,29 +485,65 @@ else:
             )
 
 
-            # QA results section
-            st.subheader(
-                "Quality assurance flags"
+            # Manual review queue
+            st.subheader("Manual review queue")
+
+            st.write(
+                """
+                Review the flagged records below. Update the verification
+                status and add reviewer notes where needed.
+                """
             )
 
             if flagged_records.empty:
                 st.success(
-                    "All records passed the current QA checks."
+                    "The manual review queue is empty."
                 )
 
             else:
-                flagged_records.insert(
+                review_queue = flagged_records.copy()
+
+                review_queue.insert(
                     0,
                     "Data Row",
-                    flagged_records.index + 1,
+                    review_queue.index + 1,
                 )
 
-                st.error(
-                    f"{len(flagged_records):,} record(s) "
-                    "require review."
+                # Add missing review columns when necessary
+                if "Verification Status" not in review_queue.columns:
+                    review_queue["Verification Status"] = (
+                        "Needs Review"
+                    )
+
+                if "Reviewer Notes" not in review_queue.columns:
+                    review_queue["Reviewer Notes"] = ""
+
+                # Standardize verification status values
+                status_map = {
+                    status.lower(): status
+                    for status in VALID_VERIFICATION_STATUSES
+                }
+
+                normalized_queue_status = (
+                    review_queue["Verification Status"]
+                    .astype("string")
+                    .str.strip()
+                    .str.lower()
                 )
 
-                review_columns = [
+                review_queue["Verification Status"] = (
+                    normalized_queue_status
+                    .map(status_map)
+                    .fillna("Needs Review")
+                )
+
+                review_queue["Reviewer Notes"] = (
+                    review_queue["Reviewer Notes"]
+                    .fillna("")
+                    .astype(str)
+                )
+
+                queue_columns = [
                     "Data Row",
                     "QA Status",
                     "QA Flag Count",
@@ -520,21 +554,97 @@ else:
                     "Record ID",
                     "Name",
                     "Category",
+                    "Address",
                     "City",
                     "Province",
+                    "Postal Code",
+                    "Phone",
+                    "Email",
+                    "Website",
                     "Source URL",
                     "Date Researched",
-                    "Verification Status",
                 ]:
-                    if column in flagged_records.columns:
-                        review_columns.append(column)
+                    if column in review_queue.columns:
+                        queue_columns.append(column)
 
-                st.dataframe(
-                    flagged_records[
-                        review_columns
-                    ],
+                queue_columns.extend(
+                    [
+                        "Verification Status",
+                        "Reviewer Notes",
+                    ]
+                )
+
+                locked_columns = [
+                    column
+                    for column in queue_columns
+                    if column not in [
+                        "Verification Status",
+                        "Reviewer Notes",
+                    ]
+                ]
+
+                edited_review_queue = st.data_editor(
+                    review_queue[queue_columns],
                     width="stretch",
                     hide_index=True,
+                    num_rows="fixed",
+                    disabled=locked_columns,
+                    column_config={
+                        "Verification Status":
+                            st.column_config.SelectboxColumn(
+                                "Verification Status",
+                                options=VALID_VERIFICATION_STATUSES,
+                                required=True,
+                                width="medium",
+                                help=(
+                                    "Select the current review status "
+                                    "for this record."
+                                ),
+                            ),
+                        "Reviewer Notes":
+                            st.column_config.TextColumn(
+                                "Reviewer Notes",
+                                width="large",
+                                max_chars=500,
+                                help=(
+                                    "Add corrections, questions, or "
+                                    "verification notes."
+                                ),
+                            ),
+                    },
+                    key="manual_review_queue",
+                )
+
+                verified_in_queue = int(
+                    (
+                        edited_review_queue[
+                            "Verification Status"
+                        ]
+                        == "Verified"
+                    ).sum()
+                )
+
+                remaining_in_queue = int(
+                    (
+                        edited_review_queue[
+                            "Verification Status"
+                        ]
+                        != "Verified"
+                    ).sum()
+                )
+
+                st.write(
+                    f"**Marked verified:** "
+                    f"{verified_in_queue:,}  \n"
+                    f"**Still awaiting verification:** "
+                    f"{remaining_in_queue:,}"
+                )
+
+                st.info(
+                    """
+                    Your edits currently remain inside the app session.
+                    The next step will add downloadable reviewed CSV files.
+                    """
                 )
 
     except Exception as error:
