@@ -57,10 +57,10 @@ VALID_VERIFICATION_STATUSES = [
 
 def render_brand_header():
     """
-    Display a centered, responsive Datablix logo and introduction.
+    Display a centered and compact Datablix brand header.
 
-    The app prefers an SVG logo when available because SVG files
-    remain sharp at different sizes. Otherwise, it uses the PNG file.
+    The app uses an SVG logo when available because SVG remains sharp
+    at different screen sizes. Otherwise, it uses the current PNG logo.
     """
     svg_logo = Path("datablix_logo.svg")
     png_logo = Path("datablix_logo.png")
@@ -68,19 +68,19 @@ def render_brand_header():
     if svg_logo.exists():
         logo_path = svg_logo
         mime_type = "image/svg+xml"
+        logo_class = "datablix-brand-logo"
 
     elif png_logo.exists():
         logo_path = png_logo
         mime_type = "image/png"
+        logo_class = "datablix-brand-logo padded-png"
 
     else:
         st.title("Datablix")
         st.subheader("Data Quality and Verification Assistant")
         st.write(
-            """
-            Turn a research spreadsheet into a structured,
-            review-ready directory.
-            """
+            "Turn a research spreadsheet into a structured, "
+            "review-ready directory."
         )
         return
 
@@ -88,7 +88,7 @@ def render_brand_header():
         logo_path.read_bytes()
     ).decode("utf-8")
 
-    st.markdown(
+    st.html(
         f"""
         <style>
             .datablix-brand {{
@@ -96,26 +96,44 @@ def render_brand_header():
                 flex-direction: column;
                 align-items: center;
                 justify-content: center;
-                text-align: center;
                 width: 100%;
-                padding-top: 0.25rem;
-                padding-bottom: 1.25rem;
+                text-align: center;
+                margin-top: -1.5rem;
+                margin-bottom: 1.4rem;
+            }}
+
+            .datablix-logo-window {{
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: min(720px, 94vw);
+                height: 135px;
+                margin: 0 auto 0.3rem auto;
+                overflow: hidden;
             }}
 
             .datablix-brand-logo {{
                 display: block;
-                width: clamp(240px, 34vw, 390px);
+                width: 370px;
                 max-width: 88vw;
                 height: auto;
-                object-fit: contain;
                 margin: 0 auto;
-                padding: 0;
+                object-fit: contain;
+            }}
+
+            /*
+            The current PNG has a large empty canvas.
+            Enlarging it inside a short, hidden-overflow window
+            displays the visible logo without the surrounding space.
+            */
+            .datablix-brand-logo.padded-png {{
+                width: 720px;
+                max-width: none;
             }}
 
             .datablix-brand-subtitle {{
-                margin-top: 0.45rem;
-                margin-bottom: 0.25rem;
-                font-size: clamp(1.25rem, 2vw, 1.65rem);
+                margin: 0.35rem auto 0.3rem auto;
+                font-size: clamp(1.3rem, 2vw, 1.7rem);
                 font-weight: 650;
                 line-height: 1.25;
             }}
@@ -124,38 +142,49 @@ def render_brand_header():
                 max-width: 680px;
                 margin: 0 auto;
                 font-size: 1.05rem;
-                line-height: 1.55;
-                opacity: 0.82;
+                line-height: 1.5;
+                opacity: 0.78;
             }}
 
             @media (max-width: 600px) {{
                 .datablix-brand {{
-                    padding-top: 0;
-                    padding-bottom: 1rem;
+                    margin-top: -0.8rem;
+                    margin-bottom: 1rem;
+                }}
+
+                .datablix-logo-window {{
+                    width: 94vw;
+                    height: 100px;
                 }}
 
                 .datablix-brand-logo {{
-                    width: min(290px, 86vw);
+                    width: 285px;
+                }}
+
+                .datablix-brand-logo.padded-png {{
+                    width: 550px;
                 }}
 
                 .datablix-brand-subtitle {{
-                    font-size: 1.25rem;
+                    font-size: 1.2rem;
                 }}
 
                 .datablix-brand-description {{
-                    font-size: 0.98rem;
-                    padding-left: 0.5rem;
-                    padding-right: 0.5rem;
+                    padding-left: 0.75rem;
+                    padding-right: 0.75rem;
+                    font-size: 0.96rem;
                 }}
             }}
         </style>
 
         <div class="datablix-brand">
-            <img
-                class="datablix-brand-logo"
-                src="data:{mime_type};base64,{encoded_logo}"
-                alt="Datablix logo"
-            >
+            <div class="datablix-logo-window">
+                <img
+                    class="{logo_class}"
+                    src="data:{mime_type};base64,{encoded_logo}"
+                    alt="Datablix logo"
+                >
+            </div>
 
             <div class="datablix-brand-subtitle">
                 Data Quality and Verification Assistant
@@ -166,8 +195,7 @@ def render_brand_header():
                 review-ready directory.
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -291,7 +319,7 @@ def build_qa_flags(dataframe):
             "Possible duplicate: same Name and City",
         )
 
-    # Check source URL format
+    # Check Source URL format
     if "Source URL" in qa_data.columns:
         source_urls = (
             qa_data["Source URL"]
