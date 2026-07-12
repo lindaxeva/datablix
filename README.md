@@ -21,6 +21,7 @@ All sample records used in the repository and public demonstration are fictional
 | Primary Users | Researchers, reviewers, project coordinators, and directory administrators |
 | Inputs | CSV or Excel research spreadsheets |
 | Outputs | Complete directory, review queue, passed records, and documented reviewer decisions |
+| Solution Lead | Linda Eva Seuna |
 
 ---
 
