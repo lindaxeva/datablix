@@ -877,7 +877,7 @@ with st.expander("How to use Datablix", expanded=True):
 st.warning(
     """
     Privacy reminder: Use fictional or approved data only.
-    Do not upload confidential user information to this public app.
+    Do not upload confidential stakeholder information to this public app.
     """
 )
 
