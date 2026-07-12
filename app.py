@@ -9,7 +9,7 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="Datablix Version 3",
+    page_title="Datablix",
     page_icon="✅",
     layout="wide",
 )
@@ -95,7 +95,7 @@ SESSION_QA_RUN_COUNT = "datablix_qa_run_count"
 
 
 def render_brand_header():
-    """Display the Datablix logo, purpose, and current version."""
+    """Display the Datablix logo and purpose."""
     svg_logo = Path("datablix_logo.svg")
     png_logo = Path("datablix_logo.png")
 
@@ -116,14 +116,13 @@ def render_brand_header():
             "Build research records, track sources, correct data-quality "
             "issues, and export a review-ready directory."
         )
-        st.caption("Version 3 — Research and Source Tracking Assistant")
         return
 
     encoded_logo = base64.b64encode(
         logo_path.read_bytes()
     ).decode("utf-8")
 
-    st.html(
+    st.markdown(
         f"""
         <style>
             .datablix-brand {{
@@ -176,17 +175,6 @@ def render_brand_header():
                 opacity: 0.78;
             }}
 
-            .datablix-version-badge {{
-                display: inline-block;
-                margin-top: 0.65rem;
-                padding: 0.28rem 0.7rem;
-                border: 1px solid rgba(49, 51, 63, 0.18);
-                border-radius: 999px;
-                font-size: 0.84rem;
-                font-weight: 600;
-                opacity: 0.78;
-            }}
-
             @media (max-width: 600px) {{
                 .datablix-brand {{
                     margin-top: -0.8rem;
@@ -236,11 +224,9 @@ def render_brand_header():
                 data-quality issues, and export a review-ready directory.
             </div>
 
-            <div class="datablix-version-badge">
-                Version 3 — Research and Source Tracking Assistant
-            </div>
         </div>
-        """
+        """,
+        unsafe_allow_html=True,
     )
 
 
@@ -845,6 +831,14 @@ def percentage(count, total):
     return count / total * 100
 
 
+def rerun_app():
+    """Re-run the app across older and newer Streamlit releases."""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 # ---------------------------------------------------------
 # Welcome section
 # ---------------------------------------------------------
@@ -900,7 +894,7 @@ template_data = pd.DataFrame(columns=DATABLIX_COLUMNS)
 st.download_button(
     label="Download blank CSV template",
     data=dataframe_to_csv_bytes(template_data),
-    file_name="datablix_version3_template.csv",
+    file_name="datablix_template.csv",
     mime="text/csv",
     key="download_blank_template",
 )
@@ -950,7 +944,7 @@ try:
         initialize_uploaded_data(uploaded_file)
     elif start_blank:
         initialize_blank_workspace()
-        st.rerun()
+        rerun_app()
 except Exception as error:
     st.error(
         "Datablix could not read this file. Confirm that it is a valid "
@@ -993,7 +987,7 @@ st.write(
 working_data = st.session_state[SESSION_WORKING_DATA].copy()
 suggested_record_id = generate_record_id(working_data)
 
-with st.form("version_3_manual_research_form", clear_on_submit=True):
+with st.form("manual_research_form", clear_on_submit=True):
     identity_column, location_column, contact_column = st.columns(3)
 
     with identity_column:
@@ -1126,7 +1120,7 @@ if add_record_button:
         "Reviewer Notes": reviewer_notes,
     }
     add_manual_record(new_record)
-    st.rerun()
+    rerun_app()
 
 st.caption(
     "Fields marked * are required for QA. Datablix still accepts an "
@@ -1164,7 +1158,7 @@ with reset_column:
         use_container_width=True,
     ):
         reset_working_data()
-        st.rerun()
+        rerun_app()
 
 if data.empty:
     st.info(
@@ -1175,7 +1169,7 @@ if data.empty:
 
 st.dataframe(
     data.head(20),
-    width="stretch",
+    use_container_width=True,
     hide_index=True,
 )
 
@@ -1282,7 +1276,7 @@ with stale_source_card:
 research_log_preview = create_research_log(qa_data)
 st.dataframe(
     research_log_preview,
-    width="stretch",
+    use_container_width=True,
     hide_index=True,
 )
 
@@ -1405,7 +1399,7 @@ for field in REQUIRED_FIELDS:
 
 st.dataframe(
     pd.DataFrame(field_summary),
-    width="stretch",
+    use_container_width=True,
     hide_index=True,
 )
 
@@ -1525,7 +1519,7 @@ if filtered_records.empty:
 else:
     st.dataframe(
         filtered_records[inspection_columns],
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -1601,13 +1595,13 @@ else:
         editor_state_text.encode("utf-8")
     ).hexdigest()[:12]
     editor_key = (
-        "version_3_record_editor_"
+        "record_editor_"
         f"{qa_run_count}_{editor_state_hash}"
     )
 
     edited_queue = st.data_editor(
         edit_queue[queue_columns],
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
         num_rows="fixed",
         disabled=locked_columns,
@@ -1668,7 +1662,7 @@ else:
 
     if apply_changes:
         apply_editor_changes(edited_queue, editable_columns)
-        st.rerun()
+        rerun_app()
 
 
 # ---------------------------------------------------------
