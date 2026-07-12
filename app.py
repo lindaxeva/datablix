@@ -9,6 +9,25 @@ st.set_page_config(
 )
 
 
+# Standard Datablix directory columns
+DATABLIX_COLUMNS = [
+    "Record ID",
+    "Name",
+    "Category",
+    "Address",
+    "City",
+    "Province",
+    "Postal Code",
+    "Phone",
+    "Email",
+    "Website",
+    "Source URL",
+    "Date Researched",
+    "Verification Status",
+    "Reviewer Notes",
+]
+
+
 st.title("Datablix")
 st.subheader("Data Quality and Verification Assistant")
 
@@ -24,6 +43,25 @@ st.warning(
     Privacy reminder: Use only fictional sample data while building and
     testing Datablix. Do not upload confidential stakeholder information.
     """
+)
+
+
+st.header("Datablix directory template")
+
+st.write(
+    """
+    Research directories should use the standard Datablix columns.
+    Download the blank CSV template before beginning your research.
+    """
+)
+
+template_data = pd.DataFrame(columns=DATABLIX_COLUMNS)
+
+st.download_button(
+    label="Download blank Datablix CSV template",
+    data=template_data.to_csv(index=False).encode("utf-8"),
+    file_name="datablix_directory_template.csv",
+    mime="text/csv",
 )
 
 
@@ -72,7 +110,7 @@ else:
 
             st.caption("Showing the first 20 rows.")
 
-    except Exception:
+    except Exception as error:
         st.error(
             """
             Datablix could not read this file. Check that it is a valid
