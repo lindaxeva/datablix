@@ -77,10 +77,9 @@ def render_brand_header():
 
     else:
         st.title("Datablix")
-        st.subheader("Data Quality and Verification Assistant")
         st.write(
-            "Turn a research spreadsheet into a structured, "
-            "review-ready directory."
+            "Turn your raw research data into a structured, "
+            "trackable, and review-ready directory."
         )
         return
 
