@@ -1,4 +1,4 @@
-# Datablix
+# Datablix 1.0
 
 Datablix is a data quality and verification assistant for research-based directory projects.
 
