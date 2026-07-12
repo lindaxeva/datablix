@@ -165,4 +165,4 @@ Python · pandas · Streamlit · CSV · Excel · GitHub · Streamlit Community C
 
 Use only fictional, approved, or non-confidential information.
 
-Do not upload confidential stakeholder information, private communications, employer-provided files, or unapproved research records to the public application or repository.
+Do not upload confidential user information, private communications, employer-provided files, or unapproved research records to the public application or repository.
