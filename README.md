@@ -33,13 +33,13 @@ As the number of records increased, several process bottlenecks became more visi
 
 | Bottleneck | Impact |
 |---|---|
-| Row-by-row manual review | Increased the time required to assess the directory |
-| Inconsistent validation | Different reviewers could apply different standards |
-| Missing required information | Incomplete records could move forward |
-| Possible duplicate entries | Reduced confidence in the accuracy of the directory |
-| Incomplete or invalid source links | Made information more difficult to trace |
-| Disconnected reviewer notes | Reduced visibility into decisions and follow-up actions |
-| No consolidated quality overview | Project progress was difficult to assess quickly |
+| Row-by-row manual review | Time requirement increase to assess the directory |
+| Inconsistent validation | Application of non-uniform standards by different reviewers |
+| Missing required information | Forward movement of incomplete records |
+| Possible duplicate entries | More doubts about the accuracy of the directory |
+| Incomplete or invalid source links | More difficulties in tracing information |
+| Disconnected reviewer notes | Lack of visibility into decisions and follow-up actions |
+| No consolidated quality overview | Difficulty to quickly assess project progress |
 
 ---
 
@@ -57,9 +57,9 @@ As the number of records increased, several process bottlenecks became more visi
 
 ---
 
-## Stakeholders and User Needs
+## User Needs
 
-| Stakeholder | Primary Need |
+| Target Users | Primary Need |
 |---|---|
 | Researcher | Record information consistently and preserve the supporting source |
 | Data Reviewer | Understand why a record was flagged and document a decision |
