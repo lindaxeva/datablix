@@ -94,12 +94,11 @@ def render_brand_header():
 
     else:
         st.title("Datablix")
-        st.subheader("Data Quality and Verification Assistant")
         st.write(
-            "Turn a research spreadsheet into a structured, "
-            "review-ready directory."
+            "Turn your raw research data into a structured, "
+            "trackable, and review-ready directory."
         )
-        st.caption("Version 2 — Verification Assistant")
+        st.caption("Version 2")
         return
 
     encoded_logo = base64.b64encode(
@@ -215,17 +214,13 @@ def render_brand_header():
                 >
             </div>
 
-            <div class="datablix-brand-subtitle">
-                Data Quality and Verification Assistant
-            </div>
-
             <div class="datablix-brand-description">
-                Turn your research spreadsheet into a structured,
+                Turn your raw research data into a structured, trackable, and
                 review-ready directory.
             </div>
 
             <div class="datablix-version-badge">
-                Version 2 — Verification Assistant
+                Version 2
             </div>
         </div>
         """
