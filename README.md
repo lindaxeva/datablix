@@ -1,4 +1,4 @@
-# Datablix — Data Quality and Verification Assistant
+# Datablix 1.0
 
 Datablix is a web application that helps users review research spreadsheets, identify data-quality issues, document verification decisions, and export organized results.
 
