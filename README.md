@@ -25,6 +25,7 @@ Each demo preserves a stage in the evolution of Datablix.
 | Business Need | Prepare publicly sourced directory information for consistent review and follow-up |
 | Primary Challenge | Repetitive spreadsheet-based research, difficulty to monitor, and dependency on manual checks |
 | Users | Researchers, reviewers, project coordinators, directory administrators, and the project sponsor |
+| Organization | Coyle Media Group x Riipen |
 | Solution | Human-in-the-loop research data quality, source tracking, and verification assistant |
 | Solution Lead and Developer | Linda Eva Seuna |
 | Inputs | Manual entries, CSV files, and Excel files |
