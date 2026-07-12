@@ -295,31 +295,52 @@ def add_missing_standard_columns(dataframe):
     ]
 
 
-st.title("Datablix")
+# App welcome section
+st.image(
+    "datablix_logo.png",
+    width=320,
+)
+
 st.subheader("Data Quality and Verification Assistant")
 
 st.write(
     """
-    Datablix transforms research spreadsheets into structured,
-    review-ready directories.
+    Turn a research spreadsheet into a structured,
+    review-ready directory.
     """
 )
+
+with st.expander(
+    "How to use Datablix",
+    expanded=True,
+):
+    st.markdown(
+        """
+        **1. Prepare** — Use the Datablix template or your own spreadsheet.
+
+        **2. Upload** — Add one CSV or Excel file for automated checks.
+
+        **3. Review** — Examine flagged records and record your decision.
+
+        **4. Download** — Export your updated directory and QA results.
+        """
+    )
 
 st.warning(
     """
-    Privacy reminder: Use only fictional sample data while building and
-    testing Datablix. Do not upload confidential stakeholder information.
+    Privacy reminder: Use fictional or approved data only.
+    Do not upload confidential stakeholder information to this public app.
     """
 )
 
 
-# Blank template section
-st.header("Datablix directory template")
+# Template section
+st.header("1. Prepare your file")
 
 st.write(
     """
-    Research directories should use the standard Datablix columns.
-    Download the blank CSV template before beginning your research.
+    Starting a new directory? Download the blank Datablix template.
+    Already have a spreadsheet? Continue to the upload section.
     """
 )
 
@@ -328,26 +349,46 @@ template_data = pd.DataFrame(
 )
 
 st.download_button(
-    label="Download blank Datablix CSV template",
+    label="Download blank CSV template",
     data=dataframe_to_csv_bytes(template_data),
     file_name="datablix_directory_template.csv",
     mime="text/csv",
     key="download_blank_template",
 )
 
+st.caption(
+    """
+    Your spreadsheet should have column headings in the first row.
+    Datablix will identify standard columns that are missing.
+    """
+)
+
 
 # File upload section
-st.header("Upload research data")
+st.header("2. Upload your research data")
+
+st.write(
+    """
+    Upload one CSV or Excel file. Datablix will preview the file
+    before running its quality checks.
+    """
+)
 
 uploaded_file = st.file_uploader(
-    "Choose a CSV or Excel file",
+    "Choose your research spreadsheet",
     type=["csv", "xlsx"],
+    help=(
+        "Accepted formats: CSV and Excel .xlsx. "
+        "Use fictional or approved data only."
+    ),
 )
 
 
 if uploaded_file is None:
     st.info(
-        "Upload a fictional CSV or Excel file to begin."
+        """
+        No file uploaded yet. Choose a CSV or Excel file above to begin.
+        """
     )
 
 else:
@@ -375,7 +416,14 @@ else:
 
 
         # Data preview
-        st.subheader("Data preview")
+        st.header("3. Confirm the data preview")
+
+        st.write(
+            """
+            Check that the column headings, row count, and sample
+            records look correct before reviewing the results.
+            """
+        )
 
         st.write(
             f"Rows: **{len(data):,}** | "
@@ -384,7 +432,10 @@ else:
 
         if data.empty:
             st.warning(
-                "The uploaded file does not contain any data rows."
+                """
+                This file has column headings but does not contain
+                any data records.
+                """
             )
 
         else:
@@ -394,9 +445,18 @@ else:
                 hide_index=True,
             )
 
-            st.caption(
-                "Showing the first 20 rows."
-            )
+            if len(data) > 20:
+                st.caption(
+                    """
+                    Showing the first 20 records.
+                    All uploaded records will still be checked.
+                    """
+                )
+
+            else:
+                st.caption(
+                    "Showing all uploaded records."
+                )
 
 
             # Run QA checks
@@ -443,7 +503,15 @@ else:
 
 
             # KPI cards
-            st.subheader("Quality overview")
+            st.header("4. Review the quality overview")
+
+            st.write(
+                """
+                These results summarize the automated checks.
+                A flagged record needs human review—it is not
+                automatically incorrect.
+                """
+            )
 
             (
                 total_card,
@@ -457,35 +525,58 @@ else:
                 st.metric(
                     label="Total Records",
                     value=f"{total_records:,}",
+                    help="All records in the uploaded file.",
                 )
 
             with passed_card:
                 st.metric(
                     label="Passed",
                     value=f"{passed_count:,}",
+                    help=(
+                        "Records with no issues found by "
+                        "the current automated checks."
+                    ),
                 )
 
             with review_card:
                 st.metric(
                     label="Needs Review",
                     value=f"{review_count:,}",
+                    help=(
+                        "Records with one or more QA flags."
+                    ),
                 )
 
             with flags_card:
                 st.metric(
                     label="Total QA Flags",
                     value=f"{total_qa_flags:,}",
+                    help=(
+                        "The total number of issues found. "
+                        "One record can have several flags."
+                    ),
                 )
 
             with rate_card:
                 st.metric(
                     label="QA Pass Rate",
                     value=f"{pass_rate:.1f}%",
+                    help=(
+                        "The percentage of uploaded records "
+                        "with no automated QA flags."
+                    ),
                 )
 
 
             # Missing-column checks
-            st.subheader("Missing-field checks")
+            st.header("5. Check missing fields")
+
+            st.write(
+                """
+                Confirm whether the expected Datablix columns
+                and required research fields are complete.
+                """
+            )
 
             missing_standard_columns = [
                 column
@@ -495,10 +586,17 @@ else:
 
             if missing_standard_columns:
                 st.warning(
-                    "Standard Datablix columns not found: "
+                    "Standard columns not found: "
                     + ", ".join(
                         missing_standard_columns
                     )
+                )
+
+                st.caption(
+                    """
+                    Missing standard columns will be added as blank
+                    columns to the complete downloadable directory.
+                    """
                 )
 
             else:
@@ -554,12 +652,13 @@ else:
 
 
             # Manual review queue
-            st.subheader("Manual review queue")
+            st.header("6. Resolve the manual review queue")
 
             st.write(
                 """
-                Review the flagged records below. Update the verification
-                status and add reviewer notes where needed.
+                Review each flagged record. Select its verification
+                status and use Reviewer Notes to record your decision,
+                correction, or follow-up question.
                 """
             )
 
@@ -568,10 +667,20 @@ else:
 
             if flagged_records.empty:
                 st.success(
-                    "The manual review queue is empty."
+                    """
+                    No records require manual review.
+                    You can continue to the download section.
+                    """
                 )
 
             else:
+                st.info(
+                    """
+                    Only Verification Status and Reviewer Notes
+                    can be edited in this Version 1 queue.
+                    """
+                )
+
                 review_queue = flagged_records.copy()
 
                 review_queue.insert(
@@ -660,8 +769,9 @@ else:
                                 required=True,
                                 width="medium",
                                 help=(
-                                    "Select the current review "
-                                    "status for this record."
+                                    "Not Reviewed: no decision yet. "
+                                    "Needs Review: more checking required. "
+                                    "Verified: manually confirmed."
                                 ),
                             ),
                         "Reviewer Notes":
@@ -670,8 +780,8 @@ else:
                                 width="large",
                                 max_chars=500,
                                 help=(
-                                    "Add corrections, questions, "
-                                    "or verification notes."
+                                    "Record what you checked, changed, "
+                                    "or still need to confirm."
                                 ),
                             ),
                     },
@@ -734,12 +844,13 @@ else:
 
 
             # Download section
-            st.subheader("Download results")
+            st.header("7. Download your results")
 
             st.write(
                 """
-                Download the complete review-ready directory or separate
-                QA result files.
+                Choose the file that matches your next task.
+                Download the complete directory to keep all records
+                and any review decisions made during this session.
                 """
             )
 
@@ -750,6 +861,15 @@ else:
             ) = st.columns(3)
 
             with full_download_column:
+                st.write("**Complete directory**")
+
+                st.caption(
+                    """
+                    All uploaded records, QA results,
+                    statuses, and reviewer notes.
+                    """
+                )
+
                 st.download_button(
                     label="Download complete directory",
                     data=dataframe_to_csv_bytes(
@@ -764,6 +884,15 @@ else:
                 )
 
             with queue_download_column:
+                st.write("**Review queue**")
+
+                st.caption(
+                    """
+                    Only records with automated QA flags
+                    and their review decisions.
+                    """
+                )
+
                 if edited_review_queue.empty:
                     st.download_button(
                         label="Download review queue",
@@ -780,7 +909,7 @@ else:
                     )
 
                     st.caption(
-                        "No flagged records to download."
+                        "No flagged records are available."
                     )
 
                 else:
@@ -798,6 +927,15 @@ else:
                     )
 
             with passed_download_column:
+                st.write("**Passed records**")
+
+                st.caption(
+                    """
+                    Only records with no issues found
+                    by the automated QA checks.
+                    """
+                )
+
                 st.download_button(
                     label="Download passed records",
                     data=dataframe_to_csv_bytes(
@@ -813,17 +951,17 @@ else:
 
             st.info(
                 """
-                The complete directory includes the automated QA results
-                and any verification status or reviewer-note edits made
-                during this app session.
+                Download your updated files before closing or refreshing
+                the app. Datablix does not permanently save this session.
                 """
             )
 
     except Exception as error:
         st.error(
             """
-            Datablix could not read this file. Check that it is a valid
-            CSV or Excel .xlsx file with column headings.
+            Datablix could not read this file.
+            Confirm that it is a valid CSV or Excel .xlsx file
+            with column headings in the first row.
             """
         )
 
