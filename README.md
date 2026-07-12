@@ -1,7 +1,5 @@
 # Datablix 1.0 
 
-## Project Overview
-
 Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is reviewed and organized.
 
 The tool identifies missing fields, possible duplicates, invalid source links, and questionable research dates while keeping reviewer decisions and notes connected to each record. It supports human judgment rather than replacing it.
