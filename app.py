@@ -81,7 +81,7 @@ def build_qa_flags(dataframe):
 
     def add_flag(mask, message):
         """
-        Add one flag message to every record matching the condition.
+        Add one flag message to every matching record.
         """
         safe_mask = mask.fillna(False)
 
@@ -223,15 +223,19 @@ def build_qa_flags(dataframe):
     qa_data["QA Flag Count"] = record_flags.apply(len)
 
     qa_data["QA Flags"] = record_flags.apply(
-        lambda flags: "; ".join(flags)
-        if flags
-        else "No issues found"
+        lambda flags: (
+            "; ".join(flags)
+            if flags
+            else "No issues found"
+        )
     )
 
     qa_data["QA Status"] = qa_data["QA Flag Count"].apply(
-        lambda count: "Review"
-        if count > 0
-        else "Pass"
+        lambda count: (
+            "Review"
+            if count > 0
+            else "Pass"
+        )
     )
 
     return qa_data
@@ -265,11 +269,15 @@ st.write(
     """
 )
 
-template_data = pd.DataFrame(columns=DATABLIX_COLUMNS)
+template_data = pd.DataFrame(
+    columns=DATABLIX_COLUMNS
+)
 
 st.download_button(
     label="Download blank Datablix CSV template",
-    data=template_data.to_csv(index=False).encode("utf-8"),
+    data=template_data.to_csv(
+        index=False
+    ).encode("utf-8"),
     file_name="datablix_directory_template.csv",
     mime="text/csv",
 )
@@ -285,7 +293,9 @@ uploaded_file = st.file_uploader(
 
 
 if uploaded_file is None:
-    st.info("Upload a fictional CSV or Excel file to begin.")
+    st.info(
+        "Upload a fictional CSV or Excel file to begin."
+    )
 
 else:
     try:
@@ -331,7 +341,81 @@ else:
                 hide_index=True,
             )
 
-            st.caption("Showing the first 20 rows.")
+            st.caption(
+                "Showing the first 20 rows."
+            )
+
+
+            # Run QA checks
+            qa_data = build_qa_flags(data)
+
+            flagged_records = qa_data[
+                qa_data["QA Status"] == "Review"
+            ].copy()
+
+            passed_records = qa_data[
+                qa_data["QA Status"] == "Pass"
+            ].copy()
+
+
+            # Calculate KPI values
+            total_records = len(qa_data)
+
+            passed_count = len(passed_records)
+
+            review_count = len(flagged_records)
+
+            total_qa_flags = int(
+                qa_data["QA Flag Count"].sum()
+            )
+
+            pass_rate = (
+                passed_count
+                / total_records
+                * 100
+            )
+
+
+            # KPI card section
+            st.subheader("Quality overview")
+
+            (
+                total_card,
+                passed_card,
+                review_card,
+                flags_card,
+                rate_card,
+            ) = st.columns(5)
+
+            with total_card:
+                st.metric(
+                    label="Total Records",
+                    value=f"{total_records:,}",
+                )
+
+            with passed_card:
+                st.metric(
+                    label="Passed",
+                    value=f"{passed_count:,}",
+                )
+
+            with review_card:
+                st.metric(
+                    label="Needs Review",
+                    value=f"{review_count:,}",
+                )
+
+            with flags_card:
+                st.metric(
+                    label="Total QA Flags",
+                    value=f"{total_qa_flags:,}",
+                )
+
+            with rate_card:
+                st.metric(
+                    label="QA Pass Rate",
+                    value=f"{pass_rate:.1f}%",
+                )
 
 
             # Missing-column checks
@@ -346,7 +430,9 @@ else:
             if missing_standard_columns:
                 st.warning(
                     "Standard Datablix columns not found: "
-                    + ", ".join(missing_standard_columns)
+                    + ", ".join(
+                        missing_standard_columns
+                    )
                 )
 
             else:
@@ -390,7 +476,9 @@ else:
                 field_summary
             )
 
-            st.write("#### Required-field summary")
+            st.write(
+                "#### Required-field summary"
+            )
 
             st.dataframe(
                 field_summary_data,
@@ -399,23 +487,9 @@ else:
             )
 
 
-            # QA checks
-            st.subheader("Quality assurance flags")
-
-            qa_data = build_qa_flags(data)
-
-            flagged_records = qa_data[
-                qa_data["QA Status"] == "Review"
-            ].copy()
-
-            passed_records = qa_data[
-                qa_data["QA Status"] == "Pass"
-            ].copy()
-
-            st.write(
-                f"**Passed records:** {len(passed_records):,}  \n"
-                f"**Records requiring review:** "
-                f"{len(flagged_records):,}"
+            # QA results section
+            st.subheader(
+                "Quality assurance flags"
             )
 
             if flagged_records.empty:
@@ -456,7 +530,9 @@ else:
                         review_columns.append(column)
 
                 st.dataframe(
-                    flagged_records[review_columns],
+                    flagged_records[
+                        review_columns
+                    ],
                     width="stretch",
                     hide_index=True,
                 )
@@ -469,4 +545,6 @@ else:
             """
         )
 
-        st.caption(f"Technical detail: {error}")
+        st.caption(
+            f"Technical detail: {error}"
+        )
