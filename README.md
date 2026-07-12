@@ -23,7 +23,7 @@ Each demo preserves a stage in the evolution of Datablix.
 | Area | Summary |
 |---|---|
 | Business Need | Prepare publicly sourced directory information for consistent review and follow-up |
-| Primary Challenge | Spreadsheet-based research was repetitive, difficult to monitor, and dependent on manual checks |
+| Primary Challenge | Repetitive spreadsheet-based research, difficulty to monitor, and dependency on manual checks |
 | Users | Researchers, reviewers, project coordinators, directory administrators, and the project sponsor |
 | Solution | Human-in-the-loop research data quality, source tracking, and verification assistant |
 | Solution Lead and Developer | Linda Eva Seuna |
