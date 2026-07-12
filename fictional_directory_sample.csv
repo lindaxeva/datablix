@@ -1,0 +1,9 @@
+Record ID,Name,Category,Address,City,Province,Postal Code,Phone,Email,Website,Source URL,Date Researched,Verification Status,Reviewer Notes
+DB001,Maple Grove Residence,Senior Apartments,101 Fiction Avenue,Ottawa,Ontario,K1A 0A1,613-555-0101,info@maplegrove.example,https://maplegrove.example,https://directory.example/maple-grove,2026-07-01,Verified,Information checked
+DB002,Riverstone Living,Retirement Residence,202 Sample Street,Ottawa,Ontario,K1B 1B2,613-555-0102,contact@riverstone.example,https://riverstone.example,https://directory.example/riverstone,2026-07-03,Not Reviewed,
+DB003,Sunrise Court,Senior Apartments,303 Demo Road,Kanata,Ontario,K2C 2C3,613-555-0103,hello@sunrisecourt.example,https://sunrisecourt.example,directory.example/sunrise,2026-07-04,Needs Review,Source URL needs checking
+DB004,Harbour Place,Independent Living,404 Example Boulevard,Nepean,Ontario,K2D 3D4,613-555-0104,info@harbourplace.example,https://harbourplace.example,https://directory.example/harbour-place,,Not Reviewed,
+DB005,Maple Grove Residence,Senior Apartments,505 Fiction Lane,Ottawa,Ontario,K1E 4E5,613-555-0105,second@maplegrove.example,https://maplegrove.example,https://directory.example/maple-grove-two,2026-07-06,Pending,Possible duplicate
+DB006,Evergreen Commons,,606 Sample Crescent,Orleans,Ontario,K1F 5F6,613-555-0106,contact@evergreen.example,https://evergreen.example,https://directory.example/evergreen,2030-01-10,Not Reviewed,
+DB007,Westview Gardens,Assisted Living,707 Test Drive,,Ontario,K2G 6G7,613-555-0107,info@westview.example,https://westview.example,https://directory.example/westview,not-a-date,Not Reviewed,
+DB008,Cedar Lane Community,Independent Living,808 Prototype Way,Gatineau,Quebec,J8X 1A1,819-555-0108,hello@cedarlane.example,https://cedarlane.example,https://directory.example/cedar-lane,2026-07-08,Verified,Ready for directory
