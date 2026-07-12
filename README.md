@@ -18,6 +18,7 @@ It's a human-in-the-loop tool that identifies missing fields, possible duplicate
 | Inputs | CSV and Excel files |
 | Outputs | Complete directory, review queue, and passed-record file |
 | In Scope | CSV and Excel upload; Data preview and quality metrics;  Missing-field, duplicate, URL, and date checks;  Manual verification and reviewer notes; Downloadable outputs |
+| Out of Scope | Manual research intake, source and researcher tracking, freshness monitoring, automated extraction or factual verification, permanent storage, collaboration, approval workflows, and confidential production data |
 
 ---
 
