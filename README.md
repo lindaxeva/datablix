@@ -69,10 +69,4 @@ streamlit run app.py
 
 Only fictional sample data should be used while building and testing this public MVP.
 
-Confidential stakeholder information and private research data must not be uploaded to the public application or committed to this repository.
-
-## Project Status
-
-Version 1 MVP is functional.
-
-Version 2 and Version 3 are outside the current development scope.
+Confidential user information and private research data must not be uploaded to the public application or committed to this repository.
