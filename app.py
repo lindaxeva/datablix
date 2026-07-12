@@ -95,7 +95,7 @@ SESSION_QA_RUN_COUNT = "datablix_qa_run_count"
 
 
 def render_brand_header():
-    """Display the Datablix logo and purpose."""
+    """Display the Datablix logo, purpose, and version badge."""
     svg_logo = Path("datablix_logo.svg")
     png_logo = Path("datablix_logo.png")
 
@@ -116,13 +116,14 @@ def render_brand_header():
             "Build research records, track sources, correct data-quality "
             "issues, and export a review-ready directory."
         )
+        st.caption("Version 3")
         return
 
     encoded_logo = base64.b64encode(
         logo_path.read_bytes()
     ).decode("utf-8")
 
-    st.markdown(
+    st.html(
         f"""
         <style>
             .datablix-brand {{
@@ -175,6 +176,17 @@ def render_brand_header():
                 opacity: 0.78;
             }}
 
+            .datablix-version-badge {{
+                display: inline-block;
+                margin-top: 0.65rem;
+                padding: 0.28rem 0.7rem;
+                border: 1px solid rgba(49, 51, 63, 0.18);
+                border-radius: 999px;
+                font-size: 0.84rem;
+                font-weight: 600;
+                opacity: 0.78;
+            }}
+
             @media (max-width: 600px) {{
                 .datablix-brand {{
                     margin-top: -0.8rem;
@@ -224,9 +236,11 @@ def render_brand_header():
                 data-quality issues, and export a review-ready directory.
             </div>
 
+            <div class="datablix-version-badge">
+                Version 3
+            </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -831,14 +845,6 @@ def percentage(count, total):
     return count / total * 100
 
 
-def rerun_app():
-    """Re-run the app across older and newer Streamlit releases."""
-    if hasattr(st, "rerun"):
-        st.rerun()
-    else:
-        st.experimental_rerun()
-
-
 # ---------------------------------------------------------
 # Welcome section
 # ---------------------------------------------------------
@@ -884,8 +890,9 @@ st.header("1. Prepare your research workspace")
 
 st.write(
     """
-    Download the blank template when starting a new directory.
-    It includes the research and source-tracking fields used below.
+    Download the Datablix template when starting a new directory.
+    It includes the fields used for research intake, source tracking,
+    quality review, and verification.
     """
 )
 
@@ -894,15 +901,14 @@ template_data = pd.DataFrame(columns=DATABLIX_COLUMNS)
 st.download_button(
     label="Download blank CSV template",
     data=dataframe_to_csv_bytes(template_data),
-    file_name="datablix_template.csv",
+    file_name="datablix_research_template.csv",
     mime="text/csv",
     key="download_blank_template",
 )
 
 st.caption(
     "Your spreadsheet should have column headings in the first row. "
-    "If research or source-tracking fields are missing, Datablix will "
-    "add them as blank workflow columns."
+    "Missing workflow fields will be added automatically as blank columns."
 )
 
 
@@ -944,7 +950,7 @@ try:
         initialize_uploaded_data(uploaded_file)
     elif start_blank:
         initialize_blank_workspace()
-        rerun_app()
+        st.rerun()
 except Exception as error:
     st.error(
         "Datablix could not read this file. Confirm that it is a valid "
@@ -1120,7 +1126,7 @@ if add_record_button:
         "Reviewer Notes": reviewer_notes,
     }
     add_manual_record(new_record)
-    rerun_app()
+    st.rerun()
 
 st.caption(
     "Fields marked * are required for QA. Datablix still accepts an "
@@ -1158,7 +1164,7 @@ with reset_column:
         use_container_width=True,
     ):
         reset_working_data()
-        rerun_app()
+        st.rerun()
 
 if data.empty:
     st.info(
@@ -1169,7 +1175,7 @@ if data.empty:
 
 st.dataframe(
     data.head(20),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -1276,7 +1282,7 @@ with stale_source_card:
 research_log_preview = create_research_log(qa_data)
 st.dataframe(
     research_log_preview,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -1399,7 +1405,7 @@ for field in REQUIRED_FIELDS:
 
 st.dataframe(
     pd.DataFrame(field_summary),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -1519,7 +1525,7 @@ if filtered_records.empty:
 else:
     st.dataframe(
         filtered_records[inspection_columns],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1601,7 +1607,7 @@ else:
 
     edited_queue = st.data_editor(
         edit_queue[queue_columns],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         num_rows="fixed",
         disabled=locked_columns,
@@ -1662,7 +1668,7 @@ else:
 
     if apply_changes:
         apply_editor_changes(edited_queue, editable_columns)
-        rerun_app()
+        st.rerun()
 
 
 # ---------------------------------------------------------
