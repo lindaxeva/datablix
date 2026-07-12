@@ -890,7 +890,7 @@ st.header("1. Prepare your research workspace")
 
 st.write(
     """
-    Download the Version 3 template when starting a new directory.
+    Download the blank template when starting a new directory.
     It includes the research and source-tracking fields used below.
     """
 )
@@ -907,8 +907,8 @@ st.download_button(
 
 st.caption(
     "Your spreadsheet should have column headings in the first row. "
-    "Older Datablix files are still accepted; missing Version 3 fields "
-    "will be added as blank workflow columns."
+    "If research or source-tracking fields are missing, Datablix will "
+    "add them as blank workflow columns."
 )
 
 
@@ -942,7 +942,7 @@ with blank_column:
     start_blank = st.button(
         "Start blank workspace",
         use_container_width=True,
-        help="Create an empty Version 3 directory for manual entry.",
+        help="Create an empty directory for manual entry.",
     )
 
 try:
