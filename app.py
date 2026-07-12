@@ -1,3 +1,6 @@
+import base64
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -9,7 +12,10 @@ st.set_page_config(
 )
 
 
-# Standard Datablix directory columns
+# ---------------------------------------------------------
+# Datablix configuration
+# ---------------------------------------------------------
+
 DATABLIX_COLUMNS = [
     "Record ID",
     "Name",
@@ -28,7 +34,6 @@ DATABLIX_COLUMNS = [
 ]
 
 
-# Fields required for every directory record
 REQUIRED_FIELDS = [
     "Name",
     "Category",
@@ -39,12 +44,131 @@ REQUIRED_FIELDS = [
 ]
 
 
-# Accepted manual verification values
 VALID_VERIFICATION_STATUSES = [
     "Not Reviewed",
     "Needs Review",
     "Verified",
 ]
+
+
+# ---------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------
+
+def render_brand_header():
+    """
+    Display a centered, responsive Datablix logo and introduction.
+
+    The app prefers an SVG logo when available because SVG files
+    remain sharp at different sizes. Otherwise, it uses the PNG file.
+    """
+    svg_logo = Path("datablix_logo.svg")
+    png_logo = Path("datablix_logo.png")
+
+    if svg_logo.exists():
+        logo_path = svg_logo
+        mime_type = "image/svg+xml"
+
+    elif png_logo.exists():
+        logo_path = png_logo
+        mime_type = "image/png"
+
+    else:
+        st.title("Datablix")
+        st.subheader("Data Quality and Verification Assistant")
+        st.write(
+            """
+            Turn a research spreadsheet into a structured,
+            review-ready directory.
+            """
+        )
+        return
+
+    encoded_logo = base64.b64encode(
+        logo_path.read_bytes()
+    ).decode("utf-8")
+
+    st.markdown(
+        f"""
+        <style>
+            .datablix-brand {{
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                text-align: center;
+                width: 100%;
+                padding-top: 0.25rem;
+                padding-bottom: 1.25rem;
+            }}
+
+            .datablix-brand-logo {{
+                display: block;
+                width: clamp(240px, 34vw, 390px);
+                max-width: 88vw;
+                height: auto;
+                object-fit: contain;
+                margin: 0 auto;
+                padding: 0;
+            }}
+
+            .datablix-brand-subtitle {{
+                margin-top: 0.45rem;
+                margin-bottom: 0.25rem;
+                font-size: clamp(1.25rem, 2vw, 1.65rem);
+                font-weight: 650;
+                line-height: 1.25;
+            }}
+
+            .datablix-brand-description {{
+                max-width: 680px;
+                margin: 0 auto;
+                font-size: 1.05rem;
+                line-height: 1.55;
+                opacity: 0.82;
+            }}
+
+            @media (max-width: 600px) {{
+                .datablix-brand {{
+                    padding-top: 0;
+                    padding-bottom: 1rem;
+                }}
+
+                .datablix-brand-logo {{
+                    width: min(290px, 86vw);
+                }}
+
+                .datablix-brand-subtitle {{
+                    font-size: 1.25rem;
+                }}
+
+                .datablix-brand-description {{
+                    font-size: 0.98rem;
+                    padding-left: 0.5rem;
+                    padding-right: 0.5rem;
+                }}
+            }}
+        </style>
+
+        <div class="datablix-brand">
+            <img
+                class="datablix-brand-logo"
+                src="data:{mime_type};base64,{encoded_logo}"
+                alt="Datablix logo"
+            >
+
+            <div class="datablix-brand-subtitle">
+                Data Quality and Verification Assistant
+            </div>
+
+            <div class="datablix-brand-description">
+                Turn a research spreadsheet into a structured,
+                review-ready directory.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def prepare_data(dataframe):
@@ -94,7 +218,7 @@ def create_safe_filename(filename):
 
 def build_qa_flags(dataframe):
     """
-    Check every record and create QA flags.
+    Run automated data-quality checks and create QA flags.
     """
     qa_data = dataframe.copy()
 
@@ -106,7 +230,7 @@ def build_qa_flags(dataframe):
 
     def add_flag(mask, message):
         """
-        Add a flag message to records matching a condition.
+        Add one QA message to each record matching a condition.
         """
         safe_mask = mask.fillna(False)
 
@@ -295,20 +419,12 @@ def add_missing_standard_columns(dataframe):
     ]
 
 
-# App welcome section
-st.image(
-    "datablix_logo.png",
-    width=320,
-)
+# ---------------------------------------------------------
+# Welcome section
+# ---------------------------------------------------------
 
-st.subheader("Data Quality and Verification Assistant")
+render_brand_header()
 
-st.write(
-    """
-    Turn a research spreadsheet into a structured,
-    review-ready directory.
-    """
-)
 
 with st.expander(
     "How to use Datablix",
@@ -326,6 +442,7 @@ with st.expander(
         """
     )
 
+
 st.warning(
     """
     Privacy reminder: Use fictional or approved data only.
@@ -334,7 +451,10 @@ st.warning(
 )
 
 
+# ---------------------------------------------------------
 # Template section
+# ---------------------------------------------------------
+
 st.header("1. Prepare your file")
 
 st.write(
@@ -364,7 +484,10 @@ st.caption(
 )
 
 
+# ---------------------------------------------------------
 # File upload section
+# ---------------------------------------------------------
+
 st.header("2. Upload your research data")
 
 st.write(
@@ -415,7 +538,10 @@ else:
         )
 
 
+        # -------------------------------------------------
         # Data preview
+        # -------------------------------------------------
+
         st.header("3. Confirm the data preview")
 
         st.write(
@@ -459,10 +585,12 @@ else:
                 )
 
 
+            # ---------------------------------------------
             # Run QA checks
+            # ---------------------------------------------
+
             qa_data = build_qa_flags(data)
 
-            # Add review columns if they were missing
             if "Verification Status" not in qa_data.columns:
                 qa_data["Verification Status"] = (
                     "Not Reviewed"
@@ -486,7 +614,10 @@ else:
             ].copy()
 
 
-            # Calculate KPI values
+            # ---------------------------------------------
+            # KPI calculations
+            # ---------------------------------------------
+
             total_records = len(qa_data)
             passed_count = len(passed_records)
             review_count = len(flagged_records)
@@ -502,7 +633,10 @@ else:
             )
 
 
+            # ---------------------------------------------
             # KPI cards
+            # ---------------------------------------------
+
             st.header("4. Review the quality overview")
 
             st.write(
@@ -568,7 +702,10 @@ else:
                 )
 
 
-            # Missing-column checks
+            # ---------------------------------------------
+            # Missing-field checks
+            # ---------------------------------------------
+
             st.header("5. Check missing fields")
 
             st.write(
@@ -605,7 +742,10 @@ else:
                 )
 
 
+            # ---------------------------------------------
             # Required-field summary
+            # ---------------------------------------------
+
             field_summary = []
 
             for field in REQUIRED_FIELDS:
@@ -651,7 +791,10 @@ else:
             )
 
 
+            # ---------------------------------------------
             # Manual review queue
+            # ---------------------------------------------
+
             st.header("6. Resolve the manual review queue")
 
             st.write(
@@ -788,7 +931,7 @@ else:
                     key="manual_review_queue",
                 )
 
-                # Copy review edits back into the full directory
+                # Copy review edits into the complete directory
                 final_data.loc[
                     edited_review_queue.index,
                     "Verification Status",
@@ -829,7 +972,10 @@ else:
                 )
 
 
+            # ---------------------------------------------
             # Prepare downloadable files
+            # ---------------------------------------------
+
             final_data = add_missing_standard_columns(
                 final_data
             )
@@ -843,7 +989,10 @@ else:
             )
 
 
+            # ---------------------------------------------
             # Download section
+            # ---------------------------------------------
+
             st.header("7. Download your results")
 
             st.write(
