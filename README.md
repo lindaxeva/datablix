@@ -51,7 +51,7 @@ Each demo preserves a stage in the evolution of Datablix.
 
 ## Project Objectives
 
-Datablix was designed to:
+Datablix helps you:
 
 - Standardize research data review
 - Reduce repetitive spreadsheet inspection
