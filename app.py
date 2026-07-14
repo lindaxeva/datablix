@@ -369,7 +369,7 @@ def render_brand_header():
         mime_type = "image/png"
     else:
         st.title("Datablix")
-        st.write("Your ultimate rental property research assistant.")
+        st.write("Your rental property research assistant.")
         return
 
     encoded_logo = base64.b64encode(
@@ -449,7 +449,7 @@ def render_brand_header():
             </div>
 
             <div class="datablix-brand-description">
-                Your ultimate rental property research assistant
+                Your rental property research assistant
             </div>
         </div>
         """
