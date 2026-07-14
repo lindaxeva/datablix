@@ -369,10 +369,7 @@ def render_brand_header():
         mime_type = "image/png"
     else:
         st.title("Datablix")
-        st.write(
-            "Bring scattered property research into one clear, "
-            "review-ready directory."
-        )
+        st.write("Your property research database assistant.")
         return
 
     encoded_logo = base64.b64encode(
@@ -387,9 +384,10 @@ def render_brand_header():
                 flex-direction: column;
                 align-items: center;
                 justify-content: center;
+                gap: 0.35rem;
                 width: 100%;
-                padding: 0.6rem 0 0.4rem 0;
-                margin: 0 auto 1.25rem auto;
+                padding: 0.1rem 0 0.2rem 0;
+                margin: 0 auto 0.9rem auto;
                 text-align: center;
             }}
 
@@ -398,51 +396,45 @@ def render_brand_header():
                 align-items: center;
                 justify-content: center;
                 width: 100%;
-                min-height: 120px;
-                height: auto;
-                margin: 0 auto 0.55rem auto;
-                padding: 0.25rem 1rem;
+                margin: 0 auto;
+                padding: 0;
                 overflow: visible;
                 box-sizing: border-box;
             }}
 
             .datablix-brand-logo {{
                 display: block;
-                width: clamp(360px, 62vw, 820px);
-                max-width: 92vw;
-                max-height: 240px;
+                width: clamp(260px, 44vw, 560px);
+                max-width: 88vw;
+                max-height: 140px;
                 height: auto;
                 margin: 0 auto;
                 object-fit: contain;
             }}
 
             .datablix-brand-description {{
-                max-width: 760px;
+                max-width: 620px;
                 margin: 0 auto;
                 padding: 0 1rem;
-                font-size: 1.05rem;
-                line-height: 1.5;
-                opacity: 0.78;
+                font-size: 1.08rem;
+                font-weight: 500;
+                line-height: 1.4;
+                opacity: 0.82;
             }}
 
             @media (max-width: 600px) {{
                 .datablix-brand {{
-                    padding-top: 0.35rem;
-                    margin-bottom: 1rem;
-                }}
-
-                .datablix-logo-window {{
-                    min-height: 96px;
-                    padding: 0.2rem 0.5rem;
+                    gap: 0.3rem;
+                    margin-bottom: 0.8rem;
                 }}
 
                 .datablix-brand-logo {{
-                    width: min(94vw, 560px);
-                    max-height: 190px;
+                    width: min(86vw, 440px);
+                    max-height: 112px;
                 }}
 
                 .datablix-brand-description {{
-                    font-size: 0.96rem;
+                    font-size: 0.98rem;
                 }}
             }}
         </style>
@@ -457,8 +449,7 @@ def render_brand_header():
             </div>
 
             <div class="datablix-brand-description">
-                Turn your property research data into a structured, trackable,
-                and review-ready directory.
+                Your property research database assistant.
             </div>
         </div>
         """
@@ -2205,6 +2196,28 @@ st.html(
 
         h1, h2, h3 {
             letter-spacing: -0.02em;
+        }
+
+        /* Label the collapsed-sidebar arrow so the workspace panel is
+           easy to find. */
+        [data-testid="stExpandSidebarButton"] {
+            display: flex;
+            align-items: center;
+        }
+
+        [data-testid="stExpandSidebarButton"]::after {
+            content: "Workspace";
+            margin-left: 0.4rem;
+            font-size: 0.82rem;
+            font-weight: 600;
+            white-space: nowrap;
+            opacity: 0.85;
+        }
+
+        /* Center the main section menu (Overview to Export). */
+        div[data-testid="stButtonGroup"] {
+            display: flex;
+            justify-content: center;
         }
 
         div[data-testid="stMetric"] {
