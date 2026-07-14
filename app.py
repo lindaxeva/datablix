@@ -370,7 +370,8 @@ def render_brand_header():
     else:
         st.title("Datablix")
         st.write(
-            "Your property research database assistant"
+            "Turn your property research data into a structured, "
+            "trackable, and review-ready directory."
         )
         return
 
@@ -387,8 +388,8 @@ def render_brand_header():
                 align-items: center;
                 justify-content: center;
                 width: 100%;
-                padding: 0.75rem 0 0.45rem 0;
-                margin: 0 auto 1.35rem auto;
+                padding: 0.6rem 0 0.4rem 0;
+                margin: 0 auto 1.25rem auto;
                 text-align: center;
             }}
 
@@ -397,19 +398,19 @@ def render_brand_header():
                 align-items: center;
                 justify-content: center;
                 width: 100%;
-                min-height: 175px;
+                min-height: 120px;
                 height: auto;
-                margin: 0 auto 0.6rem auto;
-                padding: 0.35rem 1.25rem;
+                margin: 0 auto 0.55rem auto;
+                padding: 0.25rem 1rem;
                 overflow: visible;
                 box-sizing: border-box;
             }}
 
             .datablix-brand-logo {{
                 display: block;
-                width: clamp(720px, 72vw, 1100px);
-                max-width: 96%;
-                max-height: 320px;
+                width: clamp(360px, 62vw, 820px);
+                max-width: 92vw;
+                max-height: 240px;
                 height: auto;
                 margin: 0 auto;
                 object-fit: contain;
@@ -424,17 +425,6 @@ def render_brand_header():
                 opacity: 0.78;
             }}
 
-            @media (min-width: 601px) and (max-width: 1000px) {{
-                .datablix-logo-window {{
-                    min-height: 135px;
-                    padding: 0.3rem 0.75rem;
-                }}
-
-                .datablix-brand-logo {{
-                    width: min(90vw, 780px);
-                    max-height: 255px;
-                }}
-            }}
 
             @media (max-width: 600px) {{
                 .datablix-brand {{
@@ -468,7 +458,8 @@ def render_brand_header():
             </div>
 
             <div class="datablix-brand-description">
-                Your property research database assistant
+                Turn your property research data into a structured,
+                trackable, and review-ready directory.
             </div>
         </div>
         """
