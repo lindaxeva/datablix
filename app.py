@@ -2550,14 +2550,16 @@ if not workspace_ready:
     with st.expander("What Datablix does", expanded=True):
         st.markdown(
             """
-            - Matches your imported headings to consistent directory
-              fields, and keeps your original columns.
-            - Flags missing details, invalid formats, and possible
-              duplicates so you know what to fix.
-            - Tracks research, source checks, and verification decisions
-              alongside the data.
-            - Exports a clean directory plus a focused follow-up list
-              when you are done.
+            - Open a CSV or Excel directory, or load a viewable Google
+              Sheet as an editable working copy.
+            - Match imported headings to consistent directory fields without
+              removing the original columns.
+            - Surface missing details, invalid formats, possible duplicates,
+              and records that need human review.
+            - Track research, source checks, verification decisions, and notes
+              separately from the underlying data quality.
+            - Edit/Update records in one workspace and export a complete directory
+              or a focused follow-up list.
             """
         )
     st.caption(
