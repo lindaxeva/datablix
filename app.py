@@ -456,7 +456,7 @@ def render_brand_header():
             </div>
 
             <div class="datablix-brand-description">
-                Your property research data assistant
+                Your property research database assistant
             </div>
         </div>
         """
