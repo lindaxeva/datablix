@@ -1,17 +1,32 @@
-#!/usr/bin/env python3
-"""Patch an existing Datablix app so its public listing matches the supplied example."""
-
-from __future__ import annotations
-
-import ast
+import base64
+import hashlib
+import io
 import re
-import shutil
-import sys
+from datetime import date
 from pathlib import Path
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
+import pandas as pd
+import streamlit as st
 
-LISTING_CONSTANTS = r'''
-LISTING_EXAMPLE_COLUMNS = [
+st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
+
+# =========================================================
+# Configuration
+# =========================================================
+
+INTERNAL_COLUMNS = [
+    "Record ID", "Building Name", "Management/Owner", "Street Address",
+    "Address Line 2", "City", "Province", "Postal Code", "Country",
+    "Phone", "Primary Email", "Secondary Email", "Website",
+    "Number of Apartments", "Rental Rate Range", "Building Classification",
+    "Source URL", "Date Researched", "Researcher", "Research Status",
+    "Source Status", "Verification Status", "Missing Information",
+    "Reviewer Notes", "Record Decision",
+]
+
+LISTING_COLUMNS = [
     "Apartment Building Name",
     "Street Address",
     "City and Postal Code",
@@ -23,533 +38,1090 @@ LISTING_EXAMPLE_COLUMNS = [
     "WebSite",
 ]
 
-# Keep the stakeholder's listing columns first, then add Datablix's
-# research and review fields to the downloadable starter template.
-LISTING_TEMPLATE_COLUMNS = LISTING_EXAMPLE_COLUMNS + [
-    "Source URL",
-    "Date Researched",
-    "Researcher",
-    "Research Status",
-    "Source Status",
-    "Verification Status",
-    "Missing Information",
-    "Reviewer Notes",
-    "Record Decision",
+TEMPLATE_COLUMNS = LISTING_COLUMNS + [
+    "Source URL", "Date Researched", "Researcher", "Research Status",
+    "Source Status", "Verification Status", "Missing Information",
+    "Reviewer Notes", "Record Decision",
 ]
 
-PROVINCE_CANONICAL_NAMES = {
-    "ab": "Alberta",
-    "alberta": "Alberta",
-    "bc": "British Columbia",
-    "british columbia": "British Columbia",
-    "mb": "Manitoba",
-    "manitoba": "Manitoba",
-    "nb": "New Brunswick",
-    "new brunswick": "New Brunswick",
-    "nl": "Newfoundland and Labrador",
-    "newfoundland and labrador": "Newfoundland and Labrador",
-    "ns": "Nova Scotia",
-    "nova scotia": "Nova Scotia",
-    "nt": "Northwest Territories",
-    "northwest territories": "Northwest Territories",
-    "nu": "Nunavut",
-    "nunavut": "Nunavut",
-    "on": "Ontario",
-    "ontario": "Ontario",
-    "pe": "Prince Edward Island",
-    "prince edward island": "Prince Edward Island",
-    "qc": "Quebec",
-    "quebec": "Quebec",
-    "québec": "Quebec",
-    "sk": "Saskatchewan",
-    "saskatchewan": "Saskatchewan",
-    "yt": "Yukon",
-    "yukon": "Yukon",
+ALIASES = {
+    "Record ID": ["Record ID", "ID", "Directory ID"],
+    "Building Name": [
+        "Building Name", "Apartment Building Name",
+        "Apartment Building Name (Draft - Check)", "Property Name",
+    ],
+    "Management/Owner": [
+        "Management/Owner", "Apartment Building Management/Owner",
+        "Apartment Building Management / Owner", "Assigned Company",
+        "Management Company", "Owner", "Original Owner Name", "Company",
+    ],
+    "Street Address": ["Street Address", "Address (Street Address)", "Address"],
+    "Address Line 2": ["Address Line 2", "Address (Address Line 2)", "Suite / Unit"],
+    "City": ["City", "Address (City)"],
+    "Province": ["Province", "State / Province", "Address (State / Province)"],
+    "Postal Code": ["Postal Code", "ZIP / Postal Code", "Address (ZIP / Postal Code)"],
+    "Country": ["Country", "Address (Country)"],
+    "Phone": ["Phone", "Phone Number", "Primary Phone"],
+    "Primary Email": ["Primary Email", "Primary Email (Enter Email)", "Email", "Email Contact"],
+    "Secondary Email": ["Secondary Email", "Alternate Email"],
+    "Website": ["Website", "WebSite", "Website / Source URL", "Property Website"],
+    "Number of Apartments": ["Number of Apartments", "No. of Units", "Number of Units", "Unit Count", "Units"],
+    "Rental Rate Range": ["Rental Rate Range", "Rental Rates", "Rent Range", "Rent"],
+    "Building Classification": ["Building Classification", "Verified Building Classification", "Category", "Building Type"],
+    "Source URL": ["Source URL", "Official Source URL", "Research Source", "Website / Source URL"],
+    "Date Researched": ["Date Researched", "Date Verified", "Verification Date", "Research Date"],
+    "Researcher": ["Researcher", "Assigned To"],
+    "Research Status": ["Research Status"],
+    "Source Status": ["Source Status"],
+    "Verification Status": ["Verification Status", "Review Status"],
+    "Missing Information": ["Missing Information", "Information Missing"],
+    "Reviewer Notes": ["Reviewer Notes", "Research Notes", "Notes"],
+    "Record Decision": ["Record Decision", "Decision"],
 }
 
-PROVINCE_DISPLAY_CODES = {
-    "alberta": "AB",
-    "british columbia": "BC",
-    "manitoba": "MB",
-    "new brunswick": "NB",
-    "newfoundland and labrador": "NL",
-    "nova scotia": "NS",
-    "northwest territories": "NT",
-    "nunavut": "NU",
-    "ontario": "ON",
-    "prince edward island": "PE",
-    "quebec": "QC",
-    "québec": "QC",
-    "saskatchewan": "SK",
-    "yukon": "YT",
-}
-'''
+COMBINED_LOCATION_ALIASES = [
+    "City and Postal Code", "City & Postal Code",
+    "City, Province and Postal Code", "City Province Postal Code",
+]
 
-LOCATION_HELPERS = r'''
-def canonical_province_name(value):
-    """Return a consistent Canadian province or territory name."""
-    if is_unresolved_scalar(value):
+CLASSIFICATION_SOURCE_COLUMNS = [
+    "Luxury", "Adult", "Low Rental", "Hi Rise", "Townhome", "Duplex", "Garden Home"
+]
+CLASSIFICATION_LABELS = {
+    "Luxury": "Luxury", "Adult": "Adult-oriented", "Low Rental": "Low Rental",
+    "Hi Rise": "High Rise", "Townhome": "Townhome", "Duplex": "Duplex",
+    "Garden Home": "Garden Home",
+}
+
+CORE_FIELDS = ["Management/Owner", "Street Address", "City"]
+TARGET_FIELDS = [
+    "Building Name", "Province", "Postal Code", "Phone", "Primary Email",
+    "Website", "Number of Apartments", "Building Classification",
+]
+ALL_RESEARCH_FIELDS = CORE_FIELDS + TARGET_FIELDS
+
+RESEARCH_STATUSES = [
+    "Imported - Needs Review", "Not Started", "In Progress", "Needs Follow-up",
+    "Ready for Review", "Completed",
+]
+SOURCE_STATUSES = ["Not Checked", "Active", "Needs Follow-up", "Unavailable"]
+VERIFICATION_STATUSES = ["Not Reviewed", "Needs Review", "Verified"]
+RECORD_DECISIONS = ["Undecided", "Keep", "Update", "Possible Duplicate", "Remove"]
+
+UNRESOLVED = {
+    "", "n/a", "na", "n.a.", "unknown", "not known", "not available",
+    "not found", "not provided", "not researched", "tbd", "-", "--",
+    "none", "null",
+}
+YES_VALUES = {"yes", "y", "true", "1"}
+NO_VALUES = {"no", "n", "false", "0"}
+
+STATUS_ALIASES = {
+    "Research Status": {
+        "imported": "Imported - Needs Review", "complete": "Completed",
+        "completed": "Completed", "ready": "Ready for Review",
+        "follow up": "Needs Follow-up", "follow-up": "Needs Follow-up",
+    },
+    "Source Status": {
+        "verified": "Active", "working": "Active", "broken": "Unavailable",
+        "follow up": "Needs Follow-up", "follow-up": "Needs Follow-up",
+    },
+    "Verification Status": {
+        "complete": "Verified", "completed": "Verified", "reviewed": "Verified",
+        "not verified": "Not Reviewed",
+    },
+    "Record Decision": {"duplicate": "Possible Duplicate", "delete": "Remove"},
+}
+
+PROVINCES = {
+    "ab": ("Alberta", "AB"), "alberta": ("Alberta", "AB"),
+    "bc": ("British Columbia", "BC"), "british columbia": ("British Columbia", "BC"),
+    "mb": ("Manitoba", "MB"), "manitoba": ("Manitoba", "MB"),
+    "nb": ("New Brunswick", "NB"), "new brunswick": ("New Brunswick", "NB"),
+    "nl": ("Newfoundland and Labrador", "NL"),
+    "newfoundland and labrador": ("Newfoundland and Labrador", "NL"),
+    "ns": ("Nova Scotia", "NS"), "nova scotia": ("Nova Scotia", "NS"),
+    "nt": ("Northwest Territories", "NT"),
+    "northwest territories": ("Northwest Territories", "NT"),
+    "nu": ("Nunavut", "NU"), "nunavut": ("Nunavut", "NU"),
+    "on": ("Ontario", "ON"), "ontario": ("Ontario", "ON"),
+    "pe": ("Prince Edward Island", "PE"),
+    "prince edward island": ("Prince Edward Island", "PE"),
+    "qc": ("Quebec", "QC"), "quebec": ("Quebec", "QC"), "québec": ("Quebec", "QC"),
+    "sk": ("Saskatchewan", "SK"), "saskatchewan": ("Saskatchewan", "SK"),
+    "yt": ("Yukon", "YT"), "yukon": ("Yukon", "YT"),
+}
+
+FRESHNESS_DAYS = 180
+
+S_FILE = "db_file_signature"
+S_ORIGINAL = "db_original"
+S_WORKING = "db_working"
+S_NAME = "db_name"
+S_SHEET = "db_sheet"
+S_MAPPING = "db_mapping"
+S_FLASH = "db_flash"
+S_SOURCE_TYPE = "db_source_type"
+S_SOURCE_REF = "db_source_ref"
+S_SELECTOR = "db_selector"
+S_EDIT_COUNT = "db_edit_count"
+
+
+# =========================================================
+# Helpers
+# =========================================================
+
+def render_brand_header():
+    svg = Path("datablix_logo.svg")
+    png = Path("datablix_logo.png")
+    if svg.exists() or png.exists():
+        path = svg if svg.exists() else png
+        mime = "image/svg+xml" if path.suffix.lower() == ".svg" else "image/png"
+        encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+        st.html(f"""
+        <style>
+        .db-brand{{text-align:center;margin:.1rem auto 1rem}}
+        .db-logo{{width:clamp(260px,44vw,560px);max-width:88vw;max-height:140px;object-fit:contain}}
+        .db-tag{{font-size:1.08rem;font-weight:500;opacity:.82}}
+        </style>
+        <div class="db-brand"><img class="db-logo" src="data:{mime};base64,{encoded}" alt="Datablix logo">
+        <div class="db-tag">Your rental property research data assistant</div></div>
+        """)
+    else:
+        st.title("Datablix")
+        st.write("Your rental property research data assistant.")
+
+
+def norm_header(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
+def norm_scalar(value):
+    return "" if pd.isna(value) else str(value).strip().lower()
+
+
+def is_unresolved(value):
+    return norm_scalar(value) in UNRESOLVED
+
+
+def unresolved_mask(series):
+    text = series.astype("string").fillna("").str.strip().str.lower()
+    return series.isna() | text.isin(UNRESOLVED)
+
+
+def resolved(series):
+    out = series.copy()
+    out.loc[unresolved_mask(out)] = pd.NA
+    return out
+
+
+def prepare_data(df):
+    out = df.copy()
+    out.columns = [str(c).strip() for c in out.columns]
+    return out.replace(r"^\s*$", pd.NA, regex=True)
+
+
+def display_values(series, blank="Blank"):
+    return series.astype("string").fillna(blank).str.strip().replace("", blank)
+
+
+def csv_bytes(df):
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def safe_filename(name):
+    stem = name.rsplit(".", 1)[0].strip()
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in stem) or "datablix"
+
+
+def excel_bytes(sheets):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        used = set()
+        for requested, df in sheets.items():
+            name = re.sub(r"[:\\/?*\[\]]", " ", str(requested))
+            name = re.sub(r"\s+", " ", name).strip()[:31] or "Sheet"
+            base, n = name, 2
+            while name in used:
+                suffix = f" {n}"
+                name = f"{base[:31-len(suffix)]}{suffix}"
+                n += 1
+            used.add(name)
+            df.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.book[name]
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+            for cells in ws.columns:
+                lengths = [len(str(c.value)) for c in cells[:101] if c.value is not None]
+                ws.column_dimensions[cells[0].column_letter].width = min(max(lengths + [12]) + 2, 42)
+    output.seek(0)
+    return output.getvalue()
+
+
+def canonical_province(value):
+    if is_unresolved(value):
         return pd.NA
-
-    text_value = re.sub(r"\s+", " ", str(value)).strip()
-    return PROVINCE_CANONICAL_NAMES.get(
-        text_value.lower(),
-        text_value,
-    )
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return PROVINCES.get(text.lower(), (text, text))[0]
 
 
-def province_display_code(value):
-    """Return the province code used in the listing example."""
-    if is_unresolved_scalar(value):
+def province_code(value):
+    if is_unresolved(value):
         return ""
-
-    text_value = re.sub(r"\s+", " ", str(value)).strip()
-    normalized_value = text_value.lower()
-
-    if normalized_value in PROVINCE_DISPLAY_CODES:
-        return PROVINCE_DISPLAY_CODES[normalized_value]
-
-    if normalized_value in PROVINCE_CANONICAL_NAMES:
-        canonical_name = PROVINCE_CANONICAL_NAMES[normalized_value]
-        return PROVINCE_DISPLAY_CODES.get(
-            canonical_name.lower(),
-            text_value,
-        )
-
-    if len(text_value) == 2 and text_value.isalpha():
-        return text_value.upper()
-
-    return text_value
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return PROVINCES.get(text.lower(), (text, text.upper() if len(text) == 2 else text))[1]
 
 
-def parse_city_and_postal_code(value):
-    """Split a combined value such as Ottawa, ON K1N 0E7."""
-    if is_unresolved_scalar(value):
+def postal_code(value):
+    if is_unresolved(value):
+        return pd.NA
+    text = re.sub(r"\s+", "", str(value)).upper()
+    return f"{text[:3]} {text[3:]}" if re.fullmatch(r"[A-Z]\d[A-Z]\d[A-Z]\d", text) else str(value).strip().upper()
+
+
+def parse_combined_location(value):
+    if is_unresolved(value):
         return pd.NA, pd.NA, pd.NA
-
-    text_value = re.sub(r"\s+", " ", str(value)).strip(" ,")
-    postal_match = re.search(
-        r"\b([ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]"
-        r"[ -]?\d[ABCEGHJ-NPRSTV-Z]\d)\b",
-        text_value,
-        flags=re.IGNORECASE,
-    )
-
-    postal_code = pd.NA
-    location_text = text_value
-
-    if postal_match:
-        raw_postal = postal_match.group(1).upper().replace(" ", "")
-        postal_code = (
-            f"{raw_postal[:3]} {raw_postal[3:]}"
-            if len(raw_postal) == 6
-            else raw_postal
-        )
-        location_text = (
-            text_value[:postal_match.start()]
-            + text_value[postal_match.end():]
-        ).strip(" ,")
-
-    city = location_text
+    text = re.sub(r"\s+", " ", str(value)).strip(" ,")
+    match = re.search(r"\b([ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][ -]?\d[ABCEGHJ-NPRSTV-Z]\d)\b", text, re.I)
+    pc = pd.NA
+    if match:
+        pc = postal_code(match.group(1))
+        text = (text[:match.start()] + text[match.end():]).strip(" ,")
+    province_pattern = "|".join(re.escape(k) for k in sorted(PROVINCES, key=len, reverse=True))
+    pm = re.search(rf"(?:,\s*|\s+)({province_pattern})$", text, re.I)
     province = pd.NA
-    province_pattern = (
-        r"(?:,\s*|\s+)"
-        r"(AB|Alberta|BC|British Columbia|MB|Manitoba|"
-        r"NB|New Brunswick|NL|Newfoundland and Labrador|"
-        r"NS|Nova Scotia|NT|Northwest Territories|NU|Nunavut|"
-        r"ON|Ontario|PE|Prince Edward Island|QC|Quebec|Québec|"
-        r"SK|Saskatchewan|YT|Yukon)$"
-    )
-    province_match = re.search(
-        province_pattern,
-        location_text,
-        flags=re.IGNORECASE,
-    )
-
-    if province_match:
-        province = canonical_province_name(province_match.group(1))
-        city = location_text[:province_match.start()].strip(" ,")
-
-    city = city if city else pd.NA
-    return city, province, postal_code
+    city = text
+    if pm:
+        province = canonical_province(pm.group(1))
+        city = text[:pm.start()].strip(" ,")
+    return city or pd.NA, province, pc
 
 
-def format_city_and_postal_code(row):
-    """Create the combined location used in the public listing."""
-    city = (
-        ""
-        if is_unresolved_scalar(row.get("City"))
-        else str(row.get("City")).strip()
-    )
-    province = province_display_code(row.get("Province"))
-    postal_code = (
-        ""
-        if is_unresolved_scalar(row.get("Postal Code"))
-        else str(row.get("Postal Code")).strip().upper()
-    )
-    location_tail = " ".join(
-        value for value in [province, postal_code] if value
-    )
+def formatted_location(row):
+    city = "" if is_unresolved(row.get("City")) else str(row.get("City")).strip()
+    province = province_code(row.get("Province"))
+    pc = "" if is_unresolved(row.get("Postal Code")) else str(postal_code(row.get("Postal Code")))
+    tail = " ".join(v for v in [province, pc] if v)
+    return f"{city}, {tail}" if city and tail else city or tail or pd.NA
 
-    if city and location_tail:
-        return f"{city}, {location_tail}"
-    if city:
-        return city
-    if location_tail:
-        return location_tail
-    return pd.NA
-'''
 
-LISTING_EXPORT_FUNCTION = r'''
-def create_listing_export(dataframe):
-    """Create the public listing using the supplied headings and order."""
-    listing = pd.DataFrame(index=dataframe.index)
+def normalize_choice(series, choices, default, aliases=None):
+    mapping = {v.lower(): v for v in choices}
+    mapping.update(aliases or {})
+    return series.astype("string").fillna("").str.strip().str.lower().map(mapping).fillna(default)
 
-    def source_column(column):
-        if column in dataframe.columns:
-            return dataframe[column]
-        return pd.Series(
-            pd.NA,
-            index=dataframe.index,
-            dtype="object",
+
+def normalize_workflow(df):
+    out = df.copy()
+    for c in INTERNAL_COLUMNS:
+        if c not in out.columns:
+            out[c] = pd.NA
+    out["Research Status"] = normalize_choice(out["Research Status"], RESEARCH_STATUSES, "Not Started", STATUS_ALIASES["Research Status"])
+    out["Source Status"] = normalize_choice(out["Source Status"], SOURCE_STATUSES, "Not Checked", STATUS_ALIASES["Source Status"])
+    out["Verification Status"] = normalize_choice(out["Verification Status"], VERIFICATION_STATUSES, "Not Reviewed", STATUS_ALIASES["Verification Status"])
+    out["Record Decision"] = normalize_choice(out["Record Decision"], RECORD_DECISIONS, "Undecided", STATUS_ALIASES["Record Decision"])
+    for c in ["Researcher", "Missing Information", "Reviewer Notes"]:
+        out[c] = out[c].fillna("").astype(str)
+    return out
+
+
+# =========================================================
+# Reading and mapping
+# =========================================================
+
+def source_columns(df, aliases):
+    lookup = {}
+    for c in df.columns:
+        lookup.setdefault(norm_header(c), []).append(c)
+    matches = []
+    for alias in aliases:
+        for c in lookup.get(norm_header(alias), []):
+            if c not in matches:
+                matches.append(c)
+    return matches
+
+
+def combine_columns(df, columns):
+    out = pd.Series(pd.NA, index=df.index, dtype="object")
+    for c in columns:
+        candidate = resolved(df[c])
+        mask = unresolved_mask(out) & ~unresolved_mask(candidate)
+        out.loc[mask] = candidate.loc[mask]
+    return out
+
+
+def derive_classification(df):
+    available = [c for c in CLASSIFICATION_SOURCE_COLUMNS if c in df.columns]
+    if not available:
+        return pd.Series(pd.NA, index=df.index, dtype="object")
+    def derive(row):
+        values = []
+        for c in available:
+            value = row[c]
+            n = norm_scalar(value)
+            if n in UNRESOLVED or n in NO_VALUES:
+                continue
+            label = CLASSIFICATION_LABELS.get(c, c) if n in YES_VALUES or norm_header(value) == norm_header(c) else str(value).strip()
+            if label and label not in values:
+                values.append(label)
+        return " | ".join(values) if values else pd.NA
+    return df[available].apply(derive, axis=1)
+
+
+def ensure_ids(df):
+    out = df.copy()
+    existing = set(resolved(out["Record ID"]).dropna().astype(str).str.strip())
+    result, counter = [], 1
+    for value in out["Record ID"]:
+        if not is_unresolved(value):
+            result.append(str(value).strip())
+            continue
+        while f"DB-{counter:04d}" in existing:
+            counter += 1
+        candidate = f"DB-{counter:04d}"
+        existing.add(candidate)
+        result.append(candidate)
+        counter += 1
+    out["Record ID"] = result
+    return out
+
+
+def map_schema(df):
+    imported = prepare_data(df)
+    mapped = imported.copy()
+    rows = []
+    for target in INTERNAL_COLUMNS:
+        matches = source_columns(imported, ALIASES.get(target, [target]))
+        if matches:
+            mapped[target] = combine_columns(imported, matches)
+            rows.append({"Datablix Field": target, "Imported Column(s)": ", ".join(matches), "Mapping Status": "Mapped"})
+        else:
+            mapped[target] = pd.NA
+            rows.append({"Datablix Field": target, "Imported Column(s)": "—", "Mapping Status": "Not found"})
+
+    combined = source_columns(imported, COMBINED_LOCATION_ALIASES)
+    if combined:
+        parsed = pd.DataFrame(
+            combine_columns(imported, combined).apply(parse_combined_location).tolist(),
+            columns=["City", "Province", "Postal Code"], index=imported.index,
         )
+        for field in ["City", "Province", "Postal Code"]:
+            current, derived = resolved(mapped[field]), resolved(parsed[field])
+            mask = unresolved_mask(current) & ~unresolved_mask(derived)
+            current.loc[mask] = derived.loc[mask]
+            mapped[field] = current
+            if mask.any():
+                for row in rows:
+                    if row["Datablix Field"] == field and row["Mapping Status"] == "Not found":
+                        row["Imported Column(s)"] = ", ".join(combined)
+                        row["Mapping Status"] = "Derived"
 
-    listing["Apartment Building Name"] = source_column("Building Name")
-    listing["Street Address"] = source_column("Street Address")
-    listing["City and Postal Code"] = dataframe.apply(
-        format_city_and_postal_code,
-        axis=1,
+    derived = derive_classification(imported)
+    current = resolved(mapped["Building Classification"])
+    mask = unresolved_mask(current) & ~unresolved_mask(derived)
+    current.loc[mask] = derived.loc[mask]
+    mapped["Building Classification"] = current
+
+    source = resolved(mapped["Source URL"])
+    website = resolved(mapped["Website"])
+    mask = unresolved_mask(source) & ~unresolved_mask(website)
+    source.loc[mask] = website.loc[mask]
+    mapped["Source URL"] = source
+
+    mapped["Province"] = mapped["Province"].apply(canonical_province)
+    mapped["Postal Code"] = mapped["Postal Code"].apply(postal_code)
+    mapped["Management/Owner"] = mapped["Management/Owner"].apply(
+        lambda v: pd.NA if is_unresolved(v) else re.sub(r"\s+", " ", str(v)).strip()
     )
-    listing["Building Classification"] = source_column(
-        "Building Classification"
-    )
-    listing["Number of Apartments"] = source_column(
-        "Number of Apartments"
-    )
-    listing["Apartment Building Management/Owner"] = source_column(
-        "Management/Owner"
-    )
-    listing["Phone Number"] = source_column("Phone")
-    listing["Email Contact"] = source_column("Primary Email")
-    listing["WebSite"] = source_column("Website")
+    mapped = ensure_ids(mapped)
 
-    return listing[LISTING_EXAMPLE_COLUMNS].copy()
+    imported_mask = pd.Series(False, index=mapped.index)
+    for c in ["Building Name", "Management/Owner", "Street Address", "City", "Website", "Phone"]:
+        imported_mask |= ~unresolved_mask(mapped[c])
+    mapped.loc[imported_mask & unresolved_mask(mapped["Research Status"]), "Research Status"] = "Imported - Needs Review"
+
+    canonical = [c for c in INTERNAL_COLUMNS if c in mapped.columns]
+    originals = [c for c in imported.columns if c not in canonical]
+    return normalize_workflow(mapped[canonical + originals]), pd.DataFrame(rows)
 
 
-def create_directory_export(dataframe):
-    """Create the sample-aligned building-listing deliverable."""
-    return create_listing_export(dataframe)
-'''
-
-STRUCTURE_RECOMMENDATIONS_FUNCTION = r'''
-def create_structure_recommendations():
-    """Create a data dictionary based on the supplied listing example."""
-    rows = [
-        ("Identity", "Apartment Building Name", "Where available", "Text", "Public-facing building or property name", "Search"),
-        ("Location", "Street Address", "Required", "Text", "Primary building address", "Search"),
-        ("Location", "City and Postal Code", "Required", "Formatted location", "City, province code, and postal code shown together", "Search/Filter"),
-        ("Property", "Building Classification", "Where available", "Controlled text", "Building form or market classification", "Filter"),
-        ("Property", "Number of Apartments", "Where available", "Whole number", "Recorded apartment or unit count", "Sort/Filter"),
-        ("Ownership", "Apartment Building Management/Owner", "Required", "Controlled text", "Organization responsible for the property", "Filter"),
-        ("Contact", "Phone Number", "Where available", "Phone", "Public contact number", "Search"),
-        ("Contact", "Email Contact", "Where available", "Email", "Public email contact", "Search"),
-        ("Contact", "WebSite", "Recommended", "URL", "Public property or management page", "Link"),
-        ("Research", "Source URL", "Required for verification", "URL", "Exact page supporting the record", "Link"),
-        ("Research", "Date Researched", "Required for verified records", "Date", "Freshness and research trail", "Filter"),
-        ("Research", "Researcher", "Required for verified records", "Controlled text", "Research accountability", "Filter"),
-        ("Research", "Verification Status", "Required", "Controlled status", "Human review outcome", "Filter"),
-        ("Research", "Missing Information", "When applicable", "Long text", "Documents information that was not publicly available", "No"),
-        ("Workflow", "Record Decision", "Required before publication", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
-    ]
-    return pd.DataFrame(
-        rows,
-        columns=[
-            "Field Group",
-            "Field",
-            "Requirement",
-            "Recommended Type",
-            "Purpose",
-            "Directory Use",
-        ],
-    )
-'''
-
-COMBINED_LOCATION_MAPPING = r'''
-    # The supplied listing format combines city, province, and postal code.
-    # Split it into Datablix's internal fields for QA and duplicate checks.
-    combined_location_columns = find_source_columns(
-        imported_data,
-        ["City and Postal Code"],
-    )
-    if combined_location_columns:
-        combined_location_values = combine_mapped_columns(
-            imported_data,
-            combined_location_columns,
-        )
-        parsed_locations = pd.DataFrame(
-            combined_location_values
-            .apply(parse_city_and_postal_code)
-            .tolist(),
-            columns=["City", "Province", "Postal Code"],
-            index=imported_data.index,
-        )
-
-        for location_field in ["City", "Province", "Postal Code"]:
-            current_values = resolved_series(mapped_data[location_field])
-            derived_values = resolved_series(parsed_locations[location_field])
-            fill_mask = (
-                unresolved_mask(current_values)
-                & ~unresolved_mask(derived_values)
-            )
-            current_values.loc[fill_mask] = derived_values.loc[fill_mask]
-            mapped_data[location_field] = current_values
-
-            if fill_mask.any():
-                for mapping_row in mapping_rows:
-                    if (
-                        mapping_row["Datablix Field"] == location_field
-                        and mapping_row["Mapping Status"] == "Not found"
-                    ):
-                        mapping_row["Imported Column(s)"] = ", ".join(
-                            combined_location_columns
-                        )
-                        mapping_row["Mapping Status"] = "Derived"
-                        break
-
-    mapped_data["Province"] = mapped_data["Province"].apply(
-        canonical_province_name
-    )
-
-'''
-
-OVERVIEW_PREVIEW = r'''
-        listing_preview = create_listing_export(qa_data)
-
-        with st.expander("Preview building listings", expanded=True):
-            st.caption(
-                "This preview follows the same headings and order as the "
-                "listing example. Research and workflow fields remain in "
-                "the supporting views and workbook tabs."
-            )
-            st.dataframe(
-                listing_preview.head(20),
-                width="stretch",
-                hide_index=True,
-            )
-            if total_records > 20:
-                st.caption(
-                    f"Showing the first 20 of {total_records:,} records. "
-                    "Every record is included in the checks and exports."
-                )
-
-        mapping_report = st.session_state.get(
-'''
+def validate_input(df):
+    groups = [ALIASES["Building Name"], ALIASES["Management/Owner"], ALIASES["Street Address"], ALIASES["City"], COMBINED_LOCATION_ALIASES, ALIASES["Website"], ALIASES["Phone"]]
+    if sum(bool(source_columns(df, g)) for g in groups) < 2:
+        raise ValueError("This worksheet does not look like a row-based apartment directory. Choose the tab where each row is one building.")
 
 
-def replace_once(text: str, old: str, new: str, label: str) -> str:
-    count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f"{label}: expected one match, found {count}.")
-    return text.replace(old, new, 1)
+def excel_sheet_names(uploaded):
+    with pd.ExcelFile(io.BytesIO(uploaded.getvalue()), engine="openpyxl") as workbook:
+        return workbook.sheet_names
 
 
-def add_alias(text: str, field_name: str, alias: str) -> str:
-    pattern = re.compile(
-        rf'(^    "{re.escape(field_name)}": \[\n)(.*?)(^    \],)',
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    match = pattern.search(text)
-    if not match:
-        raise RuntimeError(f"Could not locate alias list for {field_name}.")
-
-    body = match.group(2)
-    if f'"{alias}"' in body:
-        return text
-
-    new_body = body + f'        "{alias}",\n'
-    return text[:match.start(2)] + new_body + text[match.end(2):]
-
-
-def insert_after_list_constant(text: str, name: str, insertion: str) -> str:
-    if "LISTING_EXAMPLE_COLUMNS = [" in text:
-        return text
-    pattern = re.compile(
-        rf'({re.escape(name)} = \[\n.*?\n\]\n)',
-        flags=re.DOTALL,
-    )
-    match = pattern.search(text)
-    if not match:
-        raise RuntimeError(f"Could not locate {name}.")
-    return text[:match.end()] + "\n" + insertion.strip() + "\n\n" + text[match.end():]
-
-
-def insert_before(text: str, marker: str, insertion: str, token: str) -> str:
-    if token in text:
-        return text
-    position = text.find(marker)
-    if position < 0:
-        raise RuntimeError(f"Could not locate marker: {marker}")
-    return text[:position] + insertion.strip() + "\n\n" + text[position:]
-
-
-def replace_function(text: str, name: str, next_name: str, replacement: str) -> str:
-    pattern = re.compile(
-        rf'^def {re.escape(name)}\(.*?(?=^def {re.escape(next_name)}\()',
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    matches = list(pattern.finditer(text))
-    if len(matches) != 1:
-        raise RuntimeError(f"{name}: expected one function, found {len(matches)}.")
-    match = matches[0]
-    return text[:match.start()] + replacement.strip() + "\n\n" + text[match.end():]
-
-
-def patch_source(source: str) -> str:
-    for field_name, alias in [
-        ("Building Name", "Building Name (Draft - Check)"),
-        ("Management/Owner", "Original Owner Name"),
-        ("Website", "Website / Source URL"),
-        ("Source URL", "Website / Source URL"),
-        ("Date Researched", "Verification Date"),
-    ]:
-        source = add_alias(source, field_name, alias)
-
-    source = insert_after_list_constant(
-        source,
-        "PUBLIC_DIRECTORY_COLUMNS",
-        LISTING_CONSTANTS,
-    )
-
-    source = insert_before(
-        source,
-        "# ---------------------------------------------------------\n# File reading and field mapping",
-        LOCATION_HELPERS,
-        "def parse_city_and_postal_code(value):",
-    )
-
-    if "combined_location_columns = find_source_columns(" not in source:
-        marker = "    derived_classification = derive_building_classification(imported_data)"
-        position = source.find(marker)
-        if position < 0:
-            raise RuntimeError("Could not locate the mapping insertion point.")
-        source = source[:position] + COMBINED_LOCATION_MAPPING + source[position:]
-
-    source = replace_function(
-        source,
-        "create_directory_export",
-        "create_owner_research_summary",
-        LISTING_EXPORT_FUNCTION,
-    )
-    source = replace_function(
-        source,
-        "create_structure_recommendations",
-        "create_methodology_report",
-        STRUCTURE_RECOMMENDATIONS_FUNCTION,
-    )
-
-    source = replace_once(
-        source,
-        "template_data = pd.DataFrame(columns=DIRECTORY_COLUMNS)",
-        "template_data = pd.DataFrame(columns=LISTING_TEMPLATE_COLUMNS)",
-        "starter template",
-    )
-
-    if "listing_preview = create_listing_export(qa_data)" not in source:
-        pattern = re.compile(
-            r'\n        preview_columns = \[.*?'
-            r'\n        mapping_report = st\.session_state\.get\(',
-            flags=re.DOTALL,
-        )
-        match = pattern.search(source)
-        if not match:
-            raise RuntimeError("Could not locate the Overview preview block.")
-        source = source[:match.start()] + "\n" + OVERVIEW_PREVIEW + source[match.end():]
-
-    manual_labels = [
-        ('building_name = st.text_input(\n                    "Building Name",', 'building_name = st.text_input(\n                    "Apartment Building Name",'),
-        ('owner = st.text_input(\n                    "Management/Owner",', 'owner = st.text_input(\n                    "Apartment Building Management/Owner",'),
-        ('phone = st.text_input(\n                    "Phone",', 'phone = st.text_input(\n                    "Phone Number",'),
-        ('primary_email = st.text_input(\n                    "Primary Email",', 'primary_email = st.text_input(\n                    "Email Contact",'),
-        ('website = st.text_input(\n                    "Website",', 'website = st.text_input(\n                    "WebSite",'),
-    ]
-    for old, new in manual_labels:
-        if old in source:
-            source = source.replace(old, new, 1)
-
-    editor_old = '''                        "Building Name": st.column_config.TextColumn(
-                            "Building Name",
-                            width="medium",
-                        ),
-'''
-    editor_new = '''                        "Building Name": st.column_config.TextColumn(
-                            "Apartment Building Name",
-                            width="medium",
-                        ),
-                        "Management/Owner": st.column_config.TextColumn(
-                            "Apartment Building Management/Owner",
-                            width="large",
-                        ),
-                        "Phone": st.column_config.TextColumn(
-                            "Phone Number",
-                            width="medium",
-                        ),
-                        "Primary Email": st.column_config.TextColumn(
-                            "Email Contact",
-                            width="large",
-                        ),
-                        "Website": st.column_config.TextColumn(
-                            "WebSite",
-                            width="large",
-                        ),
-'''
-    if editor_old in source:
-        source = source.replace(editor_old, editor_new, 1)
-
-    replacements = [
-        ('"Directory Database": directory_database,', '"Building Listings": directory_database,'),
-        ("It keeps the clean directory, owner research, draft profiles,", "It keeps the sample-aligned building listings, owner research, draft profiles,"),
-        ('"Directory database",', '"Building listings",'),
-        ('file_name=f"{safe_filename}_directory_database.csv",', 'file_name=f"{safe_filename}_building_listings.csv",'),
-    ]
-    for old, new in replacements:
-        if old in source:
-            source = source.replace(old, new, 1)
-
-    return source
-
-
-def choose_target(arguments: list[str]) -> Path:
-    if arguments:
-        return Path(arguments[0])
-    for candidate in [Path("app.py"), Path("datablix_before_after_logic.py")]:
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError(
-        "Supply the Datablix filename, for example: "
-        "python apply_datablix_listing_alignment.py app.py"
-    )
-
-
-def main() -> int:
-    target = choose_target(sys.argv[1:])
-    source = target.read_text(encoding="utf-8")
-    patched = patch_source(source)
-
-    # Do not overwrite the app unless the result is valid Python.
-    ast.parse(patched)
-
-    backup = target.with_name(
-        f"{target.stem}_before_listing_alignment{target.suffix}"
-    )
-    if not backup.exists():
-        shutil.copy2(target, backup)
-    target.write_text(patched, encoding="utf-8")
-
-    print(f"Updated: {target}")
-    print(f"Backup:  {backup}")
-    print("Building Listings now follows the nine-column example.")
+def preferred_sheet(names):
+    keywords = ["working", "research", "apartmentbuildings", "buildings", "directory", "listing"]
+    normalized = [norm_header(n) for n in names]
+    for keyword in keywords:
+        for i, name in enumerate(normalized):
+            if keyword in name:
+                return i
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def read_upload(uploaded, sheet=None):
+    data = uploaded.getvalue()
+    extension = uploaded.name.rsplit(".", 1)[-1].lower()
+    df = pd.read_csv(io.BytesIO(data)) if extension == "csv" else pd.read_excel(io.BytesIO(data), sheet_name=sheet, engine="openpyxl")
+    return prepare_data(df), data
+
+
+def sheet_id(url):
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", str(url))
+    return match.group(1) if match else None
+
+
+def sheet_gid(url):
+    parsed = urlparse(str(url))
+    for text in [parsed.query, parsed.fragment]:
+        values = parse_qs(text).get("gid", [])
+        if values and str(values[0]).isdigit():
+            return str(values[0])
+    match = re.search(r"(?:[?#&]gid=)(\d+)", str(url))
+    return match.group(1) if match else None
+
+
+def sheet_csv_url(url, selector=""):
+    clean, selector = str(url).strip(), str(selector).strip()
+    if not clean:
+        raise ValueError("Paste a Google Sheets link first.")
+    parsed = urlparse(clean)
+    if "docs.google.com" in parsed.netloc.lower() and "/spreadsheets/d/e/" in parsed.path:
+        parts = urlparse(clean.replace("/pubhtml", "/pub"))
+        query = parse_qs(parts.query)
+        query["output"] = ["csv"]
+        if selector.isdigit():
+            query["gid"] = [selector]
+        return urlunparse(parts._replace(query=urlencode({k: v[-1] for k, v in query.items() if v})))
+    if clean.lower().endswith(".csv") or "output=csv" in clean.lower():
+        return clean
+    sid = sheet_id(clean)
+    if not sid:
+        raise ValueError("This does not look like a standard Google Sheets sharing link.")
+    if selector and not selector.isdigit():
+        return f"https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&sheet={quote(selector)}"
+    gid = selector if selector.isdigit() else sheet_gid(clean)
+    return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv" + (f"&gid={gid}" if gid else "")
+
+
+def read_google_sheet(url, selector=""):
+    request = Request(sheet_csv_url(url, selector), headers={"User-Agent": "Mozilla/5.0 (compatible; Datablix/1.0)"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            data = response.read()
+            content_type = response.headers.get("Content-Type", "").lower()
+    except Exception as error:
+        raise ValueError("Datablix could not read this Google Sheet. Confirm the link and set General access to Anyone with the link, Viewer.") from error
+    preview = data[:500].decode("utf-8", errors="ignore").lower()
+    if "text/html" in content_type or "<html" in preview:
+        raise ValueError("Google returned a webpage instead of spreadsheet data. Confirm the sharing setting or use a published CSV link.")
+    try:
+        df = pd.read_csv(io.BytesIO(data))
+    except Exception as error:
+        raise ValueError("The Sheet opened, but Datablix could not read the first row as column headings.") from error
+    sid = sheet_id(url)
+    return prepare_data(df), data, f"google_sheet_{sid[:10]}.csv" if sid else "google_sheet.csv", selector or sheet_gid(url) or "linked worksheet"
+
+
+# =========================================================
+# QA and deliverables
+# =========================================================
+
+def qa_checks(df):
+    out = normalize_workflow(df.copy())
+    issues = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+    core_gaps = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+    research_gaps = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+
+    def flag(mask, severity, message):
+        for idx in out.index[mask.fillna(False)]:
+            issues.at[idx].append((severity, message))
+
+    for field in CORE_FIELDS:
+        mask = unresolved_mask(out[field])
+        flag(mask, "Critical", f"Missing {field}")
+        for idx in out.index[mask]:
+            core_gaps.at[idx].append(field)
+    for field in TARGET_FIELDS:
+        mask = unresolved_mask(out[field])
+        for idx in out.index[mask]:
+            research_gaps.at[idx].append(field)
+
+    ids = out["Record ID"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+    flag(ids.ne("") & ids.duplicated(False), "Critical", "Duplicate Record ID")
+
+    address_key = (
+        out["Street Address"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+        + "|" + out["City"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+        + "|" + out["Postal Code"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+    )
+    flag(address_key.str.split("|").str[0].ne("") & address_key.duplicated(False), "Warning", "Possible duplicate address")
+
+    units = pd.to_numeric(out["Number of Apartments"].astype("string").str.replace(",", "", regex=False).str.extract(r"(\d+(?:\.\d+)?)", expand=False), errors="coerce")
+    flag(~unresolved_mask(out["Number of Apartments"]) & (units.isna() | units.le(0)), "Warning", "Invalid number of apartments")
+
+    email = out["Primary Email"].astype("string").fillna("").str.strip()
+    flag(~unresolved_mask(out["Primary Email"]) & ~email.str.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", na=False), "Warning", "Invalid email format")
+    phone = out["Phone"].astype("string").fillna("").str.replace(r"\D", "", regex=True)
+    flag(~unresolved_mask(out["Phone"]) & ~phone.str.len().isin([10, 11]), "Warning", "Phone number does not contain 10 or 11 digits")
+    pc = out["Postal Code"].astype("string").fillna("").str.upper().str.strip()
+    flag(~unresolved_mask(out["Postal Code"]) & ~pc.str.match(r"^[A-Z]\d[A-Z][ -]?\d[A-Z]\d$", na=False), "Warning", "Invalid Canadian postal code format")
+    for field in ["Website", "Source URL"]:
+        urls = out[field].astype("string").fillna("").str.lower().str.strip()
+        flag(~unresolved_mask(out[field]) & ~urls.str.startswith(("http://", "https://"), na=False), "Warning", f"Invalid {field}")
+
+    dates = pd.to_datetime(out["Date Researched"], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+    flag(~unresolved_mask(out["Date Researched"]) & dates.isna(), "Warning", "Invalid Date Researched")
+    flag(dates.notna() & dates.gt(today), "Warning", "Date Researched is in the future")
+
+    out["Working Record Label"] = resolved(out["Building Name"]).combine_first(resolved(out["Street Address"])).combine_first(resolved(out["Record ID"])).fillna("Unlabelled record")
+    out["Core Gap Count"] = core_gaps.apply(len)
+    out["Core Gaps"] = core_gaps.apply(lambda v: ", ".join(v) if v else "None")
+    out["Research Gap Count"] = research_gaps.apply(len)
+    out["Research Gaps"] = research_gaps.apply(lambda v: ", ".join(v) if v else "None")
+    out["Critical Issue Count"] = issues.apply(lambda v: sum(s == "Critical" for s, _ in v))
+    out["Warning Count"] = issues.apply(lambda v: sum(s == "Warning" for s, _ in v))
+    out["QA Flag Count"] = issues.apply(len)
+    out["QA Flags"] = issues.apply(lambda v: "; ".join(f"{s}: {m}" for s, m in v) if v else "No directory data issues found")
+    out["QA Status"] = out.apply(lambda r: "Critical" if r["Critical Issue Count"] else "Review" if r["Warning Count"] else "Pass", axis=1)
+    out["Core Completeness %"] = ((len(CORE_FIELDS) - out["Core Gap Count"]) / len(CORE_FIELDS) * 100).round(1)
+    out["Target Coverage %"] = ((len(TARGET_FIELDS) - out["Research Gap Count"]) / len(TARGET_FIELDS) * 100).round(1)
+
+    workflow = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+    def gap(mask, message):
+        for idx in out.index[mask.fillna(False)]:
+            workflow.at[idx].append(message)
+    gap(unresolved_mask(out["Source URL"]), "Research source not recorded")
+    gap(unresolved_mask(out["Date Researched"]), "Research date not recorded")
+    gap(unresolved_mask(out["Researcher"]), "Researcher not recorded")
+    gap(out["Research Status"].isin(["Imported - Needs Review", "Not Started", "In Progress"]), "Research is not complete")
+    gap(out["Research Status"].eq("Needs Follow-up"), "Research requires follow-up")
+    gap(out["Source Status"].eq("Not Checked"), "Source not checked")
+    gap(out["Source Status"].isin(["Needs Follow-up", "Unavailable"]), "Source requires documentation or follow-up")
+    gap(out["Verification Status"].ne("Verified"), "Human verification not completed")
+    gap(out["Record Decision"].eq("Undecided"), "Record decision not made")
+    gap(out["Record Decision"].isin(["Update", "Possible Duplicate"]), "Record decision requires action")
+    gap(out["Research Status"].eq("Completed") & out["Research Gap Count"].gt(0) & unresolved_mask(out["Missing Information"]), "Document unavailable information")
+    out["Workflow Gap Count"] = workflow.apply(len)
+    out["Workflow Gaps"] = workflow.apply(lambda v: "; ".join(v) if v else "No workflow gaps")
+
+    def readiness(row):
+        if row["Record Decision"] == "Remove": return "Excluded from Directory"
+        if row["Record Decision"] == "Possible Duplicate": return "Duplicate Review"
+        if row["Critical Issue Count"]: return "Fix Critical Data"
+        if row["Research Status"] in ["Imported - Needs Review", "Not Started", "In Progress"]: return "Needs Research"
+        if row["Research Status"] == "Needs Follow-up": return "Needs Follow-up"
+        if row["Research Status"] != "Completed": return "Needs Review"
+        if row["Warning Count"]: return "Needs Data Review"
+        if row["Verification Status"] != "Verified": return "Needs Verification"
+        if row["Record Decision"] == "Update": return "Needs Update"
+        if row["Record Decision"] != "Keep": return "Needs Decision"
+        if is_unresolved(row["Source URL"]) and row["Source Status"] != "Unavailable": return "Record Research Source"
+        if is_unresolved(row["Date Researched"]) or is_unresolved(row["Researcher"]): return "Complete Research Trail"
+        if row["Research Gap Count"] and is_unresolved(row["Missing Information"]): return "Document Research Gaps"
+        if row["Research Gap Count"]: return "Ready with Documented Gaps"
+        return "Ready for Directory"
+    out["Record Readiness"] = out.apply(readiness, axis=1)
+    out["Follow-up Priority"] = out.apply(
+        lambda r: "None" if r["Record Readiness"] in ["Ready for Directory", "Ready with Documented Gaps", "Excluded from Directory"]
+        else "High" if r["Critical Issue Count"] or r["Record Readiness"] in ["Duplicate Review", "Needs Follow-up"]
+        else "Medium" if r["Warning Count"] or r["Research Gap Count"] else "Low", axis=1
+    )
+    age = (today - dates).dt.days
+    out["Source Age (Days)"] = age.where(dates.notna() & dates.le(today)).astype("Int64")
+    out["Freshness Status"] = "Current"
+    out.loc[unresolved_mask(out["Date Researched"]), "Freshness Status"] = "Missing date"
+    out.loc[~unresolved_mask(out["Date Researched"]) & dates.isna(), "Freshness Status"] = "Invalid date"
+    out.loc[dates.gt(today), "Freshness Status"] = "Future date"
+    out.loc[dates.notna() & dates.le(today) & age.gt(FRESHNESS_DAYS), "Freshness Status"] = "Stale"
+    return out
+
+
+def listing_export(df):
+    listing = pd.DataFrame(index=df.index)
+    listing["Apartment Building Name"] = df["Building Name"]
+    listing["Street Address"] = df["Street Address"]
+    listing["City and Postal Code"] = df.apply(formatted_location, axis=1)
+    listing["Building Classification"] = df["Building Classification"]
+    listing["Number of Apartments"] = df["Number of Apartments"]
+    listing["Apartment Building Management/Owner"] = df["Management/Owner"]
+    listing["Phone Number"] = df["Phone"]
+    listing["Email Contact"] = df["Primary Email"]
+    listing["WebSite"] = df["Website"]
+    return listing[LISTING_COLUMNS]
+
+
+def ready_mask(df):
+    return df["Record Readiness"].isin(["Ready for Directory", "Ready with Documented Gaps"])
+
+
+def research_log(df):
+    columns = [
+        "Record ID", "Working Record Label", "Building Name", "Management/Owner",
+        "Street Address", "City", "Province", "Postal Code", "Source URL",
+        "Date Researched", "Source Age (Days)", "Freshness Status", "Researcher",
+        "Research Status", "Source Status", "Verification Status",
+        "Research Gap Count", "Research Gaps", "Missing Information",
+        "Reviewer Notes", "Record Decision", "Follow-up Priority",
+        "Workflow Gap Count", "Workflow Gaps", "Record Readiness",
+    ]
+    return df[[c for c in columns if c in df.columns]].copy()
+
+
+def owner_summary(df):
+    working = df.assign(_owner=display_values(df["Management/Owner"], "Unassigned"))
+    rows = []
+    for owner, group in working.groupby("_owner", dropna=False):
+        rows.append({
+            "Management/Owner": owner,
+            "Building Records": len(group),
+            "Named Buildings": int((~unresolved_mask(group["Building Name"])).sum()),
+            "Cities": ", ".join(sorted(set(resolved(group["City"]).dropna().astype(str).str.strip()))),
+            "Records with Website": int((~unresolved_mask(group["Website"])).sum()),
+            "Records with Apartment Count": int((~unresolved_mask(group["Number of Apartments"])).sum()),
+            "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
+            "Directory-ready Records": int(ready_mask(group).sum()),
+            "Records Needing Follow-up": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Directory")).sum()),
+        })
+    return pd.DataFrame(rows).sort_values(["Records Needing Follow-up", "Building Records"], ascending=[False, False]).reset_index(drop=True) if rows else pd.DataFrame()
+
+
+def draft_profiles(df):
+    rows = []
+    for _, row in df.iterrows():
+        if row["Record Decision"] == "Remove":
+            continue
+        label = str(row["Working Record Label"]).strip() or "Apartment property"
+        sentences = [f"{label} is located at {row['Street Address']}, {formatted_location(row)}."]
+        if not is_unresolved(row["Management/Owner"]): sentences.append(f"The recorded management or owner is {row['Management/Owner']}.")
+        if not is_unresolved(row["Building Classification"]): sentences.append(f"The current building classification is {row['Building Classification']}.")
+        if not is_unresolved(row["Number of Apartments"]): sentences.append(f"The source records approximately {row['Number of Apartments']} apartments.")
+        contact = []
+        for label_text, field in [("phone", "Phone"), ("email", "Primary Email"), ("website", "Website")]:
+            if not is_unresolved(row[field]): contact.append(f"{label_text}: {row[field]}")
+        if contact: sentences.append("Contact information: " + "; ".join(contact) + ".")
+        rows.append({
+            "Record ID": row["Record ID"], "Profile Heading": label,
+            "Management/Owner": row["Management/Owner"], "Draft Profile": " ".join(sentences),
+            "Research Gaps": row["Research Gaps"], "Source URL": row["Source URL"],
+            "Verification Status": row["Verification Status"],
+            "Profile Status": "Ready for editorial review" if ready_mask(pd.DataFrame([row])).iloc[0] else "Needs research or verification",
+            "Editorial Note": "Confirm facts and adjust publication wording before use.",
+        })
+    return pd.DataFrame(rows)
+
+
+def field_coverage(df):
+    rows = []
+    for field in ALL_RESEARCH_FIELDS:
+        missing = int(unresolved_mask(df[field]).sum())
+        rows.append({
+            "Directory Field": field,
+            "Field Group": "Core listing field" if field in CORE_FIELDS else "Research target",
+            "Missing Records": missing,
+            "Populated Records": len(df) - missing,
+            "Coverage": f"{((len(df)-missing)/len(df)*100 if len(df) else 0):.1f}%",
+            "How Datablix treats a blank": "Blocks a usable listing" if field in CORE_FIELDS else "Creates a research gap, not a quality failure",
+        })
+    return pd.DataFrame(rows)
+
+
+def issue_summary(df):
+    counts = {}
+    for text in df["QA Flags"].fillna(""):
+        for item in str(text).split("; "):
+            if item and item != "No directory data issues found": counts[item] = counts.get(item, 0) + 1
+    rows = []
+    for item, count in counts.items():
+        severity, _, issue = item.partition(": ")
+        rows.append({"Severity": severity, "Issue": issue or item, "Affected Records": count})
+    return pd.DataFrame(rows).sort_values(["Severity", "Affected Records"], ascending=[True, False]) if rows else pd.DataFrame(columns=["Severity", "Issue", "Affected Records"])
+
+
+def project_summary(df):
+    return pd.DataFrame([
+        {"Metric": "Apartment building records", "Value": len(df), "Interpretation": "Rows in the working directory."},
+        {"Metric": "Management/owner organizations", "Value": resolved(df["Management/Owner"]).dropna().astype(str).str.strip().nunique(), "Interpretation": "Distinct recorded organizations."},
+        {"Metric": "Records with usable core identity", "Value": int(df["Core Gap Count"].eq(0).sum()), "Interpretation": "Records with management/owner, street address, and city."},
+        {"Metric": "Verified records", "Value": int(df["Verification Status"].eq("Verified").sum()), "Interpretation": "Records marked as human-verified."},
+        {"Metric": "Directory-ready records", "Value": int(ready_mask(df).sum()), "Interpretation": "Accepted records, including documented gaps."},
+        {"Metric": "Open research gaps", "Value": int(df["Research Gap Count"].sum()), "Interpretation": "Unconfirmed listing fields."},
+    ])
+
+
+def structure_recommendations():
+    rows = [
+        ("Identity", "Apartment Building Name", "Where available", "Text", "Public-facing building name", "Search"),
+        ("Location", "Street Address", "Required", "Text", "Primary building address", "Search"),
+        ("Location", "City and Postal Code", "Required", "Formatted location", "City, province code, and postal code", "Search/Filter"),
+        ("Property", "Building Classification", "Where available", "Controlled text", "Building classification", "Filter"),
+        ("Property", "Number of Apartments", "Where available", "Whole number", "Apartment count", "Sort/Filter"),
+        ("Ownership", "Apartment Building Management/Owner", "Required", "Controlled text", "Responsible organization", "Filter"),
+        ("Contact", "Phone Number", "Where available", "Phone", "Public contact number", "Search"),
+        ("Contact", "Email Contact", "Where available", "Email", "Public email", "Search"),
+        ("Contact", "WebSite", "Recommended", "URL", "Public property or company page", "Link"),
+        ("Research", "Source URL", "Required for verification", "URL", "Exact supporting page", "Link"),
+        ("Research", "Date Researched", "Required for verified records", "Date", "Freshness trail", "Filter"),
+        ("Research", "Researcher", "Required for verified records", "Controlled text", "Accountability", "Filter"),
+        ("Research", "Verification Status", "Required", "Controlled status", "Human review outcome", "Filter"),
+        ("Research", "Missing Information", "When applicable", "Long text", "Documents public-data limits", "No"),
+        ("Workflow", "Record Decision", "Required before publication", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
+    ]
+    return pd.DataFrame(rows, columns=["Field Group", "Field", "Requirement", "Recommended Type", "Purpose", "Directory Use"])
+
+
+def methodology(df, name, sheet):
+    return pd.DataFrame([
+        {"Section": "Purpose", "Report Text": "Build and improve a searchable apartment-building directory using project data and public sources."},
+        {"Section": "Input reviewed", "Report Text": f"Workspace: {name}. Worksheet: {sheet or 'not specified'}. Records reviewed: {len(df):,}."},
+        {"Section": "Listing structure", "Report Text": "The Building Listings output follows the supplied nine-column listing example."},
+        {"Section": "Method", "Report Text": "Map imported headings, preserve original columns, check identity and formats, track sources and verification, and keep publication decisions explicit."},
+        {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, duplicated, or inconsistent. Final inclusion remains a human decision."},
+        {"Section": "Recommended next steps", "Report Text": "Resolve high-priority records, verify sources, document unavailable information, and complete editorial review."},
+    ])
+
+
+# =========================================================
+# Session operations
+# =========================================================
+
+def open_workspace(mapped, mapping, signature, name, sheet, source_type, source_ref="", selector="", message="Workspace opened."):
+    if st.session_state.get(S_FILE) != signature:
+        st.session_state[S_FILE] = signature
+        st.session_state[S_ORIGINAL] = mapped.copy()
+        st.session_state[S_WORKING] = mapped.copy()
+        st.session_state[S_MAPPING] = mapping
+        st.session_state[S_NAME] = name
+        st.session_state[S_SHEET] = sheet or ""
+        st.session_state[S_SOURCE_TYPE] = source_type
+        st.session_state[S_SOURCE_REF] = source_ref
+        st.session_state[S_SELECTOR] = selector
+        st.session_state[S_EDIT_COUNT] = 0
+        st.session_state[S_FLASH] = message
+
+
+def load_upload(uploaded, sheet=None):
+    df, data = read_upload(uploaded, sheet)
+    validate_input(df)
+    mapped, mapping = map_schema(df)
+    signature = f"{uploaded.name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
+    open_workspace(mapped, mapping, signature, uploaded.name, sheet, "Uploaded file", uploaded.name, message=f"{uploaded.name} uploaded successfully.")
+
+
+def load_google(url, selector="", force=False):
+    df, data, name, sheet = read_google_sheet(url, selector)
+    validate_input(df)
+    mapped, mapping = map_schema(df)
+    signature = f"{name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
+    if not force and st.session_state.get(S_FILE) == signature:
+        st.session_state[S_FLASH] = "This Google Sheet is already open. Your current edits were kept."
+        return False
+    if force:
+        st.session_state.pop(S_FILE, None)
+    open_workspace(mapped, mapping, signature, name, sheet, "Google Sheet", str(url).strip(), str(selector).strip(), "Google Sheet loaded as an editable working copy.")
+    return True
+
+
+def blank_workspace():
+    df = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
+    mapping = pd.DataFrame({"Datablix Field": INTERNAL_COLUMNS, "Imported Column(s)": INTERNAL_COLUMNS, "Mapping Status": "Template field"})
+    st.session_state.pop(S_FILE, None)
+    open_workspace(df, mapping, "blank-workspace", "datablix_directory_research.csv", "", "Blank workspace", message="A blank workspace was created.")
+
+
+def generate_id(df):
+    existing = set(resolved(df["Record ID"]).dropna().astype(str).str.strip())
+    n = 1
+    while f"DB-NEW-{n:03d}" in existing: n += 1
+    return f"DB-NEW-{n:03d}"
+
+
+def save_edits(edited, columns):
+    working = st.session_state[S_WORKING].copy()
+    for c in columns:
+        if c in edited.columns:
+            working.loc[edited.index, c] = edited[c]
+    working["Province"] = working["Province"].apply(canonical_province)
+    working["Postal Code"] = working["Postal Code"].apply(postal_code)
+    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working))
+    st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+    st.session_state[S_FLASH] = "Updates were saved and the checks were re-run."
+
+
+# =========================================================
+# Interface
+# =========================================================
+
+st.html("""
+<style>
+.block-container{max-width:1480px;padding-top:1.1rem;padding-bottom:4rem}
+h1,h2,h3{letter-spacing:-.02em}
+div[data-testid="stMetric"]{background:rgba(247,250,252,.82);border:1px solid rgba(49,51,63,.10);border-radius:14px;padding:.85rem 1rem;min-height:104px}
+div[data-testid="stFileUploader"]{border:1px dashed rgba(37,99,235,.36);border-radius:14px;padding:.35rem .65rem .8rem;background:rgba(239,246,255,.38)}
+div[data-testid="stExpander"],div[data-testid="stDataFrame"],div[data-testid="stDataEditor"]{border:1px solid rgba(49,51,63,.11);border-radius:12px;overflow:hidden}
+.stButton>button,.stDownloadButton>button{border-radius:10px;font-weight:650;min-height:2.7rem}
+@media(prefers-color-scheme:dark){div[data-testid="stMetric"]{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12)}}
+</style>
+""")
+render_brand_header()
+
+with st.sidebar:
+    st.subheader("Workspace")
+    st.caption("Open a directory, review it, and download your work before closing the app.")
+    current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
+    options = ["Upload a file", "Connect a Google Sheet", "Start blank"]
+    default = {"Uploaded file": 0, "Google Sheet": 1, "Blank workspace": 2}.get(current, 0)
+    source = st.radio("Where would you like to begin?", options, index=default)
+    try:
+        if source == "Upload a file":
+            uploaded = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx"])
+            selected = None
+            if uploaded is not None:
+                if uploaded.name.lower().endswith(".xlsx"):
+                    names = excel_sheet_names(uploaded)
+                    selected = st.selectbox("Which worksheet holds the buildings?", names, index=preferred_sheet(names))
+                load_upload(uploaded, selected)
+        elif source == "Connect a Google Sheet":
+            with st.form("google_form"):
+                url = st.text_input("Google Sheets link", placeholder="https://docs.google.com/spreadsheets/d/...")
+                selector = st.text_input("Worksheet name or tab ID (optional)")
+                submit = st.form_submit_button("Load working copy", type="primary", width="stretch")
+            if submit and load_google(url, selector): st.rerun()
+        else:
+            if st.button("Create blank workspace", width="stretch"):
+                blank_workspace(); st.rerun()
+    except Exception as error:
+        st.error(str(error))
+
+    with st.expander("Need a starting template?"):
+        st.caption("The first nine columns match the listing example.")
+        st.download_button("Download blank template", csv_bytes(pd.DataFrame(columns=TEMPLATE_COLUMNS)), "datablix_building_listing_template.csv", "text/csv", width="stretch")
+
+    if S_WORKING in st.session_state:
+        st.divider()
+        label = st.session_state.get(S_NAME, "workspace")
+        if st.session_state.get(S_SHEET): label += f" · {st.session_state[S_SHEET]}"
+        st.success(f"Open: {label}")
+        if st.session_state.get(S_SOURCE_TYPE) == "Google Sheet":
+            with st.expander("Reload from Google Sheets"):
+                confirm = st.checkbox("Replace my current edits") if st.session_state.get(S_EDIT_COUNT, 0) else True
+                if st.button("Reload from Google Sheets", disabled=not confirm, width="stretch"):
+                    load_google(st.session_state[S_SOURCE_REF], st.session_state[S_SELECTOR], force=True); st.rerun()
+        with st.expander("Reset workspace"):
+            confirm = st.checkbox("I understand this discards my session edits")
+            if st.button("Reset to original data", disabled=not confirm, width="stretch"):
+                st.session_state[S_WORKING] = st.session_state[S_ORIGINAL].copy()
+                st.session_state[S_EDIT_COUNT] = 0
+                st.session_state[S_FLASH] = "The workspace was reset."
+                st.rerun()
+
+if S_WORKING not in st.session_state:
+    st.info("Open a workspace from the sidebar to get started.")
+    with st.expander("What Datablix does", expanded=True):
+        st.markdown("""
+        - Opens CSV, Excel, or a viewable Google Sheet.
+        - Matches imported headings without removing original columns.
+        - Keeps the final Building Listings output aligned with the supplied nine-column example.
+        - Separates data-quality issues from research gaps.
+        - Tracks sources, verification, notes, follow-ups, and exports.
+        """)
+    st.stop()
+
+if S_FLASH in st.session_state:
+    st.toast(st.session_state.pop(S_FLASH), icon="✅")
+
+working = st.session_state[S_WORKING].copy()
+has_records = not working.empty
+qa = qa_checks(working) if has_records else None
+
+sections = ["Overview", "Research", "Data quality", "Review & edit", "Export"]
+section = st.segmented_control("Section", sections, label_visibility="collapsed", key="db_section") or "Overview"
+if not has_records and section in ["Research", "Data quality", "Export"]:
+    st.info("This workspace has no records yet. Add one in Review & edit."); st.stop()
+
+if section == "Overview":
+    st.header("Overview")
+    if not has_records:
+        st.info("This workspace is empty. Go to Review & edit to add your first building.")
+    else:
+        cards = st.columns(4)
+        cards[0].metric("Records", f"{len(qa):,}")
+        cards[1].metric("Ready for directory", f"{int(ready_mask(qa).sum()):,}")
+        cards[2].metric("Critical issues", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
+        cards[3].metric("Verified", f"{int(qa['Verification Status'].eq('Verified').sum()):,}")
+        completed = int(qa["Research Status"].eq("Completed").sum())
+        st.progress(completed / len(qa), text=f"Research completed: {completed:,} of {len(qa):,} records")
+        with st.expander("Preview building listings", expanded=True):
+            st.caption("This preview uses the same nine headings and order as the listing example.")
+            st.dataframe(listing_export(qa).head(20), width="stretch", hide_index=True)
+        with st.expander("How your columns were matched"):
+            st.dataframe(st.session_state[S_MAPPING], width="stretch", hide_index=True)
+
+elif section == "Research":
+    st.header("Research progress")
+    cards = st.columns(4)
+    cards[0].metric("Imported to review", f"{int(qa['Research Status'].eq('Imported - Needs Review').sum()):,}")
+    cards[1].metric("In progress", f"{int(qa['Research Status'].eq('In Progress').sum()):,}")
+    cards[2].metric("Ready for review", f"{int(qa['Research Status'].eq('Ready for Review').sum()):,}")
+    cards[3].metric("Completed", f"{int(qa['Research Status'].eq('Completed').sum()):,}")
+    tabs = st.tabs(["Source tracker", "Owner coverage", "Draft profiles"])
+    with tabs[0]: st.dataframe(research_log(qa).head(100), width="stretch", hide_index=True)
+    with tabs[1]: st.dataframe(owner_summary(qa), width="stretch", hide_index=True)
+    with tabs[2]: st.dataframe(draft_profiles(qa).head(50), width="stretch", hide_index=True)
+
+elif section == "Data quality":
+    st.header("Data quality and research coverage")
+    cards = st.columns(5)
+    cards[0].metric("Critical records", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
+    cards[1].metric("Records to review", f"{int(qa['QA Status'].eq('Review').sum()):,}")
+    cards[2].metric("Quality pass", f"{int(qa['QA Status'].eq('Pass').sum()):,}")
+    cards[3].metric("Quality flags", f"{int(qa['QA Flag Count'].sum()):,}")
+    cards[4].metric("Open research gaps", f"{int(qa['Research Gap Count'].sum()):,}")
+    tabs = st.tabs(["Quality issues", "Research coverage", "Records with gaps"])
+    with tabs[0]: st.dataframe(issue_summary(qa), width="stretch", hide_index=True)
+    with tabs[1]: st.dataframe(field_coverage(qa), width="stretch", hide_index=True)
+    with tabs[2]:
+        cols = ["Record ID", "Working Record Label", "Management/Owner", "Street Address", "Research Gap Count", "Research Gaps", "Target Coverage %", "Follow-up Priority", "Record Readiness"]
+        st.dataframe(qa.loc[qa["Research Gap Count"].gt(0), cols].head(100), width="stretch", hide_index=True)
+
+elif section == "Review & edit":
+    st.header("Review & edit")
+    if has_records:
+        with st.expander("Filter the list"):
+            row1 = st.columns(3)
+            qa_filter = row1[0].multiselect("Directory quality", sorted(display_values(qa["QA Status"]).unique()), default=sorted(display_values(qa["QA Status"]).unique()))
+            owner_filter = row1[1].multiselect("Apartment Building Management/Owner", sorted(display_values(qa["Management/Owner"]).unique()), default=sorted(display_values(qa["Management/Owner"]).unique()))
+            research_filter = row1[2].multiselect("Research status", sorted(display_values(qa["Research Status"]).unique()), default=sorted(display_values(qa["Research Status"]).unique()))
+            row2 = st.columns(2)
+            verification_filter = row2[0].multiselect("Verification status", sorted(display_values(qa["Verification Status"]).unique()), default=sorted(display_values(qa["Verification Status"]).unique()))
+            readiness_filter = row2[1].multiselect("Directory readiness", sorted(display_values(qa["Record Readiness"]).unique()), default=sorted(display_values(qa["Record Readiness"]).unique()))
+        filtered = qa[
+            display_values(qa["QA Status"]).isin(qa_filter)
+            & display_values(qa["Management/Owner"]).isin(owner_filter)
+            & display_values(qa["Research Status"]).isin(research_filter)
+            & display_values(qa["Verification Status"]).isin(verification_filter)
+            & display_values(qa["Record Readiness"]).isin(readiness_filter)
+        ]
+        st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
+        tabs = st.tabs(["Inspect", "Edit"])
+        with tabs[0]:
+            inspect = filtered[["Record ID", "Working Record Label", "Building Name", "Management/Owner", "Street Address", "City", "Province", "Postal Code", "Number of Apartments", "Primary Email", "Research Status", "Verification Status", "Research Gaps", "QA Status", "QA Flags", "Workflow Gaps", "Follow-up Priority", "Record Readiness"]].rename(columns={"Building Name": "Apartment Building Name", "Management/Owner": "Apartment Building Management/Owner", "Primary Email": "Email Contact"})
+            st.dataframe(inspect, width="stretch", hide_index=True)
+        with tabs[1]:
+            edit_fields = st.multiselect("Fields to edit", [c for c in INTERNAL_COLUMNS if c != "Record ID"], default=["Building Name", "Management/Owner", "Phone", "Primary Email", "Website", "Research Status", "Verification Status", "Record Decision", "Date Researched", "Source URL", "Missing Information", "Reviewer Notes"])
+            context = ["Record ID", "Working Record Label"] + edit_fields + ["Research Gaps", "QA Status", "Record Readiness"]
+            context = list(dict.fromkeys(c for c in context if c in filtered.columns))
+            locked = [c for c in context if c in ["Record ID", "Working Record Label", "Research Gaps", "QA Status", "Record Readiness"]]
+            edited = st.data_editor(
+                filtered[context], width="stretch", hide_index=True, num_rows="fixed", disabled=locked,
+                column_config={
+                    "Building Name": st.column_config.TextColumn("Apartment Building Name"),
+                    "Management/Owner": st.column_config.TextColumn("Apartment Building Management/Owner", width="large"),
+                    "Phone": st.column_config.TextColumn("Phone Number"),
+                    "Primary Email": st.column_config.TextColumn("Email Contact", width="large"),
+                    "Website": st.column_config.TextColumn("WebSite", width="large"),
+                    "Research Status": st.column_config.SelectboxColumn("Research Status", options=RESEARCH_STATUSES, required=True),
+                    "Source Status": st.column_config.SelectboxColumn("Source Status", options=SOURCE_STATUSES, required=True),
+                    "Verification Status": st.column_config.SelectboxColumn("Verification Status", options=VERIFICATION_STATUSES, required=True),
+                    "Record Decision": st.column_config.SelectboxColumn("Record Decision", options=RECORD_DECISIONS, required=True),
+                }, key=f"editor_{st.session_state.get(S_EDIT_COUNT,0)}_{hashlib.sha1('|'.join(edit_fields).encode()).hexdigest()[:8]}"
+            )
+            if st.button("Save edits", type="primary"):
+                save_edits(edited, [c for c in edit_fields if c in edited.columns]); st.rerun()
+
+    st.divider()
+    with st.expander("Add a building not in the file", expanded=not has_records):
+        suggested = generate_id(st.session_state[S_WORKING])
+        with st.form("add_record", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            record_id = c1.text_input("Record ID", value=suggested)
+            building_name = c1.text_input("Apartment Building Name")
+            owner = c1.text_input("Apartment Building Management/Owner")
+            classification = c1.text_input("Building Classification")
+            units = c1.text_input("Number of Apartments")
+            address = c2.text_input("Street Address")
+            city = c2.text_input("City")
+            province = c2.text_input("Province")
+            pc = c2.text_input("Postal Code")
+            phone = c3.text_input("Phone Number")
+            email = c3.text_input("Email Contact")
+            website = c3.text_input("WebSite")
+            source_url = c3.text_input("Official Source URL")
+            researcher = c3.text_input("Researcher")
+            w1, w2, w3 = st.columns(3)
+            research_status = w1.selectbox("Research Status", RESEARCH_STATUSES, index=1)
+            verification_status = w1.selectbox("Verification Status", VERIFICATION_STATUSES)
+            decision = w1.selectbox("Record Decision", RECORD_DECISIONS)
+            source_status = w2.selectbox("Source Status", SOURCE_STATUSES)
+            no_date = w2.checkbox("No research date yet")
+            researched = w2.date_input("Date Researched", value=date.today(), disabled=no_date)
+            missing = w2.text_area("Missing Information")
+            notes = w3.text_area("Reviewer Notes")
+            add = st.form_submit_button("Add building", type="primary", width="stretch")
+        if add:
+            current = st.session_state[S_WORKING].copy()
+            final_id = record_id.strip() or suggested
+            if final_id in set(resolved(current["Record ID"]).dropna().astype(str).str.strip()):
+                st.error(f"Record ID {final_id} already exists.")
+            else:
+                record = {c: pd.NA for c in current.columns}
+                record.update({
+                    "Record ID": final_id, "Building Name": building_name,
+                    "Management/Owner": owner, "Street Address": address,
+                    "City": city, "Province": canonical_province(province),
+                    "Postal Code": postal_code(pc), "Phone": phone,
+                    "Primary Email": email, "Website": website,
+                    "Number of Apartments": units, "Building Classification": classification,
+                    "Source URL": source_url, "Date Researched": pd.NA if no_date else researched.isoformat(),
+                    "Researcher": researcher, "Research Status": research_status,
+                    "Source Status": source_status, "Verification Status": verification_status,
+                    "Missing Information": missing, "Reviewer Notes": notes,
+                    "Record Decision": decision,
+                })
+                st.session_state[S_WORKING] = normalize_workflow(pd.concat([current, pd.DataFrame([record])], ignore_index=True))
+                st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+                st.session_state[S_FLASH] = f"{final_id} was added to the workspace."
+                st.rerun()
+
+elif section == "Export":
+    st.header("Export project deliverables")
+    st.info("Nothing is saved after you close or refresh the app. Download your work before leaving.")
+    listings = listing_export(qa)
+    follow_up = qa[~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Directory")]
+    ready = qa[ready_mask(qa)]
+    quality = qa[qa["QA Status"].isin(["Critical", "Review"])]
+    sheets = {
+        "Project Summary": project_summary(qa),
+        "Building Listings": listings,
+        "Owner Research List": owner_summary(qa),
+        "Draft Profiles": draft_profiles(qa),
+        "Source Verification": research_log(qa),
+        "Follow-up Queue": follow_up,
+        "Field Coverage": field_coverage(qa),
+        "Structure Recommendations": structure_recommendations(),
+        "Methodology & Limits": methodology(qa, st.session_state.get(S_NAME, "workspace"), st.session_state.get(S_SHEET, "")),
+        "Working Data": qa,
+    }
+    filename = safe_filename(st.session_state.get(S_NAME, "datablix"))
+    st.write("The **Building Listings** sheet follows the supplied nine-column example. Supporting research and review information remains in separate tabs.")
+    row = st.columns(2)
+    row[0].download_button("Download deliverable workbook", excel_bytes(sheets), f"{filename}_deliverables.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", width="stretch")
+    row[1].download_button("Download follow-up queue", csv_bytes(follow_up), f"{filename}_follow_up_queue.csv", "text/csv", disabled=follow_up.empty, width="stretch")
+    with st.expander("Explore focused downloads"):
+        r1 = st.columns(3)
+        r1[0].download_button("Building listings", csv_bytes(listings), f"{filename}_building_listings.csv", "text/csv", width="stretch")
+        r1[1].download_button("Owner research list", csv_bytes(owner_summary(qa)), f"{filename}_owner_research_list.csv", "text/csv", width="stretch")
+        r1[2].download_button("Draft profiles", csv_bytes(draft_profiles(qa)), f"{filename}_draft_profiles.csv", "text/csv", width="stretch")
+        r2 = st.columns(3)
+        r2[0].download_button("Source verification tracker", csv_bytes(research_log(qa)), f"{filename}_source_verification.csv", "text/csv", width="stretch")
+        r2[1].download_button("Directory-ready listings", csv_bytes(listing_export(ready)), f"{filename}_directory_ready.csv", "text/csv", disabled=ready.empty, width="stretch")
+        r2[2].download_button("Quality review queue", csv_bytes(quality), f"{filename}_quality_review_queue.csv", "text/csv", disabled=quality.empty, width="stretch")
