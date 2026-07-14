@@ -2558,7 +2558,7 @@ if not workspace_ready:
               and records that need human review.
             - Track research, source checks, verification decisions, and notes
               separately from the underlying data quality.
-            - Edit/Update records in one workspace and export a complete directory
+            - Update records in one workspace and export a complete directory
               or a focused follow-up list.
             """
         )
