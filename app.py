@@ -609,20 +609,24 @@ def get_excel_sheet_names(uploaded_file):
 
 
 def preferred_sheet_index(sheet_names):
-    """Prefer a research-ready sheet when one is available."""
-    preference_order = [
-        "Linda Working",
-        "Apartment Buildings",
-    ]
+    """Prefer a research-ready or apartment-building worksheet."""
     normalized_names = [
         normalize_header(sheet_name)
         for sheet_name in sheet_names
     ]
 
-    for preferred_name in preference_order:
-        preferred_key = normalize_header(preferred_name)
-        if preferred_key in normalized_names:
-            return normalized_names.index(preferred_key)
+    preferred_keywords = [
+        "working",
+        "research",
+        "apartmentbuildings",
+        "buildings",
+        "directory",
+    ]
+
+    for keyword in preferred_keywords:
+        for index, normalized_name in enumerate(normalized_names):
+            if keyword in normalized_name:
+                return index
 
     return 0
 
@@ -687,7 +691,7 @@ def combine_mapped_columns(dataframe, source_columns):
 
 
 def derive_building_classification(dataframe):
-    """Build one classification value from Bryan's indicator columns."""
+    """Build one classification value from imported indicator columns."""
     available_columns = [
         column
         for column in CLASSIFICATION_SOURCE_COLUMNS
@@ -823,6 +827,24 @@ def map_to_directory_schema(dataframe):
     mapped_data["Building Classification"] = (
         classification_values
     )
+
+    classification_source_columns = [
+        column
+        for column in CLASSIFICATION_SOURCE_COLUMNS
+        if column in imported_data.columns
+    ]
+    if classification_source_columns:
+        for mapping_row in mapping_rows:
+            if (
+                mapping_row["Datablix Field"]
+                == "Building Classification"
+                and mapping_row["Mapping Status"] == "Not found"
+            ):
+                mapping_row["Imported Column(s)"] = ", ".join(
+                    classification_source_columns
+                )
+                mapping_row["Mapping Status"] = "Derived"
+                break
 
     mapped_data["Management/Owner"] = standardize_owner_names(
         mapped_data["Management/Owner"]
@@ -979,7 +1001,7 @@ def add_source_freshness_columns(dataframe):
 
 
 def find_amenity_columns(dataframe):
-    """Return likely amenity columns from Bryan's apartment workbook."""
+    """Return likely amenity columns from an apartment-directory workbook."""
     if "Website" in dataframe.columns:
         website_position = list(dataframe.columns).index("Website")
     else:
@@ -1897,9 +1919,9 @@ st.header("1. Prepare your research workspace")
 
 st.write(
     """
-    Use the template for new research. Existing files can also be uploaded:
-    Datablix recognizes common headings from Bryan's apartment-building
-    workbook and from the Linda working sheet.
+    Use the template for new research. Existing files can also be uploaded.
+    Datablix recognizes common apartment-directory headings and preserves
+    the imported columns in the working dataset.
     """
 )
 
@@ -1958,8 +1980,8 @@ try:
                 options=sheet_names,
                 index=preferred_sheet_index(sheet_names),
                 help=(
-                    "Choose Linda Working when using the prepared working "
-                    "copy, or Apartment Buildings when using Bryan's original."
+                    "Select the worksheet that contains one row per "
+                    "apartment-building record."
                 ),
             )
 
@@ -2025,194 +2047,212 @@ with st.expander("Review detected column mapping", expanded=True):
         ]
 
         if not missing_priority_mappings.empty:
-            missing_fields = ", ".join(
+            missing_fields_list = (
                 missing_priority_mappings["Datablix Field"].tolist()
             )
-            st.warning(
-                "No matching imported column was found for: "
-                f"{missing_fields}. These fields will be checked as missing."
+            missing_fields = ", ".join(missing_fields_list)
+            is_single_field = len(missing_fields_list) == 1
+            field_label = "field" if is_single_field else "fields"
+            field_reference = (
+                "this field"
+                if is_single_field
+                else "these fields"
+            )
+            st.info(
+                f"Additional research {field_label} added: "
+                f"{missing_fields}. "
+                f"The selected worksheet did not include {field_reference}, "
+                "so Datablix added it to the workspace for completion "
+                "during research."
             )
         else:
             st.success(
                 "All priority directory fields were connected to imported "
-                "columns."
+                "columns or derived from the selected worksheet."
             )
 
 
 # ---------------------------------------------------------
-# Manual research intake
+# Optional manual research intake
 # ---------------------------------------------------------
 
-st.header("3. Add a manual apartment-building record")
-
-working_data = st.session_state[SESSION_WORKING_DATA].copy()
-suggested_record_id = generate_record_id(working_data)
-
-with st.form("manual_research_form", clear_on_submit=True):
-    identity_column, location_column, contact_column = st.columns(3)
-
-    with identity_column:
-        record_id = st.text_input(
-            "Record ID",
-            value=suggested_record_id,
-        )
-        building_name = st.text_input(
-            "Building Name *",
-            placeholder="Example: Story of Rideau & Chapel",
-        )
-        owner = st.text_input(
-            "Management/Owner *",
-            placeholder="Example: Hazelview Properties",
-        )
-        classification = st.text_input(
-            "Building Classification",
-            placeholder="Example: High Rise",
-        )
-        unit_count = st.text_input(
-            "Number of Apartments",
-            placeholder="Example: 283",
-        )
-
-    with location_column:
-        street_address = st.text_input(
-            "Street Address *",
-            placeholder="Example: 165 Chapel Street",
-        )
-        city = st.text_input(
-            "City *",
-            value="Ottawa",
-        )
-        province = st.text_input(
-            "Province *",
-            value="Ontario",
-        )
-        postal_code = st.text_input(
-            "Postal Code *",
-            placeholder="Example: K1N 0E7",
-        )
-        rental_rate = st.text_input(
-            "Rental Rate Range",
-            placeholder="Example: $1,900–$2,700",
-        )
-
-    with contact_column:
-        phone = st.text_input(
-            "Phone",
-            placeholder="Example: 613-555-0199",
-        )
-        primary_email = st.text_input(
-            "Primary Email",
-            placeholder="Example: leasing@example.ca",
-        )
-        website = st.text_input(
-            "Website",
-            placeholder="https://property.example",
-        )
-        source_url = st.text_input(
-            "Official Source URL",
-            placeholder="https://property.example/building",
-        )
-        researcher = st.text_input(
-            "Researcher",
-            placeholder="Example: Linda",
-        )
-
-    st.write("#### Research and review tracking")
-    workflow_column, source_column, notes_column = st.columns(3)
-
-    with workflow_column:
-        research_status = st.selectbox(
-            "Research Status",
-            options=VALID_RESEARCH_STATUSES,
-            index=0,
-        )
-        verification_status = st.selectbox(
-            "Verification Status",
-            options=VALID_VERIFICATION_STATUSES,
-            index=0,
-        )
-        record_decision = st.selectbox(
-            "Record Decision",
-            options=VALID_RECORD_DECISIONS,
-            index=0,
-        )
-
-    with source_column:
-        source_status = st.selectbox(
-            "Source Status",
-            options=VALID_SOURCE_STATUSES,
-            index=0,
-        )
-        date_unavailable = st.checkbox(
-            "Research date not available yet",
-            value=False,
-        )
-        researched_date = st.date_input(
-            "Date Researched",
-            value=date.today(),
-            disabled=date_unavailable,
-        )
-        missing_information = st.text_area(
-            "Missing Information",
-            max_chars=500,
-            placeholder="List information that could not be confirmed.",
-        )
-
-    with notes_column:
-        reviewer_notes = st.text_area(
-            "Reviewer Notes",
-            max_chars=700,
-            placeholder=(
-                "Record conflicts, corrections, source limitations, "
-                "or follow-up decisions."
-            ),
-        )
-
-    add_record_button = st.form_submit_button(
-        "Add record to workspace",
-        type="primary",
-        use_container_width=True,
+with st.expander(
+    "3. Add a missing apartment-building record (optional)",
+    expanded=False,
+):
+    st.write(
+        "Open this section only when research identifies a building that "
+        "is not already included in the uploaded directory."
     )
 
-if add_record_button:
-    final_record_id = record_id.strip() or suggested_record_id
-    date_value = (
-        pd.NA
-        if date_unavailable
-        else researched_date.isoformat()
+    working_data = st.session_state[SESSION_WORKING_DATA].copy()
+    suggested_record_id = generate_record_id(working_data)
+
+    with st.form("manual_research_form", clear_on_submit=True):
+        identity_column, location_column, contact_column = st.columns(3)
+
+        with identity_column:
+            record_id = st.text_input(
+                "Record ID",
+                value=suggested_record_id,
+            )
+            building_name = st.text_input(
+                "Building Name *",
+                placeholder="Example: Riverside Apartments",
+            )
+            owner = st.text_input(
+                "Management/Owner *",
+                placeholder="Example: Property Management Company",
+            )
+            classification = st.text_input(
+                "Building Classification",
+                placeholder="Example: High Rise",
+            )
+            unit_count = st.text_input(
+                "Number of Apartments",
+                placeholder="Example: 120",
+            )
+
+        with location_column:
+            street_address = st.text_input(
+                "Street Address *",
+                placeholder="Example: 100 Main Street",
+            )
+            city = st.text_input(
+                "City *",
+                value="Ottawa",
+            )
+            province = st.text_input(
+                "Province *",
+                value="Ontario",
+            )
+            postal_code = st.text_input(
+                "Postal Code *",
+                placeholder="Example: K1A 1A1",
+            )
+            rental_rate = st.text_input(
+                "Rental Rate Range",
+                placeholder="Example: $1,900–$2,700",
+            )
+
+        with contact_column:
+            phone = st.text_input(
+                "Phone",
+                placeholder="Example: 613-555-0199",
+            )
+            primary_email = st.text_input(
+                "Primary Email",
+                placeholder="Example: leasing@example.ca",
+            )
+            website = st.text_input(
+                "Website",
+                placeholder="https://property.example",
+            )
+            source_url = st.text_input(
+                "Official Source URL",
+                placeholder="https://property.example/building",
+            )
+            researcher = st.text_input(
+                "Researcher",
+                placeholder="Example: Researcher 1",
+            )
+
+        st.write("#### Research and review tracking")
+        workflow_column, source_column, notes_column = st.columns(3)
+
+        with workflow_column:
+            research_status = st.selectbox(
+                "Research Status",
+                options=VALID_RESEARCH_STATUSES,
+                index=0,
+            )
+            verification_status = st.selectbox(
+                "Verification Status",
+                options=VALID_VERIFICATION_STATUSES,
+                index=0,
+            )
+            record_decision = st.selectbox(
+                "Record Decision",
+                options=VALID_RECORD_DECISIONS,
+                index=0,
+            )
+
+        with source_column:
+            source_status = st.selectbox(
+                "Source Status",
+                options=VALID_SOURCE_STATUSES,
+                index=0,
+            )
+            date_unavailable = st.checkbox(
+                "Research date not available yet",
+                value=False,
+            )
+            researched_date = st.date_input(
+                "Date Researched",
+                value=date.today(),
+                disabled=date_unavailable,
+            )
+            missing_information = st.text_area(
+                "Missing Information",
+                max_chars=500,
+                placeholder="List information that could not be confirmed.",
+            )
+
+        with notes_column:
+            reviewer_notes = st.text_area(
+                "Reviewer Notes",
+                max_chars=700,
+                placeholder=(
+                    "Record conflicts, corrections, source limitations, "
+                    "or follow-up decisions."
+                ),
+            )
+
+        add_record_button = st.form_submit_button(
+            "Add record to workspace",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if add_record_button:
+        final_record_id = record_id.strip() or suggested_record_id
+        date_value = (
+            pd.NA
+            if date_unavailable
+            else researched_date.isoformat()
+        )
+
+        new_record = {
+            "Record ID": final_record_id,
+            "Building Name": building_name,
+            "Management/Owner": owner,
+            "Street Address": street_address,
+            "City": city,
+            "Province": province,
+            "Postal Code": postal_code,
+            "Phone": phone,
+            "Primary Email": primary_email,
+            "Website": website,
+            "Number of Apartments": unit_count,
+            "Rental Rate Range": rental_rate,
+            "Building Classification": classification,
+            "Source URL": source_url,
+            "Date Researched": date_value,
+            "Researcher": researcher,
+            "Research Status": research_status,
+            "Source Status": source_status,
+            "Verification Status": verification_status,
+            "Missing Information": missing_information,
+            "Reviewer Notes": reviewer_notes,
+            "Record Decision": record_decision,
+        }
+        add_manual_record(new_record)
+        st.rerun()
+
+    st.caption(
+        "Incomplete records are accepted so Datablix can identify exactly "
+        "what remains to be researched."
     )
-
-    new_record = {
-        "Record ID": final_record_id,
-        "Building Name": building_name,
-        "Management/Owner": owner,
-        "Street Address": street_address,
-        "City": city,
-        "Province": province,
-        "Postal Code": postal_code,
-        "Phone": phone,
-        "Primary Email": primary_email,
-        "Website": website,
-        "Number of Apartments": unit_count,
-        "Rental Rate Range": rental_rate,
-        "Building Classification": classification,
-        "Source URL": source_url,
-        "Date Researched": date_value,
-        "Researcher": researcher,
-        "Research Status": research_status,
-        "Source Status": source_status,
-        "Verification Status": verification_status,
-        "Missing Information": missing_information,
-        "Reviewer Notes": reviewer_notes,
-        "Record Decision": record_decision,
-    }
-    add_manual_record(new_record)
-    st.rerun()
-
-st.caption(
-    "Incomplete records are accepted so Datablix can identify exactly "
-    "what remains to be researched."
-)
 
 
 # ---------------------------------------------------------
@@ -2853,9 +2893,13 @@ ready_download = final_data[
 workflow_follow_up_download = final_data[
     final_data["Workflow Gap Count"] > 0
 ].copy()
-research_log_download = create_research_log(
-    final_data
+research_log_download = create_research_log(final_data)
+
+follow_up_mask = (
+    final_data["QA Status"].isin(["Critical", "Review"])
+    | final_data["Workflow Gap Count"].gt(0)
 )
+follow_up_download = final_data[follow_up_mask].copy()
 
 safe_filename = create_safe_filename(workspace_name)
 
@@ -2867,20 +2911,17 @@ safe_filename = create_safe_filename(workspace_name)
 st.header("10. Download your results")
 
 st.write(
-    """
-    Export the complete standardized directory, the records that need
-    data correction, the records ready for the directory, and the
-    research follow-up log.
-    """
+    "Continue with the updated directory. Download the follow-up list "
+    "only when unresolved records still need research or clarification."
 )
 
-first_download_row = st.columns(3)
+main_download_row = st.columns(2)
 
-with first_download_row[0]:
-    st.write("**Updated directory**")
+with main_download_row[0]:
+    st.write("**Updated directory — recommended**")
     st.caption(
-        "Every record with standardized fields, imported columns, "
-        "quality results, and workflow tracking."
+        "Contains every record, imported data, corrections, quality "
+        "results, research statuses, and reviewer notes."
     )
     st.download_button(
         "Download updated directory",
@@ -2888,84 +2929,83 @@ with first_download_row[0]:
         file_name=f"{safe_filename}_updated_directory.csv",
         mime="text/csv",
         key="download_updated_directory",
+        type="primary",
+        use_container_width=True,
     )
 
-with first_download_row[1]:
-    st.write("**Directory review queue**")
+with main_download_row[1]:
+    st.write("**Follow-up list**")
+    if follow_up_download.empty:
+        st.success("No records currently require follow-up.")
+    else:
+        st.caption(
+            "Contains records with missing information, data-quality "
+            "issues, incomplete research, or pending verification."
+        )
+        st.download_button(
+            "Download follow-up list",
+            data=dataframe_to_csv_bytes(follow_up_download),
+            file_name=f"{safe_filename}_follow_up_list.csv",
+            mime="text/csv",
+            key="download_follow_up_list",
+            use_container_width=True,
+        )
+
+with st.expander("More download options", expanded=False):
     st.caption(
-        "Records with critical directory gaps or warnings."
-    )
-    st.download_button(
-        "Download review queue",
-        data=dataframe_to_csv_bytes(review_download),
-        file_name=f"{safe_filename}_directory_review_queue.csv",
-        mime="text/csv",
-        disabled=review_download.empty,
-        key="download_review_queue",
+        "These focused files are optional and are mainly useful for "
+        "special review or reporting needs."
     )
 
-with first_download_row[2]:
-    st.write("**Directory-ready records**")
-    st.caption(
-        "Records that passed data checks, completed research, and "
-        "received human verification."
-    )
-    st.download_button(
-        "Download directory-ready records",
-        data=dataframe_to_csv_bytes(ready_download),
-        file_name=f"{safe_filename}_directory_ready.csv",
-        mime="text/csv",
-        disabled=ready_download.empty,
-        key="download_ready_records",
-    )
+    advanced_row = st.columns(3)
 
-second_download_row = st.columns(3)
+    with advanced_row[0]:
+        st.write("**Directory-ready records**")
+        st.caption(
+            "Records that passed data checks and completed the review "
+            "workflow."
+        )
+        st.download_button(
+            "Download directory-ready records",
+            data=dataframe_to_csv_bytes(ready_download),
+            file_name=f"{safe_filename}_directory_ready.csv",
+            mime="text/csv",
+            disabled=ready_download.empty,
+            key="download_ready_records",
+            use_container_width=True,
+        )
 
-with second_download_row[0]:
-    st.write("**Passed data records**")
-    st.caption(
-        "Records with no current automated directory-data issues."
-    )
-    st.download_button(
-        "Download passed records",
-        data=dataframe_to_csv_bytes(passed_download),
-        file_name=f"{safe_filename}_passed_data_records.csv",
-        mime="text/csv",
-        disabled=passed_download.empty,
-        key="download_passed_records",
-    )
+    with advanced_row[1]:
+        st.write("**Data-quality review queue**")
+        st.caption(
+            "Records with critical directory gaps or automated warnings."
+        )
+        st.download_button(
+            "Download data review queue",
+            data=dataframe_to_csv_bytes(review_download),
+            file_name=f"{safe_filename}_data_review_queue.csv",
+            mime="text/csv",
+            disabled=review_download.empty,
+            key="download_review_queue",
+            use_container_width=True,
+        )
 
-with second_download_row[1]:
-    st.write("**Workflow follow-up**")
-    st.caption(
-        "Records still missing source, research, or verification steps."
-    )
-    st.download_button(
-        "Download workflow follow-up",
-        data=dataframe_to_csv_bytes(
-            workflow_follow_up_download
-        ),
-        file_name=f"{safe_filename}_workflow_follow_up.csv",
-        mime="text/csv",
-        disabled=workflow_follow_up_download.empty,
-        key="download_workflow_follow_up",
-    )
-
-with second_download_row[2]:
-    st.write("**Research log**")
-    st.caption(
-        "A focused record of source ownership, progress, freshness, "
-        "verification, decisions, and notes."
-    )
-    st.download_button(
-        "Download research log",
-        data=dataframe_to_csv_bytes(research_log_download),
-        file_name=f"{safe_filename}_research_log.csv",
-        mime="text/csv",
-        key="download_research_log",
-    )
+    with advanced_row[2]:
+        st.write("**Research log**")
+        st.caption(
+            "A focused record of sources, progress, verification, "
+            "decisions, and notes."
+        )
+        st.download_button(
+            "Download research log",
+            data=dataframe_to_csv_bytes(research_log_download),
+            file_name=f"{safe_filename}_research_log.csv",
+            mime="text/csv",
+            key="download_research_log",
+            use_container_width=True,
+        )
 
 st.info(
-    "Download your updated files before closing or refreshing the app. "
+    "Download the updated directory before closing or refreshing the app. "
     "Datablix does not permanently save this session."
 )
