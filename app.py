@@ -2206,7 +2206,7 @@ st.html(
         }
 
         [data-testid="stExpandSidebarButton"]::after {
-            content: "Workspace";
+            content: "Start Here";
             margin-left: 0.4rem;
             font-size: 0.82rem;
             font-weight: 600;
