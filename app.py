@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import io
+import re
 from datetime import date
 from pathlib import Path
 
@@ -19,34 +20,206 @@ st.set_page_config(
 # Datablix configuration
 # ---------------------------------------------------------
 
-DATABLIX_COLUMNS = [
+DIRECTORY_COLUMNS = [
     "Record ID",
-    "Name",
-    "Category",
-    "Address",
+    "Building Name",
+    "Management/Owner",
+    "Street Address",
+    "Address Line 2",
     "City",
     "Province",
     "Postal Code",
+    "Country",
     "Phone",
-    "Email",
+    "Primary Email",
+    "Secondary Email",
     "Website",
+    "Number of Apartments",
+    "Rental Rate Range",
+    "Building Classification",
     "Source URL",
     "Date Researched",
     "Researcher",
     "Research Status",
     "Source Status",
     "Verification Status",
+    "Missing Information",
     "Reviewer Notes",
+    "Record Decision",
 ]
 
-REQUIRED_FIELDS = [
-    "Name",
-    "Category",
+COLUMN_ALIASES = {
+    "Record ID": [
+        "Record ID",
+        "ID",
+        "Directory ID",
+    ],
+    "Building Name": [
+        "Building Name",
+        "Apartment Building Name",
+        "Property Name",
+        "Name",
+    ],
+    "Management/Owner": [
+        "Management/Owner",
+        "Apartment Building Management/Owner",
+        "Assigned Company",
+        "Management Company",
+        "Owner",
+        "Company",
+    ],
+    "Street Address": [
+        "Street Address",
+        "Address (Street Address)",
+        "Address",
+    ],
+    "Address Line 2": [
+        "Address Line 2",
+        "Address (Address Line 2)",
+    ],
+    "City": [
+        "City",
+        "Address (City)",
+    ],
+    "Province": [
+        "Province",
+        "State / Province",
+        "Address (State / Province)",
+    ],
+    "Postal Code": [
+        "Postal Code",
+        "ZIP / Postal Code",
+        "Address (ZIP / Postal Code)",
+    ],
+    "Country": [
+        "Country",
+        "Address (Country)",
+    ],
+    "Phone": [
+        "Phone",
+        "Phone Number",
+        "Primary Phone",
+    ],
+    "Primary Email": [
+        "Primary Email",
+        "Primary Email (Enter Email)",
+        "Email",
+        "Email Contact",
+    ],
+    "Secondary Email": [
+        "Secondary Email",
+        "Alternate Email",
+    ],
+    "Website": [
+        "Website",
+        "WebSite",
+        "Property Website",
+    ],
+    "Number of Apartments": [
+        "Number of Apartments",
+        "No. of Units",
+        "Number of Units",
+        "Unit Count",
+        "Units",
+    ],
+    "Rental Rate Range": [
+        "Rental Rate Range",
+        "Rental Rates",
+        "Rent Range",
+        "Rent",
+    ],
+    "Building Classification": [
+        "Building Classification",
+        "Verified Building Classification",
+        "Category",
+        "Building Type",
+    ],
+    "Source URL": [
+        "Source URL",
+        "Official Source URL",
+        "Research Source",
+    ],
+    "Date Researched": [
+        "Date Researched",
+        "Date Verified",
+        "Research Date",
+    ],
+    "Researcher": [
+        "Researcher",
+        "Assigned To",
+    ],
+    "Research Status": [
+        "Research Status",
+        "Status",
+    ],
+    "Source Status": [
+        "Source Status",
+    ],
+    "Verification Status": [
+        "Verification Status",
+        "Review Status",
+    ],
+    "Missing Information": [
+        "Missing Information",
+        "Information Missing",
+    ],
+    "Reviewer Notes": [
+        "Reviewer Notes",
+        "Research Notes",
+        "Notes",
+    ],
+    "Record Decision": [
+        "Record Decision",
+        "Decision",
+    ],
+}
+
+CLASSIFICATION_SOURCE_COLUMNS = [
+    "Luxury",
+    "Adult",
+    "Low Rental",
+    "Hi Rise",
+    "Townhome",
+    "Duplex",
+    "Garden Home",
+]
+
+KNOWN_OWNER_NAMES = {
+    "hazelview properties": "Hazelview Properties",
+    "timbercreek communities": "Hazelview Properties",
+    "homestead land holdings": "Homestead Land Holdings",
+    "interrent reit": "InterRent REIT",
+    "killam apartment reit": "Killam Apartment REIT",
+    "lepine": "Lepine",
+    "mily property management": "Mily Property Management",
+    "mily services": "Mily Property Management",
+    "minto group": "Minto Group",
+    "nesbitt property management": "Nesbitt Property Management",
+    "osgoode properties": "Osgoode Properties",
+    "ottawa property managers": "Ottawa Property Managers",
+    "paramount properties": "Paramount Property Management Inc",
+    "paramount property management inc": "Paramount Property Management Inc",
+}
+
+CRITICAL_DIRECTORY_FIELDS = [
+    "Building Name",
+    "Management/Owner",
+    "Street Address",
     "City",
     "Province",
-    "Source URL",
-    "Date Researched",
+    "Postal Code",
+    "Number of Apartments",
 ]
+
+IMPORTANT_DIRECTORY_FIELDS = [
+    "Phone",
+    "Primary Email",
+    "Website",
+    "Building Classification",
+    "Rental Rate Range",
+]
+
+ALL_DIRECTORY_FIELDS = CRITICAL_DIRECTORY_FIELDS + IMPORTANT_DIRECTORY_FIELDS
 
 VALID_VERIFICATION_STATUSES = [
     "Not Reviewed",
@@ -57,6 +230,7 @@ VALID_VERIFICATION_STATUSES = [
 VALID_RESEARCH_STATUSES = [
     "Not Started",
     "In Progress",
+    "Needs Follow-up",
     "Ready for Review",
     "Completed",
 ]
@@ -68,12 +242,93 @@ VALID_SOURCE_STATUSES = [
     "Unavailable",
 ]
 
+VALID_RECORD_DECISIONS = [
+    "Undecided",
+    "Keep",
+    "Update",
+    "Possible Duplicate",
+    "Remove",
+]
+
+UNRESOLVED_TOKENS = {
+    "",
+    "n/a",
+    "na",
+    "n.a.",
+    "n.a",
+    "unk",
+    "unknown",
+    "not known",
+    "not available",
+    "not found",
+    "not provided",
+    "not researched",
+    "tbd",
+    "to be determined",
+    "-",
+    "--",
+    "none",
+    "null",
+}
+
+NO_TOKENS = {
+    "no",
+    "n",
+    "false",
+    "0",
+}
+
+YES_TOKENS = {
+    "yes",
+    "y",
+    "true",
+    "1",
+}
+
+STATUS_VALUE_ALIASES = {
+    "Research Status": {
+        "complete": "Completed",
+        "completed": "Completed",
+        "ready": "Ready for Review",
+        "ready for review": "Ready for Review",
+        "follow-up": "Needs Follow-up",
+        "follow up": "Needs Follow-up",
+        "needs follow-up": "Needs Follow-up",
+    },
+    "Verification Status": {
+        "complete": "Verified",
+        "completed": "Verified",
+        "reviewed": "Verified",
+        "not verified": "Not Reviewed",
+    },
+    "Source Status": {
+        "verified": "Active",
+        "working": "Active",
+        "broken": "Unavailable",
+        "follow-up": "Needs Follow-up",
+        "follow up": "Needs Follow-up",
+    },
+    "Record Decision": {
+        "duplicate": "Possible Duplicate",
+        "possible duplicate": "Possible Duplicate",
+        "delete": "Remove",
+    },
+}
+
 FRESHNESS_THRESHOLD_DAYS = 180
 
 QA_COLUMNS = [
+    "Missing Field Count",
+    "Missing Directory Fields",
+    "Critical Issue Count",
+    "Warning Count",
     "QA Flag Count",
     "QA Flags",
     "QA Status",
+    "Data Completeness %",
+    "Workflow Gap Count",
+    "Workflow Gaps",
+    "Record Readiness",
 ]
 
 RESEARCH_DERIVED_COLUMNS = [
@@ -85,17 +340,19 @@ SESSION_FILE_SIGNATURE = "datablix_file_signature"
 SESSION_ORIGINAL_DATA = "datablix_original_data"
 SESSION_WORKING_DATA = "datablix_working_data"
 SESSION_WORKSPACE_NAME = "datablix_workspace_name"
+SESSION_WORKSHEET_NAME = "datablix_worksheet_name"
+SESSION_MAPPING_REPORT = "datablix_mapping_report"
 SESSION_FLASH_MESSAGE = "datablix_flash_message"
 SESSION_QA_RUN_COUNT = "datablix_qa_run_count"
 
 
 # ---------------------------------------------------------
-# Helper functions
+# Branding
 # ---------------------------------------------------------
 
 
 def render_brand_header():
-    """Display the Datablix logo, purpose, and version badge."""
+    """Display the Datablix logo and purpose."""
     svg_logo = Path("datablix_logo.svg")
     png_logo = Path("datablix_logo.png")
 
@@ -110,8 +367,8 @@ def render_brand_header():
     else:
         st.title("Datablix")
         st.write(
-            "Turn your raw research data into a structured," 
-            "trackable, and review-ready directory."
+            "Turn raw directory research into structured, trackable, "
+            "and review-ready records."
         )
         st.caption("Version 3")
         return
@@ -158,13 +415,6 @@ def render_brand_header():
                 max-width: none;
             }}
 
-            .datablix-brand-subtitle {{
-                margin: 0.35rem auto 0.3rem auto;
-                font-size: clamp(1.3rem, 2vw, 1.7rem);
-                font-weight: 650;
-                line-height: 1.25;
-            }}
-
             .datablix-brand-description {{
                 max-width: 760px;
                 margin: 0 auto;
@@ -203,10 +453,6 @@ def render_brand_header():
                     width: 550px;
                 }}
 
-                .datablix-brand-subtitle {{
-                    font-size: 1.2rem;
-                }}
-
                 .datablix-brand-description {{
                     padding-left: 0.75rem;
                     padding-right: 0.75rem;
@@ -225,8 +471,8 @@ def render_brand_header():
             </div>
 
             <div class="datablix-brand-description">
-                Turn your raw research data into a structured, trackable, 
-                and review-ready directory.
+                Turn raw directory research into structured, trackable,
+                and review-ready records.
             </div>
 
             <div class="datablix-version-badge">
@@ -237,8 +483,18 @@ def render_brand_header():
     )
 
 
+# ---------------------------------------------------------
+# General helpers
+# ---------------------------------------------------------
+
+
+def normalize_header(value):
+    """Normalize a column heading for reliable alias matching."""
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
 def prepare_data(dataframe):
-    """Clean column headings and convert blank cells into missing values."""
+    """Clean headings and convert whitespace-only cells into missing values."""
     cleaned_data = dataframe.copy()
     cleaned_data.columns = [
         str(column).strip()
@@ -250,6 +506,49 @@ def prepare_data(dataframe):
         regex=True,
     )
     return cleaned_data
+
+
+def normalize_scalar(value):
+    """Return a lower-case comparison value for one cell."""
+    if pd.isna(value):
+        return ""
+    return str(value).strip().lower()
+
+
+def is_unresolved_scalar(value):
+    """Check whether one value is blank or an unresolved placeholder."""
+    return normalize_scalar(value) in UNRESOLVED_TOKENS
+
+
+def unresolved_mask(series):
+    """Return a Boolean mask for blanks and unresolved placeholders."""
+    text_values = (
+        series
+        .astype("string")
+        .fillna("")
+        .str.strip()
+        .str.lower()
+    )
+    return series.isna() | text_values.isin(UNRESOLVED_TOKENS)
+
+
+def resolved_series(series):
+    """Replace unresolved placeholders with true missing values."""
+    result = series.copy()
+    result.loc[unresolved_mask(result)] = pd.NA
+    return result
+
+
+def normalize_text_for_key(series):
+    """Normalize text for duplicate and consistency checks."""
+    return (
+        series
+        .astype("string")
+        .fillna("")
+        .str.strip()
+        .str.lower()
+        .str.replace(r"[^a-z0-9]+", "", regex=True)
+    )
 
 
 def dataframe_to_csv_bytes(dataframe):
@@ -269,14 +568,67 @@ def create_safe_filename(filename):
     return safe_name or "datablix_directory"
 
 
-def create_file_signature(filename, file_bytes):
-    """Create a signature so a new upload resets the working session."""
+def create_file_signature(filename, file_bytes, sheet_name=None):
+    """Create a signature so a new file or worksheet resets the session."""
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    return f"{filename}:{len(file_bytes)}:{file_hash}"
+    sheet_part = sheet_name or "default"
+    return f"{filename}:{sheet_part}:{len(file_bytes)}:{file_hash}"
 
 
-def read_uploaded_file(uploaded_file):
-    """Read one uploaded CSV or Excel file into a DataFrame."""
+def percentage(count, total):
+    """Return a safe percentage for KPI cards."""
+    if total == 0:
+        return 0.0
+    return count / total * 100
+
+
+def display_values(series, blank_label="Blank"):
+    """Create readable values for filter controls."""
+    return (
+        series
+        .astype("string")
+        .fillna(blank_label)
+        .str.strip()
+        .replace("", blank_label)
+    )
+
+
+# ---------------------------------------------------------
+# File reading and field mapping
+# ---------------------------------------------------------
+
+
+def get_excel_sheet_names(uploaded_file):
+    """Return worksheet names from an uploaded Excel workbook."""
+    file_bytes = uploaded_file.getvalue()
+    with pd.ExcelFile(
+        io.BytesIO(file_bytes),
+        engine="openpyxl",
+    ) as workbook:
+        return workbook.sheet_names
+
+
+def preferred_sheet_index(sheet_names):
+    """Prefer a research-ready sheet when one is available."""
+    preference_order = [
+        "Linda Working",
+        "Apartment Buildings",
+    ]
+    normalized_names = [
+        normalize_header(sheet_name)
+        for sheet_name in sheet_names
+    ]
+
+    for preferred_name in preference_order:
+        preferred_key = normalize_header(preferred_name)
+        if preferred_key in normalized_names:
+            return normalized_names.index(preferred_key)
+
+    return 0
+
+
+def read_uploaded_file(uploaded_file, sheet_name=None):
+    """Read one uploaded CSV or selected Excel worksheet."""
     file_bytes = uploaded_file.getvalue()
     file_extension = uploaded_file.name.rsplit(".", 1)[-1].lower()
     file_buffer = io.BytesIO(file_bytes)
@@ -286,32 +638,217 @@ def read_uploaded_file(uploaded_file):
     else:
         dataframe = pd.read_excel(
             file_buffer,
+            sheet_name=sheet_name,
             engine="openpyxl",
         )
 
     return prepare_data(dataframe), file_bytes
 
 
-def add_missing_standard_columns(dataframe):
-    """Add blank standard Datablix columns and place them first."""
-    completed_data = dataframe.copy()
+def find_source_columns(dataframe, aliases):
+    """Return imported columns that match a list of known aliases."""
+    normalized_lookup = {}
+    for column in dataframe.columns:
+        normalized_lookup.setdefault(
+            normalize_header(column),
+            [],
+        ).append(column)
 
-    for column in DATABLIX_COLUMNS:
-        if column not in completed_data.columns:
-            completed_data[column] = pd.NA
+    matches = []
+    for alias in aliases:
+        for column in normalized_lookup.get(
+            normalize_header(alias),
+            [],
+        ):
+            if column not in matches:
+                matches.append(column)
+    return matches
 
-    standard_columns = [
+
+def combine_mapped_columns(dataframe, source_columns):
+    """Combine multiple source columns, preferring the first populated value."""
+    combined = pd.Series(
+        pd.NA,
+        index=dataframe.index,
+        dtype="object",
+    )
+
+    for source_column in source_columns:
+        candidate = resolved_series(
+            dataframe[source_column]
+        )
+        fill_mask = (
+            unresolved_mask(combined)
+            & ~unresolved_mask(candidate)
+        )
+        combined.loc[fill_mask] = candidate.loc[fill_mask]
+
+    return combined
+
+
+def derive_building_classification(dataframe):
+    """Build one classification value from Bryan's indicator columns."""
+    available_columns = [
         column
-        for column in DATABLIX_COLUMNS
-        if column in completed_data.columns
-    ]
-    additional_columns = [
-        column
-        for column in completed_data.columns
-        if column not in DATABLIX_COLUMNS
+        for column in CLASSIFICATION_SOURCE_COLUMNS
+        if column in dataframe.columns
     ]
 
-    return completed_data[standard_columns + additional_columns]
+    if not available_columns:
+        return pd.Series(
+            pd.NA,
+            index=dataframe.index,
+            dtype="object",
+        )
+
+    def derive_row(row):
+        classifications = []
+
+        for column in available_columns:
+            value = row[column]
+            normalized_value = normalize_scalar(value)
+
+            if normalized_value in UNRESOLVED_TOKENS:
+                continue
+            if normalized_value in NO_TOKENS:
+                continue
+            if normalized_value in YES_TOKENS:
+                classifications.append(column)
+                continue
+
+            text_value = str(value).strip()
+            if text_value and text_value not in classifications:
+                classifications.append(text_value)
+
+        return " | ".join(classifications) if classifications else pd.NA
+
+    return dataframe[available_columns].apply(
+        derive_row,
+        axis=1,
+    )
+
+
+def standardize_owner_names(series):
+    """Standardize known company-name variants while preserving unknown names."""
+    def standardize(value):
+        if is_unresolved_scalar(value):
+            return pd.NA
+
+        text_value = str(value).strip()
+        normalized_value = normalize_scalar(text_value)
+        return KNOWN_OWNER_NAMES.get(normalized_value, text_value)
+
+    return series.apply(standardize)
+
+
+def ensure_record_ids(dataframe):
+    """Keep imported IDs and generate stable IDs for blank records."""
+    result = dataframe.copy()
+    existing_ids = set(
+        resolved_series(result["Record ID"])
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    counter = 1
+    generated_ids = []
+
+    for value in result["Record ID"]:
+        if not is_unresolved_scalar(value):
+            generated_ids.append(str(value).strip())
+            continue
+
+        while True:
+            candidate = f"DB-{counter:04d}"
+            counter += 1
+            if candidate not in existing_ids:
+                existing_ids.add(candidate)
+                generated_ids.append(candidate)
+                break
+
+    result["Record ID"] = generated_ids
+    return result
+
+
+def map_to_directory_schema(dataframe):
+    """Map known spreadsheet headings to Datablix directory fields."""
+    imported_data = prepare_data(dataframe)
+    mapped_data = imported_data.copy()
+    mapping_rows = []
+
+    for canonical_column in DIRECTORY_COLUMNS:
+        aliases = COLUMN_ALIASES.get(
+            canonical_column,
+            [canonical_column],
+        )
+        source_columns = find_source_columns(
+            imported_data,
+            aliases,
+        )
+
+        if source_columns:
+            mapped_data[canonical_column] = combine_mapped_columns(
+                imported_data,
+                source_columns,
+            )
+            status = "Mapped"
+            imported_sources = ", ".join(source_columns)
+        else:
+            mapped_data[canonical_column] = pd.NA
+            status = "Not found"
+            imported_sources = "—"
+
+        mapping_rows.append(
+            {
+                "Datablix Field": canonical_column,
+                "Imported Column(s)": imported_sources,
+                "Mapping Status": status,
+            }
+        )
+
+    derived_classification = derive_building_classification(imported_data)
+    classification_values = resolved_series(
+        mapped_data["Building Classification"]
+    )
+    classification_fill_mask = (
+        unresolved_mask(classification_values)
+        & ~unresolved_mask(derived_classification)
+    )
+    classification_values.loc[
+        classification_fill_mask
+    ] = derived_classification.loc[
+        classification_fill_mask
+    ]
+    mapped_data["Building Classification"] = (
+        classification_values
+    )
+
+    mapped_data["Management/Owner"] = standardize_owner_names(
+        mapped_data["Management/Owner"]
+    )
+    mapped_data = ensure_record_ids(mapped_data)
+
+    canonical_first = [
+        column
+        for column in DIRECTORY_COLUMNS
+        if column in mapped_data.columns
+    ]
+    original_columns = [
+        column
+        for column in imported_data.columns
+        if column not in canonical_first
+    ]
+
+    final_data = mapped_data[canonical_first + original_columns].copy()
+    mapping_report = pd.DataFrame(mapping_rows)
+
+    return final_data, mapping_report
+
+
+# ---------------------------------------------------------
+# Workflow normalization and freshness
+# ---------------------------------------------------------
 
 
 def normalize_choice_column(dataframe, column, choices, default):
@@ -325,10 +862,14 @@ def normalize_choice_column(dataframe, column, choices, default):
         choice.lower(): choice
         for choice in choices
     }
+    choice_map.update(
+        STATUS_VALUE_ALIASES.get(column, {})
+    )
 
     normalized_values = (
         normalized_data[column]
         .astype("string")
+        .fillna("")
         .str.strip()
         .str.lower()
     )
@@ -343,7 +884,7 @@ def normalize_choice_column(dataframe, column, choices, default):
 
 
 def normalize_workflow_columns(dataframe):
-    """Prepare research, source, verification, and notes columns for use."""
+    """Prepare research, source, verification, decision, and note fields."""
     normalized_data = dataframe.copy()
 
     normalized_data = normalize_choice_column(
@@ -364,22 +905,25 @@ def normalize_workflow_columns(dataframe):
         VALID_SOURCE_STATUSES,
         "Not Checked",
     )
-
-    if "Researcher" not in normalized_data.columns:
-        normalized_data["Researcher"] = ""
-    normalized_data["Researcher"] = (
-        normalized_data["Researcher"]
-        .fillna("")
-        .astype(str)
+    normalized_data = normalize_choice_column(
+        normalized_data,
+        "Record Decision",
+        VALID_RECORD_DECISIONS,
+        "Undecided",
     )
 
-    if "Reviewer Notes" not in normalized_data.columns:
-        normalized_data["Reviewer Notes"] = ""
-    normalized_data["Reviewer Notes"] = (
-        normalized_data["Reviewer Notes"]
-        .fillna("")
-        .astype(str)
-    )
+    for text_column in [
+        "Researcher",
+        "Missing Information",
+        "Reviewer Notes",
+    ]:
+        if text_column not in normalized_data.columns:
+            normalized_data[text_column] = ""
+        normalized_data[text_column] = (
+            normalized_data[text_column]
+            .fillna("")
+            .astype(str)
+        )
 
     return normalized_data
 
@@ -391,15 +935,6 @@ def add_source_freshness_columns(dataframe):
     for column in RESEARCH_DERIVED_COLUMNS:
         if column in freshness_data.columns:
             freshness_data = freshness_data.drop(columns=column)
-
-    if "Date Researched" not in freshness_data.columns:
-        freshness_data["Source Age (Days)"] = pd.Series(
-            pd.NA,
-            index=freshness_data.index,
-            dtype="Int64",
-        )
-        freshness_data["Freshness Status"] = "Missing date"
-        return freshness_data
 
     original_dates = freshness_data["Date Researched"]
     parsed_dates = pd.to_datetime(
@@ -414,9 +949,11 @@ def add_source_freshness_columns(dataframe):
         index=freshness_data.index,
         dtype="object",
     )
-    freshness_status.loc[original_dates.isna()] = "Missing date"
+
+    missing_date_mask = unresolved_mask(original_dates)
+    freshness_status.loc[missing_date_mask] = "Missing date"
     freshness_status.loc[
-        original_dates.notna() & parsed_dates.isna()
+        ~missing_date_mask & parsed_dates.isna()
     ] = "Invalid date"
     freshness_status.loc[
         parsed_dates.notna() & (parsed_dates > today)
@@ -436,179 +973,473 @@ def add_source_freshness_columns(dataframe):
     return freshness_data
 
 
+# ---------------------------------------------------------
+# Data quality and workflow checks
+# ---------------------------------------------------------
+
+
+def find_amenity_columns(dataframe):
+    """Return likely amenity columns from Bryan's apartment workbook."""
+    if "Website" in dataframe.columns:
+        website_position = list(dataframe.columns).index("Website")
+    else:
+        website_position = -1
+
+    known_non_amenity_columns = set(DIRECTORY_COLUMNS)
+    amenity_columns = []
+
+    for column in dataframe.columns:
+        if column in known_non_amenity_columns:
+            continue
+        if column in CLASSIFICATION_SOURCE_COLUMNS:
+            continue
+
+        normalized_column = normalize_header(column)
+        if any(
+            keyword in normalized_column
+            for keyword in [
+                "security",
+                "room",
+                "bbq",
+                "bocce",
+                "cable",
+                "wash",
+                "pavilion",
+                "cinema",
+                "commercialspace",
+                "dining",
+                "firepit",
+                "fitness",
+                "fountain",
+                "foyer",
+                "concierge",
+                "gym",
+                "hobby",
+                "horseshoe",
+                "housekeeping",
+                "kidsarea",
+                "laundry",
+                "library",
+                "activities",
+                "suites",
+                "wifi",
+                "pergola",
+                "parking",
+                "party",
+                "petsarea",
+                "pickleball",
+                "pond",
+                "puttinggreen",
+                "salon",
+                "pool",
+                "sauna",
+                "sunroom",
+                "storage",
+                "swings",
+                "tvroom",
+                "virtualgolf",
+                "walkingpaths",
+                "waterfall",
+                "happyhour",
+                "yoga",
+            ]
+        ):
+            amenity_columns.append(column)
+            continue
+
+        if website_position >= 0:
+            column_position = list(dataframe.columns).index(column)
+            if column_position > website_position:
+                unique_values = {
+                    normalize_scalar(value)
+                    for value in dataframe[column].dropna().head(100)
+                }
+                if unique_values and unique_values.issubset(
+                    YES_TOKENS | NO_TOKENS | UNRESOLVED_TOKENS
+                ):
+                    amenity_columns.append(column)
+
+    return list(dict.fromkeys(amenity_columns))
+
+
+def numeric_unit_values(series):
+    """Extract a numeric apartment count when possible."""
+    text_values = (
+        series
+        .astype("string")
+        .fillna("")
+        .str.replace(",", "", regex=False)
+    )
+    extracted = text_values.str.extract(
+        r"(\d+(?:\.\d+)?)",
+        expand=False,
+    )
+    return pd.to_numeric(extracted, errors="coerce")
+
+
 def build_qa_flags(dataframe):
-    """Run all supported Datablix data-quality checks."""
-    qa_data = dataframe.copy()
+    """Run directory-specific quality checks without mixing in workflow gaps."""
+    qa_data = normalize_workflow_columns(dataframe.copy())
 
     for column in QA_COLUMNS + RESEARCH_DERIVED_COLUMNS:
         if column in qa_data.columns:
             qa_data = qa_data.drop(columns=column)
 
-    record_flags = pd.Series(
+    issue_lists = pd.Series(
         [[] for _ in range(len(qa_data))],
         index=qa_data.index,
         dtype="object",
     )
 
-    def add_flag(mask, message):
+    def add_flag(mask, severity, message):
         safe_mask = mask.fillna(False)
         for row_index in qa_data.index[safe_mask]:
-            record_flags.at[row_index].append(message)
-
-    for field in REQUIRED_FIELDS:
-        if field not in qa_data.columns:
-            for row_index in qa_data.index:
-                record_flags.at[row_index].append(
-                    f"Missing column: {field}"
-                )
-        else:
-            add_flag(
-                qa_data[field].isna(),
-                f"Missing {field}",
+            issue_lists.at[row_index].append(
+                (severity, message)
             )
 
-    if "Record ID" in qa_data.columns:
-        normalized_ids = (
-            qa_data["Record ID"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-        )
-        duplicate_id_mask = (
-            normalized_ids.ne("")
-            & normalized_ids.duplicated(keep=False)
-        )
-        add_flag(duplicate_id_mask, "Duplicate Record ID")
+    missing_field_lists = pd.Series(
+        [[] for _ in range(len(qa_data))],
+        index=qa_data.index,
+        dtype="object",
+    )
 
-    if "Name" in qa_data.columns and "City" in qa_data.columns:
-        normalized_name = (
-            qa_data["Name"]
+    for field in CRITICAL_DIRECTORY_FIELDS:
+        missing_mask = unresolved_mask(qa_data[field])
+        add_flag(
+            missing_mask,
+            "Critical",
+            f"Missing {field}",
+        )
+        for row_index in qa_data.index[missing_mask]:
+            missing_field_lists.at[row_index].append(field)
+
+    for field in IMPORTANT_DIRECTORY_FIELDS:
+        missing_mask = unresolved_mask(qa_data[field])
+        add_flag(
+            missing_mask,
+            "Warning",
+            f"Missing {field}",
+        )
+        for row_index in qa_data.index[missing_mask]:
+            missing_field_lists.at[row_index].append(field)
+
+    record_ids = normalize_text_for_key(qa_data["Record ID"])
+    duplicate_id_mask = (
+        record_ids.ne("")
+        & record_ids.duplicated(keep=False)
+    )
+    add_flag(
+        duplicate_id_mask,
+        "Critical",
+        "Duplicate Record ID",
+    )
+
+    street_key = normalize_text_for_key(qa_data["Street Address"])
+    postal_key = normalize_text_for_key(qa_data["Postal Code"])
+    city_key = normalize_text_for_key(qa_data["City"])
+    address_key = street_key + "|" + postal_key + "|" + city_key
+
+    duplicate_address_mask = (
+        street_key.ne("")
+        & city_key.ne("")
+        & address_key.duplicated(keep=False)
+    )
+    add_flag(
+        duplicate_address_mask,
+        "Warning",
+        "Possible duplicate address",
+    )
+
+    unit_values = numeric_unit_values(
+        qa_data["Number of Apartments"]
+    )
+    invalid_units_mask = (
+        ~unresolved_mask(qa_data["Number of Apartments"])
+        & (unit_values.isna() | (unit_values <= 0))
+    )
+    add_flag(
+        invalid_units_mask,
+        "Critical",
+        "Invalid number of apartments",
+    )
+
+    conflicting_unit_keys = set()
+    duplicate_unit_data = pd.DataFrame(
+        {
+            "Address Key": address_key,
+            "Units": unit_values,
+        },
+        index=qa_data.index,
+    )
+    for address_value, group in duplicate_unit_data.groupby(
+        "Address Key",
+        dropna=False,
+    ):
+        if not address_value or address_value.startswith("||"):
+            continue
+        unique_units = group["Units"].dropna().unique()
+        if len(unique_units) > 1:
+            conflicting_unit_keys.add(address_value)
+
+    conflicting_units_mask = address_key.isin(
+        conflicting_unit_keys
+    )
+    add_flag(
+        conflicting_units_mask,
+        "Critical",
+        "Conflicting apartment counts at the same address",
+    )
+
+    for email_column in ["Primary Email", "Secondary Email"]:
+        email_values = (
+            qa_data[email_column]
+            .astype("string")
             .fillna("")
-            .astype(str)
             .str.strip()
-            .str.lower()
         )
-        normalized_city = (
-            qa_data["City"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-        )
-        duplicate_keys = pd.DataFrame(
-            {
-                "Name": normalized_name,
-                "City": normalized_city,
-            },
-            index=qa_data.index,
-        )
-        duplicate_mask = (
-            normalized_name.ne("")
-            & normalized_city.ne("")
-            & duplicate_keys.duplicated(keep=False)
+        invalid_email_mask = (
+            ~unresolved_mask(qa_data[email_column])
+            & ~email_values.str.match(
+                r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+                na=False,
+            )
         )
         add_flag(
-            duplicate_mask,
-            "Possible duplicate: same Name and City",
+            invalid_email_mask,
+            "Warning",
+            f"Invalid {email_column} format",
         )
 
-    if "Source URL" in qa_data.columns:
-        source_urls = (
-            qa_data["Source URL"]
+    for url_column in ["Website", "Source URL"]:
+        url_values = (
+            qa_data[url_column]
             .astype("string")
+            .fillna("")
             .str.strip()
             .str.lower()
         )
         invalid_url_mask = (
-            qa_data["Source URL"].notna()
-            & ~source_urls.str.startswith(
+            ~unresolved_mask(qa_data[url_column])
+            & ~url_values.str.startswith(
                 ("http://", "https://"),
                 na=False,
             )
         )
-        add_flag(invalid_url_mask, "Invalid Source URL")
-
-    if "Date Researched" in qa_data.columns:
-        original_dates = qa_data["Date Researched"]
-        parsed_dates = pd.to_datetime(
-            original_dates,
-            errors="coerce",
-        )
-        today = pd.Timestamp.today().normalize()
-        source_age = (today - parsed_dates).dt.days
-
-        invalid_date_mask = (
-            original_dates.notna()
-            & parsed_dates.isna()
-        )
-        add_flag(invalid_date_mask, "Invalid Date Researched")
-
-        future_date_mask = (
-            parsed_dates.notna()
-            & (parsed_dates > today)
-        )
+        severity = "Warning" if url_column == "Website" else "Workflow"
         add_flag(
-            future_date_mask,
-            "Date Researched is in the future",
+            invalid_url_mask,
+            severity,
+            f"Invalid {url_column}",
         )
 
-        stale_date_mask = (
-            parsed_dates.notna()
-            & (parsed_dates <= today)
-            & (source_age > FRESHNESS_THRESHOLD_DAYS)
-        )
-        add_flag(
-            stale_date_mask,
-            f"Research date is older than {FRESHNESS_THRESHOLD_DAYS} days",
-        )
-
-    status_checks = [
-        (
-            "Verification Status",
-            VALID_VERIFICATION_STATUSES,
-            "Unrecognized Verification Status",
-        ),
-        (
-            "Research Status",
-            VALID_RESEARCH_STATUSES,
-            "Unrecognized Research Status",
-        ),
-        (
-            "Source Status",
-            VALID_SOURCE_STATUSES,
-            "Unrecognized Source Status",
-        ),
-    ]
-
-    for column, accepted_values, message in status_checks:
-        if column not in qa_data.columns:
-            continue
-
-        normalized_status = (
-            qa_data[column]
-            .astype("string")
-            .str.strip()
-            .str.lower()
-        )
-        accepted_statuses = [
-            status.lower()
-            for status in accepted_values
-        ]
-        invalid_status_mask = (
-            qa_data[column].notna()
-            & ~normalized_status.isin(accepted_statuses)
-        )
-        add_flag(invalid_status_mask, message)
-
-    qa_data["QA Flag Count"] = record_flags.apply(len)
-    qa_data["QA Flags"] = record_flags.apply(
-        lambda flags: "; ".join(flags)
-        if flags
-        else "No issues found"
+    postal_values = (
+        qa_data["Postal Code"]
+        .astype("string")
+        .fillna("")
+        .str.strip()
+        .str.upper()
     )
-    qa_data["QA Status"] = qa_data["QA Flag Count"].apply(
-        lambda count: "Review" if count > 0 else "Pass"
+    invalid_postal_mask = (
+        ~unresolved_mask(qa_data["Postal Code"])
+        & ~postal_values.str.match(
+            r"^[A-Z]\d[A-Z][ -]?\d[A-Z]\d$",
+            na=False,
+        )
+    )
+    add_flag(
+        invalid_postal_mask,
+        "Warning",
+        "Invalid Canadian postal code format",
+    )
+
+    phone_values = (
+        qa_data["Phone"]
+        .astype("string")
+        .fillna("")
+        .str.replace(r"\D", "", regex=True)
+    )
+    invalid_phone_mask = (
+        ~unresolved_mask(qa_data["Phone"])
+        & ~phone_values.str.len().isin([10, 11])
+    )
+    add_flag(
+        invalid_phone_mask,
+        "Warning",
+        "Phone number does not contain 10 or 11 digits",
+    )
+
+    original_dates = qa_data["Date Researched"]
+    parsed_dates = pd.to_datetime(
+        original_dates,
+        errors="coerce",
+    )
+    today = pd.Timestamp.today().normalize()
+    invalid_date_mask = (
+        ~unresolved_mask(original_dates)
+        & parsed_dates.isna()
+    )
+    future_date_mask = (
+        parsed_dates.notna()
+        & (parsed_dates > today)
+    )
+    add_flag(
+        invalid_date_mask,
+        "Workflow",
+        "Invalid Date Researched",
+    )
+    add_flag(
+        future_date_mask,
+        "Workflow",
+        "Date Researched is in the future",
+    )
+
+    missing_count = missing_field_lists.apply(len)
+    qa_data["Missing Field Count"] = missing_count
+    qa_data["Missing Directory Fields"] = missing_field_lists.apply(
+        lambda fields: ", ".join(fields)
+        if fields
+        else "None"
+    )
+
+    qa_data["Critical Issue Count"] = issue_lists.apply(
+        lambda issues: sum(
+            severity == "Critical"
+            for severity, _ in issues
+        )
+    )
+    qa_data["Warning Count"] = issue_lists.apply(
+        lambda issues: sum(
+            severity == "Warning"
+            for severity, _ in issues
+        )
+    )
+    qa_data["QA Flag Count"] = issue_lists.apply(
+        lambda issues: sum(
+            severity in {"Critical", "Warning"}
+            for severity, _ in issues
+        )
+    )
+    qa_data["QA Flags"] = issue_lists.apply(
+        lambda issues: "; ".join(
+            f"{severity}: {message}"
+            for severity, message in issues
+            if severity in {"Critical", "Warning"}
+        )
+        if any(
+            severity in {"Critical", "Warning"}
+            for severity, _ in issues
+        )
+        else "No directory data issues found"
+    )
+
+    qa_data["QA Status"] = qa_data.apply(
+        lambda row: (
+            "Critical"
+            if row["Critical Issue Count"] > 0
+            else "Review"
+            if row["Warning Count"] > 0
+            else "Pass"
+        ),
+        axis=1,
+    )
+
+    total_fields = len(ALL_DIRECTORY_FIELDS)
+    qa_data["Data Completeness %"] = (
+        (total_fields - missing_count)
+        / total_fields
+        * 100
+    ).round(1)
+
+    workflow_lists = pd.Series(
+        [[] for _ in range(len(qa_data))],
+        index=qa_data.index,
+        dtype="object",
+    )
+
+    def add_workflow_gap(mask, message):
+        safe_mask = mask.fillna(False)
+        for row_index in qa_data.index[safe_mask]:
+            workflow_lists.at[row_index].append(message)
+
+    add_workflow_gap(
+        unresolved_mask(qa_data["Source URL"]),
+        "Official source URL not recorded",
+    )
+    add_workflow_gap(
+        unresolved_mask(qa_data["Date Researched"]),
+        "Research date not recorded",
+    )
+    add_workflow_gap(
+        unresolved_mask(qa_data["Researcher"]),
+        "Researcher not recorded",
+    )
+    add_workflow_gap(
+        qa_data["Research Status"].eq("Not Started"),
+        "Research not started",
+    )
+    add_workflow_gap(
+        qa_data["Research Status"].eq("In Progress"),
+        "Research still in progress",
+    )
+    add_workflow_gap(
+        qa_data["Source Status"].eq("Not Checked"),
+        "Source not checked",
+    )
+    add_workflow_gap(
+        qa_data["Source Status"].isin(
+            ["Needs Follow-up", "Unavailable"]
+        ),
+        "Source requires follow-up",
+    )
+    add_workflow_gap(
+        qa_data["Verification Status"].eq("Not Reviewed"),
+        "Human verification not completed",
+    )
+    add_workflow_gap(
+        qa_data["Verification Status"].eq("Needs Review"),
+        "Human review needs follow-up",
+    )
+
+    note_required_mask = (
+        qa_data["Record Decision"].isin(
+            ["Possible Duplicate", "Remove"]
+        )
+        | qa_data["Verification Status"].eq("Needs Review")
+        | qa_data["Source Status"].isin(
+            ["Needs Follow-up", "Unavailable"]
+        )
+    ) & unresolved_mask(qa_data["Reviewer Notes"])
+
+    add_workflow_gap(
+        note_required_mask,
+        "Reviewer notes required for this decision",
+    )
+
+    qa_data["Workflow Gap Count"] = workflow_lists.apply(len)
+    qa_data["Workflow Gaps"] = workflow_lists.apply(
+        lambda gaps: "; ".join(gaps)
+        if gaps
+        else "No workflow gaps"
+    )
+
+    qa_data["Record Readiness"] = qa_data.apply(
+        lambda row: (
+            "Ready for Directory"
+            if (
+                row["QA Status"] == "Pass"
+                and row["Research Status"] == "Completed"
+                and row["Verification Status"] == "Verified"
+                and row["Workflow Gap Count"] == 0
+            )
+            else "Needs Research"
+            if row["Research Status"] in {
+                "Not Started",
+                "In Progress",
+            }
+            else "Needs Follow-up"
+        ),
+        axis=1,
     )
 
     qa_data = add_source_freshness_columns(qa_data)
@@ -616,7 +1447,7 @@ def build_qa_flags(dataframe):
 
 
 def extract_issue_types(dataframe):
-    """Return the distinct QA issue messages in the current data."""
+    """Return distinct directory-data issue messages."""
     issue_types = set()
 
     if "QA Flags" not in dataframe.columns:
@@ -625,97 +1456,250 @@ def extract_issue_types(dataframe):
     for flag_text in dataframe["QA Flags"].fillna(""):
         for issue in str(flag_text).split("; "):
             clean_issue = issue.strip()
-            if clean_issue and clean_issue != "No issues found":
+            if (
+                clean_issue
+                and clean_issue != "No directory data issues found"
+            ):
                 issue_types.add(clean_issue)
 
     return sorted(issue_types)
 
 
-def display_values(series, blank_label="Blank"):
-    """Create readable values for multiselect filters."""
+def create_issue_summary(dataframe):
+    """Summarize issue frequency across the current dataset."""
+    issue_counts = {}
+
+    for flag_text in dataframe["QA Flags"].fillna(""):
+        for issue in str(flag_text).split("; "):
+            clean_issue = issue.strip()
+            if (
+                clean_issue
+                and clean_issue != "No directory data issues found"
+            ):
+                issue_counts[clean_issue] = (
+                    issue_counts.get(clean_issue, 0) + 1
+                )
+
+    rows = []
+    for issue, count in issue_counts.items():
+        severity, _, message = issue.partition(": ")
+        rows.append(
+            {
+                "Severity": severity,
+                "Issue": message or issue,
+                "Affected Records": count,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["Severity", "Issue", "Affected Records"]
+        )
+
+    summary = pd.DataFrame(rows)
+    severity_order = {
+        "Critical": 0,
+        "Warning": 1,
+    }
+    summary["_severity_order"] = summary["Severity"].map(
+        severity_order
+    ).fillna(9)
+
     return (
-        series
-        .astype("string")
-        .fillna(blank_label)
-        .str.strip()
-        .replace("", blank_label)
+        summary
+        .sort_values(
+            ["_severity_order", "Affected Records", "Issue"],
+            ascending=[True, False, True],
+        )
+        .drop(columns="_severity_order")
+        .reset_index(drop=True)
     )
 
 
-def apply_record_filters(
-    dataframe,
-    qa_statuses,
-    verification_statuses,
-    issue_types,
-    research_statuses,
-    source_statuses,
-    freshness_statuses,
-):
-    """Filter records across QA, verification, research, and sources."""
-    filtered_data = dataframe.copy()
+def create_field_completeness_summary(dataframe):
+    """Summarize missing values for required directory fields."""
+    rows = []
 
-    filter_pairs = [
-        ("QA Status", qa_statuses),
-        ("Verification Status", verification_statuses),
-        ("Research Status", research_statuses),
-        ("Source Status", source_statuses),
-        ("Freshness Status", freshness_statuses),
-    ]
+    for field in ALL_DIRECTORY_FIELDS:
+        missing_count = int(
+            unresolved_mask(dataframe[field]).sum()
+        )
+        severity = (
+            "Critical"
+            if field in CRITICAL_DIRECTORY_FIELDS
+            else "Important"
+        )
+        rows.append(
+            {
+                "Directory Field": field,
+                "Priority": severity,
+                "Missing Records": missing_count,
+                "Complete Records": len(dataframe) - missing_count,
+                "Completeness": (
+                    f"{percentage(len(dataframe) - missing_count, len(dataframe)):.1f}%"
+                ),
+            }
+        )
 
-    for column, selected_values in filter_pairs:
-        if not selected_values or column not in filtered_data.columns:
-            continue
-        values = display_values(filtered_data[column])
-        filtered_data = filtered_data[
-            values.isin(selected_values)
-        ]
+    return pd.DataFrame(rows)
 
-    if issue_types:
-        issue_mask = filtered_data["QA Flags"].apply(
-            lambda flag_text: any(
-                selected_issue in str(flag_text).split("; ")
-                for selected_issue in issue_types
+
+def create_dataset_observations(dataframe):
+    """Return broad dataset-level observations that need attention."""
+    observations = []
+
+    amenity_columns = find_amenity_columns(dataframe)
+    if amenity_columns:
+        amenity_values = dataframe[amenity_columns].apply(
+            lambda column: (
+                column.astype("string")
+                .fillna("")
+                .str.strip()
+                .str.lower()
             )
         )
-        filtered_data = filtered_data[issue_mask]
+        all_no_records = int(
+            amenity_values.apply(
+                lambda row: (
+                    len(row) > 0
+                    and all(value in NO_TOKENS for value in row)
+                ),
+                axis=1,
+            ).sum()
+        )
+        if all_no_records:
+            observations.append(
+                {
+                    "Observation": "Amenity defaults need confirmation",
+                    "Detail": (
+                        f"{all_no_records:,} records have every detected "
+                        "amenity marked No. Confirm that No means verified "
+                        "absence rather than not researched."
+                    ),
+                }
+            )
 
-    return filtered_data
+    rental_values = resolved_series(
+        dataframe["Rental Rate Range"]
+    )
+    if rental_values.notna().any():
+        numeric_like = (
+            rental_values
+            .astype("string")
+            .str.fullmatch(r"\s*\$?[\d,]+(?:\.\d+)?\s*")
+            .fillna(False)
+        )
+        numeric_count = int(numeric_like.sum())
+        text_count = int(
+            rental_values.notna().sum() - numeric_count
+        )
+        if numeric_count and text_count:
+            observations.append(
+                {
+                    "Observation": "Rental-rate formatting is mixed",
+                    "Detail": (
+                        f"{numeric_count:,} populated rates are numeric-like "
+                        f"and {text_count:,} use text or ranges. Standardize "
+                        "the format before final export."
+                    ),
+                }
+            )
+
+    owners = (
+        resolved_series(dataframe["Management/Owner"])
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+    if owners.nunique() > 0:
+        observations.append(
+            {
+                "Observation": "Company names standardized",
+                "Detail": (
+                    "Known variants such as Mily Services and Paramount "
+                    "Properties are mapped to consistent working names. "
+                    "The original imported columns remain available."
+                ),
+            }
+        )
+
+    return pd.DataFrame(
+        observations,
+        columns=["Observation", "Detail"],
+    )
 
 
-def initialize_uploaded_data(uploaded_file):
-    """Store a new upload without overwriting later session edits."""
-    uploaded_data, file_bytes = read_uploaded_file(uploaded_file)
+# ---------------------------------------------------------
+# Session and record-management helpers
+# ---------------------------------------------------------
+
+
+def initialize_uploaded_data(uploaded_file, sheet_name=None):
+    """Store a mapped upload without overwriting later edits."""
+    uploaded_data, file_bytes = read_uploaded_file(
+        uploaded_file,
+        sheet_name=sheet_name,
+    )
+    mapped_data, mapping_report = map_to_directory_schema(
+        uploaded_data
+    )
+    mapped_data = normalize_workflow_columns(mapped_data)
+
     file_signature = create_file_signature(
         uploaded_file.name,
         file_bytes,
+        sheet_name=sheet_name,
     )
 
     if st.session_state.get(SESSION_FILE_SIGNATURE) != file_signature:
         st.session_state[SESSION_FILE_SIGNATURE] = file_signature
-        st.session_state[SESSION_ORIGINAL_DATA] = uploaded_data.copy()
-        st.session_state[SESSION_WORKING_DATA] = uploaded_data.copy()
+        st.session_state[SESSION_ORIGINAL_DATA] = mapped_data.copy()
+        st.session_state[SESSION_WORKING_DATA] = mapped_data.copy()
         st.session_state[SESSION_WORKSPACE_NAME] = uploaded_file.name
+        st.session_state[SESSION_WORKSHEET_NAME] = sheet_name or ""
+        st.session_state[SESSION_MAPPING_REPORT] = mapping_report
         st.session_state[SESSION_QA_RUN_COUNT] = 0
+
+        worksheet_message = (
+            f" Worksheet: {sheet_name}."
+            if sheet_name
+            else ""
+        )
         st.session_state[SESSION_FLASH_MESSAGE] = (
             f"{uploaded_file.name} uploaded successfully."
+            f"{worksheet_message}"
         )
 
 
 def initialize_blank_workspace():
-    """Create an empty workspace for manual research entry."""
-    blank_data = pd.DataFrame(columns=DATABLIX_COLUMNS)
+    """Create an empty directory-research workspace."""
+    blank_data = pd.DataFrame(columns=DIRECTORY_COLUMNS)
+    blank_data = normalize_workflow_columns(blank_data)
+
+    mapping_report = pd.DataFrame(
+        {
+            "Datablix Field": DIRECTORY_COLUMNS,
+            "Imported Column(s)": DIRECTORY_COLUMNS,
+            "Mapping Status": "Template field",
+        }
+    )
+
     st.session_state[SESSION_FILE_SIGNATURE] = "manual-workspace"
     st.session_state[SESSION_ORIGINAL_DATA] = blank_data.copy()
     st.session_state[SESSION_WORKING_DATA] = blank_data.copy()
-    st.session_state[SESSION_WORKSPACE_NAME] = "datablix_manual_research.csv"
+    st.session_state[SESSION_WORKSPACE_NAME] = (
+        "datablix_directory_research.csv"
+    )
+    st.session_state[SESSION_WORKSHEET_NAME] = ""
+    st.session_state[SESSION_MAPPING_REPORT] = mapping_report
     st.session_state[SESSION_QA_RUN_COUNT] = 0
     st.session_state[SESSION_FLASH_MESSAGE] = (
-        "A blank research workspace was created."
+        "A blank directory-research workspace was created."
     )
 
 
 def reset_working_data():
-    """Restore the session to the original upload or blank workspace."""
+    """Restore the original mapped upload or blank workspace."""
     st.session_state[SESSION_WORKING_DATA] = (
         st.session_state[SESSION_ORIGINAL_DATA].copy()
     )
@@ -726,16 +1710,13 @@ def reset_working_data():
 
 
 def generate_record_id(dataframe):
-    """Generate a fictional-friendly record ID for a manual entry."""
-    existing_ids = set()
-
-    if "Record ID" in dataframe.columns:
-        existing_ids = set(
-            dataframe["Record ID"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-        )
+    """Generate a unique record ID for a manual entry."""
+    existing_ids = set(
+        resolved_series(dataframe["Record ID"])
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
 
     counter = 1
     while True:
@@ -746,24 +1727,25 @@ def generate_record_id(dataframe):
 
 
 def add_manual_record(record):
-    """Append one manual research record to the current workspace."""
+    """Append one manual directory-research record."""
     working_data = st.session_state[SESSION_WORKING_DATA].copy()
-    working_data = add_missing_standard_columns(working_data)
 
     new_record = {
         column: record.get(column, pd.NA)
         for column in working_data.columns
     }
+
     new_row = pd.DataFrame([new_record])
     updated_data = pd.concat(
         [working_data, new_row],
         ignore_index=True,
     )
     updated_data = prepare_data(updated_data)
+    updated_data = normalize_workflow_columns(updated_data)
 
     st.session_state[SESSION_WORKING_DATA] = updated_data
     st.session_state[SESSION_FLASH_MESSAGE] = (
-        f"{record['Record ID']} was added to the research workspace."
+        f"{record['Record ID']} was added to the workspace."
     )
 
 
@@ -783,32 +1765,68 @@ def apply_editor_changes(edited_data, editable_columns):
         ] = edited_data[column]
 
     updated_data = prepare_data(updated_data)
-
-    for text_column in ["Researcher", "Reviewer Notes"]:
-        if text_column in updated_data.columns:
-            updated_data[text_column] = (
-                updated_data[text_column]
-                .fillna("")
-                .astype(str)
-            )
+    updated_data = normalize_workflow_columns(updated_data)
 
     st.session_state[SESSION_WORKING_DATA] = updated_data
     st.session_state[SESSION_QA_RUN_COUNT] = (
         st.session_state.get(SESSION_QA_RUN_COUNT, 0) + 1
     )
     st.session_state[SESSION_FLASH_MESSAGE] = (
-        "Updates were applied and all QA and freshness checks were re-run."
+        "Updates were applied and the directory and workflow checks "
+        "were re-run."
     )
 
 
+def apply_record_filters(
+    dataframe,
+    qa_statuses,
+    companies,
+    issue_types,
+    research_statuses,
+    verification_statuses,
+    readiness_statuses,
+):
+    """Filter directory records across quality and workflow dimensions."""
+    filtered_data = dataframe.copy()
+
+    filter_pairs = [
+        ("QA Status", qa_statuses),
+        ("Management/Owner", companies),
+        ("Research Status", research_statuses),
+        ("Verification Status", verification_statuses),
+        ("Record Readiness", readiness_statuses),
+    ]
+
+    for column, selected_values in filter_pairs:
+        if not selected_values:
+            continue
+
+        values = display_values(filtered_data[column])
+        filtered_data = filtered_data[
+            values.isin(selected_values)
+        ]
+
+    if issue_types:
+        issue_mask = filtered_data["QA Flags"].apply(
+            lambda flag_text: any(
+                selected_issue in str(flag_text).split("; ")
+                for selected_issue in issue_types
+            )
+        )
+        filtered_data = filtered_data[issue_mask]
+
+    return filtered_data
+
+
 def create_research_log(dataframe):
-    """Create a focused source-tracking and research-progress export."""
+    """Create a focused research-progress export."""
     research_log_columns = [
         "Record ID",
-        "Name",
-        "Category",
+        "Building Name",
+        "Management/Owner",
+        "Street Address",
         "City",
-        "Province",
+        "Postal Code",
         "Source URL",
         "Date Researched",
         "Source Age (Days)",
@@ -817,10 +1835,12 @@ def create_research_log(dataframe):
         "Research Status",
         "Source Status",
         "Verification Status",
-        "QA Status",
-        "QA Flag Count",
-        "QA Flags",
+        "Missing Information",
         "Reviewer Notes",
+        "Record Decision",
+        "Workflow Gap Count",
+        "Workflow Gaps",
+        "Record Readiness",
     ]
 
     available_columns = [
@@ -829,13 +1849,6 @@ def create_research_log(dataframe):
         if column in dataframe.columns
     ]
     return dataframe[available_columns].copy()
-
-
-def percentage(count, total):
-    """Return a safe percentage for KPI cards."""
-    if total == 0:
-        return 0.0
-    return count / total * 100
 
 
 # ---------------------------------------------------------
@@ -847,30 +1860,31 @@ render_brand_header()
 with st.expander("How to use Datablix", expanded=True):
     st.markdown(
         """
-        **1. Prepare** — Download the template, upload a spreadsheet, or
-        start a blank workspace.
+        **1. Upload** — Select the worksheet containing one row per
+        apartment building.
 
-        **2. Add research** — Enter new directory records through the
-        manual intake form.
+        **2. Confirm mapping** — Review how imported headings were matched
+        to Datablix directory fields.
 
-        **3. Track sources** — Record the researcher, research stage,
-        source status, and research date.
+        **3. Review real data gaps** — Datablix identifies missing building
+        details, invalid formats, duplicate addresses, and questionable
+        amenity defaults.
 
-        **4. Review quality** — Use QA, freshness, verification, and
-        workflow filters to focus the work.
+        **4. Track the work separately** — Research, source, and human
+        verification progress are shown separately from directory quality.
 
-        **5. Correct and re-run** — Update records and recalculate every
-        QA and freshness result.
+        **5. Update and re-run** — Correct records, document sources and
+        decisions, and recalculate the checks.
 
-        **6. Download** — Export the updated directory, research log,
-        and task-specific record lists.
+        **6. Download** — Export the updated directory, review queue,
+        directory-ready records, and research follow-up log.
         """
     )
 
 st.warning(
     """
-    Privacy reminder: Use fictional or approved data only.
-    Do not upload confidential user information to this public app.
+    Privacy reminder: Use fictional or project-approved data only.
+    Do not upload confidential personal information to this public app.
     """
 )
 
@@ -883,25 +1897,25 @@ st.header("1. Prepare your research workspace")
 
 st.write(
     """
-    Download the Datablix template when starting a new directory.
-    It includes the fields used for research intake, source tracking,
-    quality review, and verification.
+    Use the template for new research. Existing files can also be uploaded:
+    Datablix recognizes common headings from Bryan's apartment-building
+    workbook and from the Linda working sheet.
     """
 )
 
-template_data = pd.DataFrame(columns=DATABLIX_COLUMNS)
+template_data = pd.DataFrame(columns=DIRECTORY_COLUMNS)
 
 st.download_button(
     label="Download blank CSV template",
     data=dataframe_to_csv_bytes(template_data),
-    file_name="datablix_research_template.csv",
+    file_name="datablix_directory_research_template.csv",
     mime="text/csv",
     key="download_blank_template",
 )
 
 st.caption(
-    "Your spreadsheet should have column headings in the first row. "
-    "Missing workflow fields will be added automatically as blank columns."
+    "The final workspace keeps the imported columns and adds standardized "
+    "Datablix fields at the beginning."
 )
 
 
@@ -911,13 +1925,6 @@ st.caption(
 
 st.header("2. Start or upload your research workspace")
 
-st.write(
-    """
-    Upload one CSV or Excel file, or start an empty workspace and add
-    fictional records manually.
-    """
-)
-
 upload_column, blank_column = st.columns([3, 1])
 
 with upload_column:
@@ -926,7 +1933,7 @@ with upload_column:
         type=["csv", "xlsx"],
         help=(
             "Accepted formats: CSV and Excel .xlsx. "
-            "Use fictional or approved data only."
+            "For Excel, select the worksheet that contains building records."
         ),
     )
 
@@ -938,16 +1945,35 @@ with blank_column:
         help="Create an empty directory for manual entry.",
     )
 
+selected_sheet = None
+
 try:
     if uploaded_file is not None:
-        initialize_uploaded_data(uploaded_file)
+        extension = uploaded_file.name.rsplit(".", 1)[-1].lower()
+
+        if extension == "xlsx":
+            sheet_names = get_excel_sheet_names(uploaded_file)
+            selected_sheet = st.selectbox(
+                "Worksheet containing apartment-building records",
+                options=sheet_names,
+                index=preferred_sheet_index(sheet_names),
+                help=(
+                    "Choose Linda Working when using the prepared working "
+                    "copy, or Apartment Buildings when using Bryan's original."
+                ),
+            )
+
+        initialize_uploaded_data(
+            uploaded_file,
+            sheet_name=selected_sheet,
+        )
     elif start_blank:
         initialize_blank_workspace()
         st.rerun()
 except Exception as error:
     st.error(
-        "Datablix could not read this file. Confirm that it is a valid "
-        "CSV or Excel .xlsx file with headings in the first row."
+        "Datablix could not read this file. Confirm that the selected "
+        "worksheet has headings in the first row."
     )
     st.caption(f"Technical detail: {error}")
 
@@ -964,24 +1990,60 @@ if SESSION_FLASH_MESSAGE in st.session_state:
 
 workspace_name = st.session_state.get(
     SESSION_WORKSPACE_NAME,
-    "datablix_research.csv",
+    "datablix_directory_research.csv",
+)
+worksheet_name = st.session_state.get(
+    SESSION_WORKSHEET_NAME,
+    "",
 )
 
-st.caption(f"Current workspace: **{workspace_name}**")
+workspace_caption = f"Current workspace: **{workspace_name}**"
+if worksheet_name:
+    workspace_caption += f" · Worksheet: **{worksheet_name}**"
+st.caption(workspace_caption)
+
+mapping_report = st.session_state.get(
+    SESSION_MAPPING_REPORT,
+    pd.DataFrame(),
+)
+
+with st.expander("Review detected column mapping", expanded=True):
+    if mapping_report.empty:
+        st.info("No mapping information is available.")
+    else:
+        st.dataframe(
+            mapping_report,
+            width="stretch",
+            hide_index=True,
+        )
+
+        missing_priority_mappings = mapping_report[
+            mapping_report["Datablix Field"].isin(
+                ALL_DIRECTORY_FIELDS
+            )
+            & mapping_report["Mapping Status"].eq("Not found")
+        ]
+
+        if not missing_priority_mappings.empty:
+            missing_fields = ", ".join(
+                missing_priority_mappings["Datablix Field"].tolist()
+            )
+            st.warning(
+                "No matching imported column was found for: "
+                f"{missing_fields}. These fields will be checked as missing."
+            )
+        else:
+            st.success(
+                "All priority directory fields were connected to imported "
+                "columns."
+            )
 
 
 # ---------------------------------------------------------
 # Manual research intake
 # ---------------------------------------------------------
 
-st.header("3. Add a manual research record")
-
-st.write(
-    """
-    Use this form to add one new fictional directory record. Missing
-    details can be completed later through the editable workflow table.
-    """
-)
+st.header("3. Add a manual apartment-building record")
 
 working_data = st.session_state[SESSION_WORKING_DATA].copy()
 suggested_record_id = generate_record_id(working_data)
@@ -993,33 +2055,44 @@ with st.form("manual_research_form", clear_on_submit=True):
         record_id = st.text_input(
             "Record ID",
             value=suggested_record_id,
-            help="Keep record IDs unique, for example DB-NEW-001.",
         )
-        name = st.text_input(
-            "Name *",
-            placeholder="Example: Oakview Residence",
+        building_name = st.text_input(
+            "Building Name *",
+            placeholder="Example: Story of Rideau & Chapel",
         )
-        category = st.text_input(
-            "Category *",
-            placeholder="Example: Independent Living",
+        owner = st.text_input(
+            "Management/Owner *",
+            placeholder="Example: Hazelview Properties",
+        )
+        classification = st.text_input(
+            "Building Classification",
+            placeholder="Example: High Rise",
+        )
+        unit_count = st.text_input(
+            "Number of Apartments",
+            placeholder="Example: 283",
         )
 
     with location_column:
-        address = st.text_input(
-            "Address",
-            placeholder="Example: 100 Example Street",
+        street_address = st.text_input(
+            "Street Address *",
+            placeholder="Example: 165 Chapel Street",
         )
         city = st.text_input(
             "City *",
-            placeholder="Example: Ottawa",
+            value="Ottawa",
         )
         province = st.text_input(
             "Province *",
             value="Ontario",
         )
         postal_code = st.text_input(
-            "Postal Code",
-            placeholder="Example: K1A 1A1",
+            "Postal Code *",
+            placeholder="Example: K1N 0E7",
+        )
+        rental_rate = st.text_input(
+            "Rental Rate Range",
+            placeholder="Example: $1,900–$2,700",
         )
 
     with contact_column:
@@ -1027,22 +2100,48 @@ with st.form("manual_research_form", clear_on_submit=True):
             "Phone",
             placeholder="Example: 613-555-0199",
         )
-        email = st.text_input(
-            "Email",
-            placeholder="Example: contact@oakview.example",
+        primary_email = st.text_input(
+            "Primary Email",
+            placeholder="Example: leasing@example.ca",
         )
         website = st.text_input(
             "Website",
-            placeholder="https://oakview.example",
+            placeholder="https://property.example",
+        )
+        source_url = st.text_input(
+            "Official Source URL",
+            placeholder="https://property.example/building",
+        )
+        researcher = st.text_input(
+            "Researcher",
+            placeholder="Example: Linda",
         )
 
-    st.write("#### Research and source tracking")
-    source_column, workflow_column, review_column = st.columns(3)
+    st.write("#### Research and review tracking")
+    workflow_column, source_column, notes_column = st.columns(3)
+
+    with workflow_column:
+        research_status = st.selectbox(
+            "Research Status",
+            options=VALID_RESEARCH_STATUSES,
+            index=0,
+        )
+        verification_status = st.selectbox(
+            "Verification Status",
+            options=VALID_VERIFICATION_STATUSES,
+            index=0,
+        )
+        record_decision = st.selectbox(
+            "Record Decision",
+            options=VALID_RECORD_DECISIONS,
+            index=0,
+        )
 
     with source_column:
-        source_url = st.text_input(
-            "Source URL *",
-            placeholder="https://directory.example/oakview",
+        source_status = st.selectbox(
+            "Source Status",
+            options=VALID_SOURCE_STATUSES,
+            index=0,
         )
         date_unavailable = st.checkbox(
             "Research date not available yet",
@@ -1053,35 +2152,19 @@ with st.form("manual_research_form", clear_on_submit=True):
             value=date.today(),
             disabled=date_unavailable,
         )
-        researcher = st.text_input(
-            "Researcher",
-            placeholder="Example: Avery Stone",
+        missing_information = st.text_area(
+            "Missing Information",
+            max_chars=500,
+            placeholder="List information that could not be confirmed.",
         )
 
-    with workflow_column:
-        research_status = st.selectbox(
-            "Research Status",
-            options=VALID_RESEARCH_STATUSES,
-            index=0,
-        )
-        source_status = st.selectbox(
-            "Source Status",
-            options=VALID_SOURCE_STATUSES,
-            index=0,
-        )
-        verification_status = st.selectbox(
-            "Verification Status",
-            options=VALID_VERIFICATION_STATUSES,
-            index=0,
-        )
-
-    with review_column:
+    with notes_column:
         reviewer_notes = st.text_area(
             "Reviewer Notes",
-            max_chars=500,
+            max_chars=700,
             placeholder=(
-                "Record what was checked, what remains unknown, "
-                "or what needs follow-up."
+                "Record conflicts, corrections, source limitations, "
+                "or follow-up decisions."
             ),
         )
 
@@ -1101,29 +2184,34 @@ if add_record_button:
 
     new_record = {
         "Record ID": final_record_id,
-        "Name": name,
-        "Category": category,
-        "Address": address,
+        "Building Name": building_name,
+        "Management/Owner": owner,
+        "Street Address": street_address,
         "City": city,
         "Province": province,
         "Postal Code": postal_code,
         "Phone": phone,
-        "Email": email,
+        "Primary Email": primary_email,
         "Website": website,
+        "Number of Apartments": unit_count,
+        "Rental Rate Range": rental_rate,
+        "Building Classification": classification,
         "Source URL": source_url,
         "Date Researched": date_value,
         "Researcher": researcher,
         "Research Status": research_status,
         "Source Status": source_status,
         "Verification Status": verification_status,
+        "Missing Information": missing_information,
         "Reviewer Notes": reviewer_notes,
+        "Record Decision": record_decision,
     }
     add_manual_record(new_record)
     st.rerun()
 
 st.caption(
-    "Fields marked * are required for QA. Datablix still accepts an "
-    "incomplete record so it can enter the follow-up queue."
+    "Incomplete records are accepted so Datablix can identify exactly "
+    "what remains to be researched."
 )
 
 
@@ -1138,21 +2226,21 @@ preview_column, reset_column = st.columns([4, 1])
 
 with preview_column:
     st.write(
-        f"Rows: **{len(data):,}** | Columns: **{len(data.columns):,}**"
+        f"Rows: **{len(data):,}** · Columns: **{len(data.columns):,}**"
     )
     qa_run_count = st.session_state.get(SESSION_QA_RUN_COUNT, 0)
     if qa_run_count > 0:
         st.caption(
-            f"QA and freshness checks have been re-run "
-            f"{qa_run_count:,} time(s) during this session."
+            f"Checks have been re-run {qa_run_count:,} time(s) "
+            "during this session."
         )
 
 with reset_column:
     if st.button(
         "Reset workspace",
         help=(
-            "Discard session corrections and manual additions, then "
-            "restore the original uploaded file or empty workspace."
+            "Discard session corrections and restore the original "
+            "mapped upload."
         ),
         use_container_width=True,
     ):
@@ -1161,13 +2249,27 @@ with reset_column:
 
 if data.empty:
     st.info(
-        "This workspace is empty. Add a manual record above or upload "
-        "a spreadsheet."
+        "This workspace is empty. Add a record above or upload a file."
     )
     st.stop()
 
+preview_columns = [
+    "Record ID",
+    "Building Name",
+    "Management/Owner",
+    "Street Address",
+    "City",
+    "Postal Code",
+    "Phone",
+    "Primary Email",
+    "Number of Apartments",
+    "Building Classification",
+    "Research Status",
+    "Verification Status",
+]
+
 st.dataframe(
-    data.head(20),
+    data[preview_columns].head(20),
     width="stretch",
     hide_index=True,
 )
@@ -1181,14 +2283,10 @@ else:
 
 
 # ---------------------------------------------------------
-# Run checks and normalize display workflow values
+# Run checks
 # ---------------------------------------------------------
 
 qa_data = build_qa_flags(data)
-qa_data = normalize_workflow_columns(qa_data)
-
-flagged_records = qa_data[qa_data["QA Status"] == "Review"].copy()
-passed_records = qa_data[qa_data["QA Status"] == "Pass"].copy()
 total_records = len(qa_data)
 
 
@@ -1200,17 +2298,27 @@ st.header("5. Track research and source progress")
 
 st.write(
     """
-    Research Status shows where the work stands. Source Status shows
-    whether the cited page is usable. Freshness is calculated from the
-    research date using a 180-day threshold.
+    Workflow progress is shown separately from directory-data quality.
+    A record is not treated as a data error simply because research has
+    not started or human verification is incomplete.
     """
 )
 
-research_status_values = display_values(qa_data["Research Status"])
-completed_count = int(research_status_values.eq("Completed").sum())
-in_progress_count = int(research_status_values.eq("In Progress").sum())
-ready_count = int(research_status_values.eq("Ready for Review").sum())
-not_started_count = int(research_status_values.eq("Not Started").sum())
+research_status_values = display_values(
+    qa_data["Research Status"]
+)
+completed_count = int(
+    research_status_values.eq("Completed").sum()
+)
+in_progress_count = int(
+    research_status_values.eq("In Progress").sum()
+)
+ready_count = int(
+    research_status_values.eq("Ready for Review").sum()
+)
+not_started_count = int(
+    research_status_values.eq("Not Started").sum()
+)
 
 (
     completed_card,
@@ -1234,38 +2342,50 @@ with completion_card:
         f"{percentage(completed_count, total_records):.1f}%",
     )
 
-st.write("#### Source health and freshness")
-source_status_values = display_values(qa_data["Source Status"])
-freshness_values = display_values(qa_data["Freshness Status"])
+st.write("#### Source health and verification")
 
-active_source_count = int(source_status_values.eq("Active").sum())
+source_status_values = display_values(
+    qa_data["Source Status"]
+)
+verification_values = display_values(
+    qa_data["Verification Status"]
+)
+freshness_values = display_values(
+    qa_data["Freshness Status"]
+)
+
+active_source_count = int(
+    source_status_values.eq("Active").sum()
+)
 follow_up_source_count = int(
     source_status_values.eq("Needs Follow-up").sum()
-)
-unavailable_source_count = int(
-    source_status_values.eq("Unavailable").sum()
 )
 not_checked_source_count = int(
     source_status_values.eq("Not Checked").sum()
 )
-stale_source_count = int(freshness_values.eq("Stale").sum())
+verified_count = int(
+    verification_values.eq("Verified").sum()
+)
+stale_source_count = int(
+    freshness_values.eq("Stale").sum()
+)
 
 (
     active_source_card,
     follow_up_source_card,
-    unavailable_source_card,
     not_checked_source_card,
+    verified_card,
     stale_source_card,
 ) = st.columns(5)
 
 with active_source_card:
     st.metric("Active Sources", f"{active_source_count:,}")
 with follow_up_source_card:
-    st.metric("Needs Follow-up", f"{follow_up_source_count:,}")
-with unavailable_source_card:
-    st.metric("Unavailable", f"{unavailable_source_count:,}")
+    st.metric("Source Follow-up", f"{follow_up_source_count:,}")
 with not_checked_source_card:
-    st.metric("Not Checked", f"{not_checked_source_count:,}")
+    st.metric("Sources Not Checked", f"{not_checked_source_count:,}")
+with verified_card:
+    st.metric("Human Verified", f"{verified_count:,}")
 with stale_source_card:
     st.metric(
         f"Stale Over {FRESHNESS_THRESHOLD_DAYS} Days",
@@ -1274,133 +2394,143 @@ with stale_source_card:
 
 research_log_preview = create_research_log(qa_data)
 st.dataframe(
-    research_log_preview,
+    research_log_preview.head(50),
     width="stretch",
     hide_index=True,
 )
+if len(research_log_preview) > 50:
+    st.caption("Showing the first 50 research-log records.")
 
 
 # ---------------------------------------------------------
-# Quality and verification overview
+# Quality overview
 # ---------------------------------------------------------
 
-st.header("6. Review quality and verification")
+st.header("6. Review directory quality")
 
-passed_count = len(passed_records)
-review_count = len(flagged_records)
-total_qa_flags = int(qa_data["QA Flag Count"].sum())
-pass_rate = percentage(passed_count, total_records)
+st.write(
+    """
+    These checks focus on the apartment-directory information itself:
+    missing building details, invalid formats, duplicate addresses,
+    conflicting unit counts, and questionable amenity defaults.
+    """
+)
+
+critical_count = int(
+    qa_data["QA Status"].eq("Critical").sum()
+)
+review_count = int(
+    qa_data["QA Status"].eq("Review").sum()
+)
+passed_count = int(
+    qa_data["QA Status"].eq("Pass").sum()
+)
+total_qa_flags = int(
+    qa_data["QA Flag Count"].sum()
+)
+ready_count = int(
+    qa_data["Record Readiness"].eq(
+        "Ready for Directory"
+    ).sum()
+)
 
 (
     total_card,
-    passed_card,
+    critical_card,
     review_card,
+    passed_card,
     flags_card,
-    rate_card,
-) = st.columns(5)
+    ready_directory_card,
+) = st.columns(6)
 
 with total_card:
     st.metric("Total Records", f"{total_records:,}")
-with passed_card:
-    st.metric("Passed", f"{passed_count:,}")
+with critical_card:
+    st.metric("Critical", f"{critical_count:,}")
 with review_card:
-    st.metric("Needs QA Review", f"{review_count:,}")
+    st.metric("Warnings", f"{review_count:,}")
+with passed_card:
+    st.metric("Data Passed", f"{passed_count:,}")
 with flags_card:
-    st.metric("Total QA Flags", f"{total_qa_flags:,}")
-with rate_card:
-    st.metric("QA Pass Rate", f"{pass_rate:.1f}%")
+    st.metric("Directory QA Flags", f"{total_qa_flags:,}")
+with ready_directory_card:
+    st.metric("Directory Ready", f"{ready_count:,}")
 
-st.write("#### Verification progress")
-verification_values = display_values(qa_data["Verification Status"])
-verified_count = int(verification_values.eq("Verified").sum())
-not_reviewed_count = int(
-    verification_values.eq("Not Reviewed").sum()
-)
-unresolved_mask = (
-    qa_data["QA Status"].eq("Review")
-    & ~verification_values.eq("Verified")
-)
-unresolved_count = int(unresolved_mask.sum())
+issue_summary = create_issue_summary(qa_data)
+dataset_observations = create_dataset_observations(qa_data)
 
-(
-    verified_card,
-    unresolved_card,
-    not_reviewed_card,
-    verification_progress_card,
-) = st.columns(4)
+summary_left, summary_right = st.columns([2, 1])
 
-with verified_card:
-    st.metric("Verified", f"{verified_count:,}")
-with unresolved_card:
-    st.metric("Unresolved", f"{unresolved_count:,}")
-with not_reviewed_card:
-    st.metric("Not Reviewed", f"{not_reviewed_count:,}")
-with verification_progress_card:
-    st.metric(
-        "Verification Progress",
-        f"{percentage(verified_count, total_records):.1f}%",
-    )
+with summary_left:
+    st.write("#### Issues found")
+    if issue_summary.empty:
+        st.success("No directory-data issues were found.")
+    else:
+        st.dataframe(
+            issue_summary,
+            width="stretch",
+            hide_index=True,
+        )
 
-st.caption(
-    "QA Status is produced by automated checks. Verification Status is "
-    "the human review decision. A manually verified record can still "
-    "retain a documented QA flag."
-)
+with summary_right:
+    st.write("#### Dataset observations")
+    if dataset_observations.empty:
+        st.success("No broad dataset observations were detected.")
+    else:
+        st.dataframe(
+            dataset_observations,
+            width="stretch",
+            hide_index=True,
+        )
 
 
 # ---------------------------------------------------------
 # Missing fields
 # ---------------------------------------------------------
 
-st.header("7. Check missing fields")
+st.header("7. Check missing directory fields")
 
-missing_standard_columns = [
-    column
-    for column in DATABLIX_COLUMNS
-    if column not in data.columns
-]
-
-if missing_standard_columns:
-    st.warning(
-        "Standard columns not found: "
-        + ", ".join(missing_standard_columns)
-    )
-    st.caption(
-        "Missing standard columns are added as blank columns in the "
-        "complete downloadable directory."
-    )
-else:
-    st.success("All standard Datablix columns are present.")
-
-field_summary = []
-for field in REQUIRED_FIELDS:
-    if field not in data.columns:
-        field_summary.append(
-            {
-                "Required Field": field,
-                "Status": "Column missing",
-                "Missing Records": len(data),
-            }
-        )
-    else:
-        missing_count = int(data[field].isna().sum())
-        field_summary.append(
-            {
-                "Required Field": field,
-                "Status": (
-                    "Complete"
-                    if missing_count == 0
-                    else "Missing values found"
-                ),
-                "Missing Records": missing_count,
-            }
-        )
+field_summary = create_field_completeness_summary(
+    qa_data
+)
 
 st.dataframe(
-    pd.DataFrame(field_summary),
+    field_summary,
     width="stretch",
     hide_index=True,
 )
+
+records_with_missing_fields = qa_data[
+    qa_data["Missing Field Count"] > 0
+].copy()
+
+st.write("#### Exact missing fields by record")
+
+missing_display_columns = [
+    "Record ID",
+    "Building Name",
+    "Management/Owner",
+    "Street Address",
+    "Missing Field Count",
+    "Missing Directory Fields",
+    "Data Completeness %",
+    "QA Status",
+]
+
+if records_with_missing_fields.empty:
+    st.success("No required directory fields are missing.")
+else:
+    st.dataframe(
+        records_with_missing_fields[
+            missing_display_columns
+        ].head(100),
+        width="stretch",
+        hide_index=True,
+    )
+    if len(records_with_missing_fields) > 100:
+        st.caption(
+            "Showing the first 100 records with missing directory fields."
+        )
 
 
 # ---------------------------------------------------------
@@ -1411,51 +2541,55 @@ st.header("8. Filter and inspect records")
 
 st.write(
     """
-    Combine the filters to focus the research, source follow-up, QA,
-    or verification work. Leave Issue type empty to include all issues.
+    Filter by company, quality status, issue type, research stage,
+    verification decision, or directory readiness.
     """
 )
 
 available_qa_statuses = sorted(
     display_values(qa_data["QA Status"]).unique().tolist()
 )
-available_verification_statuses = sorted(
-    display_values(qa_data["Verification Status"]).unique().tolist()
+available_companies = sorted(
+    display_values(
+        qa_data["Management/Owner"]
+    ).unique().tolist()
 )
 available_issue_types = extract_issue_types(qa_data)
 available_research_statuses = sorted(
-    display_values(qa_data["Research Status"]).unique().tolist()
+    display_values(
+        qa_data["Research Status"]
+    ).unique().tolist()
 )
-available_source_statuses = sorted(
-    display_values(qa_data["Source Status"]).unique().tolist()
+available_verification_statuses = sorted(
+    display_values(
+        qa_data["Verification Status"]
+    ).unique().tolist()
 )
-available_freshness_statuses = sorted(
-    display_values(qa_data["Freshness Status"]).unique().tolist()
+available_readiness_statuses = sorted(
+    display_values(
+        qa_data["Record Readiness"]
+    ).unique().tolist()
 )
 
 filter_row_one = st.columns(3)
 with filter_row_one[0]:
     selected_qa_statuses = st.multiselect(
-        "QA status",
+        "Directory QA status",
         options=available_qa_statuses,
-        default=(
-            ["Review"]
-            if "Review" in available_qa_statuses
-            else available_qa_statuses
-        ),
+        default=available_qa_statuses,
     )
 with filter_row_one[1]:
-    selected_verification_statuses = st.multiselect(
-        "Verification status",
-        options=available_verification_statuses,
-        default=available_verification_statuses,
+    selected_companies = st.multiselect(
+        "Management/Owner",
+        options=available_companies,
+        default=available_companies,
     )
 with filter_row_one[2]:
     selected_issue_types = st.multiselect(
         "Issue type",
         options=available_issue_types,
         default=[],
-        help="Leave blank to include every issue type.",
+        help="Leave blank to include all issue types.",
     )
 
 filter_row_two = st.columns(3)
@@ -1466,51 +2600,49 @@ with filter_row_two[0]:
         default=available_research_statuses,
     )
 with filter_row_two[1]:
-    selected_source_statuses = st.multiselect(
-        "Source status",
-        options=available_source_statuses,
-        default=available_source_statuses,
+    selected_verification_statuses = st.multiselect(
+        "Verification status",
+        options=available_verification_statuses,
+        default=available_verification_statuses,
     )
 with filter_row_two[2]:
-    selected_freshness_statuses = st.multiselect(
-        "Freshness status",
-        options=available_freshness_statuses,
-        default=available_freshness_statuses,
+    selected_readiness_statuses = st.multiselect(
+        "Record readiness",
+        options=available_readiness_statuses,
+        default=available_readiness_statuses,
     )
 
 filtered_records = apply_record_filters(
     qa_data,
     selected_qa_statuses,
-    selected_verification_statuses,
+    selected_companies,
     selected_issue_types,
     selected_research_statuses,
-    selected_source_statuses,
-    selected_freshness_statuses,
+    selected_verification_statuses,
+    selected_readiness_statuses,
 )
 
-st.write(f"**Records matching filters:** {len(filtered_records):,}")
+st.write(
+    f"**Records matching filters:** {len(filtered_records):,}"
+)
 
 inspection_columns = [
-    column
-    for column in [
-        "Record ID",
-        "Name",
-        "Category",
-        "City",
-        "Province",
-        "Researcher",
-        "Research Status",
-        "Source Status",
-        "Date Researched",
-        "Source Age (Days)",
-        "Freshness Status",
-        "Verification Status",
-        "QA Status",
-        "QA Flag Count",
-        "QA Flags",
-        "Reviewer Notes",
-    ]
-    if column in filtered_records.columns
+    "Record ID",
+    "Building Name",
+    "Management/Owner",
+    "Street Address",
+    "City",
+    "Postal Code",
+    "Number of Apartments",
+    "Primary Email",
+    "Research Status",
+    "Verification Status",
+    "Missing Directory Fields",
+    "QA Status",
+    "QA Flag Count",
+    "QA Flags",
+    "Workflow Gaps",
+    "Record Readiness",
 ]
 
 if filtered_records.empty:
@@ -1524,16 +2656,16 @@ else:
 
 
 # ---------------------------------------------------------
-# Editable research and verification workflow
+# Editable workflow
 # ---------------------------------------------------------
 
 st.header("9. Update records and re-run checks")
 
 st.write(
     """
-    Edit the records currently selected by the filters. Datablix keeps
-    the calculated QA and freshness columns locked, then recalculates
-    them after you apply the updates.
+    Edit the records selected above. Datablix locks calculated columns
+    and recalculates quality, missing-field, freshness, and readiness
+    results after the updates are applied.
     """
 )
 
@@ -1542,53 +2674,77 @@ if filtered_records.empty:
         "No records are available in the editor. Change the filters above."
     )
 else:
-    edit_queue = normalize_workflow_columns(filtered_records.copy())
-    edit_queue.insert(0, "Data Row", edit_queue.index + 1)
+    edit_queue = filtered_records.copy()
+    edit_queue.insert(0, "Data Row", edit_queue.index + 2)
 
-    original_record_columns = [
-        column
-        for column in data.columns
-        if column not in QA_COLUMNS + RESEARCH_DERIVED_COLUMNS
-    ]
+    calculated_columns = (
+        QA_COLUMNS + RESEARCH_DERIVED_COLUMNS
+    )
 
     queue_columns = [
         "Data Row",
+        "Record ID",
+        "Building Name",
+        "Management/Owner",
+        "Street Address",
+        "City",
+        "Province",
+        "Postal Code",
+        "Phone",
+        "Primary Email",
+        "Website",
+        "Number of Apartments",
+        "Rental Rate Range",
+        "Building Classification",
+        "Source URL",
+        "Date Researched",
+        "Researcher",
+        "Research Status",
+        "Source Status",
+        "Verification Status",
+        "Missing Information",
+        "Reviewer Notes",
+        "Record Decision",
+        "Missing Directory Fields",
         "QA Status",
-        "QA Flag Count",
         "QA Flags",
-        "Source Age (Days)",
-        "Freshness Status",
+        "Workflow Gaps",
+        "Record Readiness",
     ]
 
-    for column in DATABLIX_COLUMNS:
-        if column in edit_queue.columns and column not in queue_columns:
-            queue_columns.append(column)
-
-    for column in original_record_columns:
-        if column in edit_queue.columns and column not in queue_columns:
-            queue_columns.append(column)
+    queue_columns = [
+        column
+        for column in queue_columns
+        if column in edit_queue.columns
+    ]
 
     locked_columns = [
-        "Data Row",
-        "QA Status",
-        "QA Flag Count",
-        "QA Flags",
-        "Source Age (Days)",
-        "Freshness Status",
+        column
+        for column in [
+            "Data Row",
+            "Missing Directory Fields",
+            "QA Status",
+            "QA Flags",
+            "Workflow Gaps",
+            "Record Readiness",
+        ]
+        if column in queue_columns
     ]
+
     editable_columns = [
         column
         for column in queue_columns
         if column not in locked_columns
+        and column not in calculated_columns
     ]
 
     editor_state_text = "|".join(
         selected_qa_statuses
-        + selected_verification_statuses
+        + selected_companies
         + selected_issue_types
         + selected_research_statuses
-        + selected_source_statuses
-        + selected_freshness_statuses
+        + selected_verification_statuses
+        + selected_readiness_statuses
     )
     editor_state_hash = hashlib.sha256(
         editor_state_text.encode("utf-8")
@@ -1623,36 +2779,45 @@ else:
                 required=True,
                 width="medium",
             ),
+            "Record Decision": st.column_config.SelectboxColumn(
+                "Record Decision",
+                options=VALID_RECORD_DECISIONS,
+                required=True,
+                width="medium",
+            ),
             "Date Researched": st.column_config.TextColumn(
                 "Date Researched",
-                help="Use YYYY-MM-DD so freshness can be calculated.",
+                help="Use YYYY-MM-DD.",
                 width="medium",
             ),
             "Source URL": st.column_config.TextColumn(
                 "Source URL",
-                help="Use a complete http:// or https:// address.",
+                help="Use the official page checked for this record.",
                 width="large",
             ),
-            "Researcher": st.column_config.TextColumn(
-                "Researcher",
-                width="medium",
+            "Missing Information": st.column_config.TextColumn(
+                "Missing Information",
+                width="large",
+                max_chars=500,
             ),
             "Reviewer Notes": st.column_config.TextColumn(
                 "Reviewer Notes",
                 width="large",
-                max_chars=500,
+                max_chars=700,
             ),
         },
         key=editor_key,
     )
 
     action_column, guidance_column = st.columns([1, 2])
+
     with action_column:
         apply_changes = st.button(
             "Apply updates and re-run checks",
             type="primary",
             use_container_width=True,
         )
+
     with guidance_column:
         st.caption(
             "Edits are stored only after this button is selected. "
@@ -1660,7 +2825,10 @@ else:
         )
 
     if apply_changes:
-        apply_editor_changes(edited_queue, editable_columns)
+        apply_editor_changes(
+            edited_queue,
+            editable_columns,
+        )
         st.rerun()
 
 
@@ -1668,25 +2836,26 @@ else:
 # Prepare downloads
 # ---------------------------------------------------------
 
-final_data = add_missing_standard_columns(qa_data)
+final_data = qa_data.copy()
 review_download = final_data[
-    final_data["QA Status"] == "Review"
+    final_data["QA Status"].isin(
+        ["Critical", "Review"]
+    )
 ].copy()
 passed_download = final_data[
-    final_data["QA Status"] == "Pass"
+    final_data["QA Status"].eq("Pass")
 ].copy()
-
-final_verification_values = display_values(
-    final_data["Verification Status"]
+ready_download = final_data[
+    final_data["Record Readiness"].eq(
+        "Ready for Directory"
+    )
+].copy()
+workflow_follow_up_download = final_data[
+    final_data["Workflow Gap Count"] > 0
+].copy()
+research_log_download = create_research_log(
+    final_data
 )
-unresolved_download = final_data[
-    final_data["QA Status"].eq("Review")
-    & ~final_verification_values.eq("Verified")
-].copy()
-verified_download = final_data[
-    final_verification_values.eq("Verified")
-].copy()
-research_log_download = create_research_log(final_data)
 
 safe_filename = create_safe_filename(workspace_name)
 
@@ -1699,9 +2868,9 @@ st.header("10. Download your results")
 
 st.write(
     """
-    The updated directory contains every record and calculated result.
-    The research log focuses on source ownership, progress, freshness,
-    verification, and follow-up work.
+    Export the complete standardized directory, the records that need
+    data correction, the records ready for the directory, and the
+    research follow-up log.
     """
 )
 
@@ -1710,8 +2879,8 @@ first_download_row = st.columns(3)
 with first_download_row[0]:
     st.write("**Updated directory**")
     st.caption(
-        "All records, corrections, research fields, QA results, "
-        "freshness, statuses, and notes."
+        "Every record with standardized fields, imported columns, "
+        "quality results, and workflow tracking."
     )
     st.download_button(
         "Download updated directory",
@@ -1722,10 +2891,71 @@ with first_download_row[0]:
     )
 
 with first_download_row[1]:
+    st.write("**Directory review queue**")
+    st.caption(
+        "Records with critical directory gaps or warnings."
+    )
+    st.download_button(
+        "Download review queue",
+        data=dataframe_to_csv_bytes(review_download),
+        file_name=f"{safe_filename}_directory_review_queue.csv",
+        mime="text/csv",
+        disabled=review_download.empty,
+        key="download_review_queue",
+    )
+
+with first_download_row[2]:
+    st.write("**Directory-ready records**")
+    st.caption(
+        "Records that passed data checks, completed research, and "
+        "received human verification."
+    )
+    st.download_button(
+        "Download directory-ready records",
+        data=dataframe_to_csv_bytes(ready_download),
+        file_name=f"{safe_filename}_directory_ready.csv",
+        mime="text/csv",
+        disabled=ready_download.empty,
+        key="download_ready_records",
+    )
+
+second_download_row = st.columns(3)
+
+with second_download_row[0]:
+    st.write("**Passed data records**")
+    st.caption(
+        "Records with no current automated directory-data issues."
+    )
+    st.download_button(
+        "Download passed records",
+        data=dataframe_to_csv_bytes(passed_download),
+        file_name=f"{safe_filename}_passed_data_records.csv",
+        mime="text/csv",
+        disabled=passed_download.empty,
+        key="download_passed_records",
+    )
+
+with second_download_row[1]:
+    st.write("**Workflow follow-up**")
+    st.caption(
+        "Records still missing source, research, or verification steps."
+    )
+    st.download_button(
+        "Download workflow follow-up",
+        data=dataframe_to_csv_bytes(
+            workflow_follow_up_download
+        ),
+        file_name=f"{safe_filename}_workflow_follow_up.csv",
+        mime="text/csv",
+        disabled=workflow_follow_up_download.empty,
+        key="download_workflow_follow_up",
+    )
+
+with second_download_row[2]:
     st.write("**Research log**")
     st.caption(
-        "A focused source-tracking file for research ownership, "
-        "progress, freshness, and follow-up."
+        "A focused record of source ownership, progress, freshness, "
+        "verification, decisions, and notes."
     )
     st.download_button(
         "Download research log",
@@ -1734,66 +2964,6 @@ with first_download_row[1]:
         mime="text/csv",
         key="download_research_log",
     )
-
-with first_download_row[2]:
-    st.write("**Review queue**")
-    st.caption("All records with one or more current QA flags.")
-    st.download_button(
-        "Download review queue",
-        data=dataframe_to_csv_bytes(review_download),
-        file_name=f"{safe_filename}_review_queue.csv",
-        mime="text/csv",
-        disabled=review_download.empty,
-        key="download_review_queue",
-    )
-    if review_download.empty:
-        st.caption("No flagged records are available.")
-
-second_download_row = st.columns(3)
-
-with second_download_row[0]:
-    st.write("**Passed records**")
-    st.caption("Records with no current automated QA flags.")
-    st.download_button(
-        "Download passed records",
-        data=dataframe_to_csv_bytes(passed_download),
-        file_name=f"{safe_filename}_passed_records.csv",
-        mime="text/csv",
-        disabled=passed_download.empty,
-        key="download_passed_records",
-    )
-    if passed_download.empty:
-        st.caption("No passed records are available.")
-
-with second_download_row[1]:
-    st.write("**Unresolved records**")
-    st.caption("Flagged records that are not yet marked Verified.")
-    st.download_button(
-        "Download unresolved records",
-        data=dataframe_to_csv_bytes(unresolved_download),
-        file_name=f"{safe_filename}_unresolved_records.csv",
-        mime="text/csv",
-        disabled=unresolved_download.empty,
-        key="download_unresolved_records",
-    )
-    if unresolved_download.empty:
-        st.caption("No unresolved records are available.")
-
-with second_download_row[2]:
-    st.write("**Verified records**")
-    st.caption(
-        "Records manually marked Verified, including documented flags."
-    )
-    st.download_button(
-        "Download verified records",
-        data=dataframe_to_csv_bytes(verified_download),
-        file_name=f"{safe_filename}_verified_records.csv",
-        mime="text/csv",
-        disabled=verified_download.empty,
-        key="download_verified_records",
-    )
-    if verified_download.empty:
-        st.caption("No verified records are available.")
 
 st.info(
     "Download your updated files before closing or refreshing the app. "
