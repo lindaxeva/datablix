@@ -370,8 +370,7 @@ def render_brand_header():
     else:
         st.title("Datablix")
         st.write(
-            "Bring scattered property research into one clear, "
-            "review-ready directory."
+            "Your property research database assistant"
         )
         return
 
@@ -457,8 +456,7 @@ def render_brand_header():
             </div>
 
             <div class="datablix-brand-description">
-                Turn your property research data into a structured, trackable,
-                and review-ready directory.
+                Your property research data assistant
             </div>
         </div>
         """
