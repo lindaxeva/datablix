@@ -4109,8 +4109,8 @@ elif section == "Review & edit":
 elif section == "Export":
     st.header("Export project deliverables")
     st.info(
-        "Nothing is saved after you close or refresh the app. Download the "
-        "deliverable workbook before you leave."
+        "Nothing is saved after you close or refresh the app. Download what "
+        "you need before you leave."
     )
 
     final_data = qa_data.copy()
@@ -4163,7 +4163,7 @@ elif section == "Export":
     )
 
     st.write(
-        "The workbook is organized around the seven project deliverables. "
+        "The workbook is organized around seven key project deliverables. "
         "It keeps the clean directory, owner research, draft profiles, "
         "source tracking, recommendations, methodology, and follow-up work "
         "in separate tabs."
@@ -4208,9 +4208,9 @@ elif section == "Export":
                 width="stretch",
             )
 
-    with st.expander("Focused downloads", expanded=False):
+    with st.expander("Explore focused downloads", expanded=False):
         st.caption(
-            "Use these when a teammate needs only one project output."
+            "Use these when you need only one project output."
         )
 
         focused_row_one = st.columns(3)
