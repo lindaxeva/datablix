@@ -3065,9 +3065,9 @@ if not workspace_ready:
               simply not publicly available yet.
             - Track research, source checks, verification decisions, and notes
               separately from the underlying data quality.
-            - Build the directory database, owner research summary, source
-              tracker, draft profiles, follow-up queue, and reporting tables
-              needed for the project deliverables.
+            - Prepare the directory database, ownership findings, source records, 
+              draft profiles, outstanding follow-ups, and summary reports for review 
+              and completion.
             """
         )
     st.caption(
