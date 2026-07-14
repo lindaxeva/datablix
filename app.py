@@ -393,7 +393,7 @@ def render_brand_header():
                 align-items: center;
                 justify-content: center;
                 width: 100%;
-                min-height: 90px;
+                min-height: 120px;
                 height: auto;
                 margin: 0 auto 0.55rem auto;
                 padding: 0.25rem 1rem;
@@ -403,9 +403,9 @@ def render_brand_header():
 
             .datablix-brand-logo {{
                 display: block;
-                width: clamp(280px, 48vw, 620px);
+                width: clamp(360px, 62vw, 820px);
                 max-width: 92vw;
-                max-height: 190px;
+                max-height: 240px;
                 height: auto;
                 margin: 0 auto;
                 object-fit: contain;
@@ -427,13 +427,13 @@ def render_brand_header():
                 }}
 
                 .datablix-logo-window {{
-                    min-height: 72px;
+                    min-height: 96px;
                     padding: 0.2rem 0.5rem;
                 }}
 
                 .datablix-brand-logo {{
-                    width: min(88vw, 430px);
-                    max-height: 150px;
+                    width: min(94vw, 560px);
+                    max-height: 190px;
                 }}
 
                 .datablix-brand-description {{
