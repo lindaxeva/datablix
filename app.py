@@ -532,7 +532,7 @@ def read_google_sheet(url, selector=""):
 
 
 # =========================================================
-# QA and deliverables
+# Quality checks and output views
 # =========================================================
 
 def qa_checks(df):
@@ -689,7 +689,7 @@ def owner_summary(df):
             "Records with Website": int((~unresolved_mask(group["Website"])).sum()),
             "Records with Apartment Count": int((~unresolved_mask(group["Number of Apartments"])).sum()),
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
-            "Directory-ready Records": int(ready_mask(group).sum()),
+            "Ready Records": int(ready_mask(group).sum()),
             "Records Needing Follow-up": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Directory")).sum()),
         })
     return pd.DataFrame(rows).sort_values(["Records Needing Follow-up", "Building Records"], ascending=[False, False]).reset_index(drop=True) if rows else pd.DataFrame()
@@ -715,7 +715,7 @@ def draft_profiles(df):
             "Research Gaps": row["Research Gaps"], "Source URL": row["Source URL"],
             "Verification Status": row["Verification Status"],
             "Profile Status": "Ready for editorial review" if ready_mask(pd.DataFrame([row])).iloc[0] else "Needs research or verification",
-            "Editorial Note": "Confirm facts and adjust publication wording before use.",
+            "Editorial Note": "Confirm the facts and refine the wording before use.",
         })
     return pd.DataFrame(rows)
 
@@ -725,12 +725,12 @@ def field_coverage(df):
     for field in ALL_RESEARCH_FIELDS:
         missing = int(unresolved_mask(df[field]).sum())
         rows.append({
-            "Directory Field": field,
-            "Field Group": "Core listing field" if field in CORE_FIELDS else "Research target",
+            "Field": field,
+            "Field Group": "Core field" if field in CORE_FIELDS else "Useful detail",
             "Missing Records": missing,
             "Populated Records": len(df) - missing,
             "Coverage": f"{((len(df)-missing)/len(df)*100 if len(df) else 0):.1f}%",
-            "How Datablix treats a blank": "Blocks a usable listing" if field in CORE_FIELDS else "Creates a research gap, not a quality failure",
+            "How Datablix treats a blank": "Prevents the record from being treated as complete" if field in CORE_FIELDS else "Keeps the detail visible as an open gap rather than an error",
         })
     return pd.DataFrame(rows)
 
@@ -753,40 +753,40 @@ def project_summary(df):
         {"Metric": "Management/owner organizations", "Value": resolved(df["Management/Owner"]).dropna().astype(str).str.strip().nunique(), "Interpretation": "Distinct recorded organizations."},
         {"Metric": "Records with usable core identity", "Value": int(df["Core Gap Count"].eq(0).sum()), "Interpretation": "Records with management/owner, street address, and city."},
         {"Metric": "Verified records", "Value": int(df["Verification Status"].eq("Verified").sum()), "Interpretation": "Records marked as human-verified."},
-        {"Metric": "Directory-ready records", "Value": int(ready_mask(df).sum()), "Interpretation": "Accepted records, including documented gaps."},
+        {"Metric": "Records ready to use", "Value": int(ready_mask(df).sum()), "Interpretation": "Records accepted for use, including those with documented gaps."},
         {"Metric": "Open research gaps", "Value": int(df["Research Gap Count"].sum()), "Interpretation": "Unconfirmed listing fields."},
     ])
 
 
 def structure_recommendations():
     rows = [
-        ("Identity", "Apartment Building Name", "Where available", "Text", "Public-facing building name", "Search"),
+        ("Identity", "Apartment Building Name", "Where available", "Text", "Recognizable building or property name", "Search"),
         ("Location", "Street Address", "Required", "Text", "Primary building address", "Search"),
         ("Location", "City and Postal Code", "Required", "Formatted location", "City, province code, and postal code", "Search/Filter"),
         ("Property", "Building Classification", "Where available", "Controlled text", "Building classification", "Filter"),
         ("Property", "Number of Apartments", "Where available", "Whole number", "Apartment count", "Sort/Filter"),
         ("Ownership", "Apartment Building Management/Owner", "Required", "Controlled text", "Responsible organization", "Filter"),
-        ("Contact", "Phone Number", "Where available", "Phone", "Public contact number", "Search"),
-        ("Contact", "Email Contact", "Where available", "Email", "Public email", "Search"),
-        ("Contact", "WebSite", "Recommended", "URL", "Public property or company page", "Link"),
+        ("Contact", "Phone Number", "Where available", "Phone", "Available contact number", "Search"),
+        ("Contact", "Email Contact", "Where available", "Email", "Available email contact", "Search"),
+        ("Contact", "WebSite", "Recommended", "URL", "Property or company webpage", "Link"),
         ("Research", "Source URL", "Required for verification", "URL", "Exact supporting page", "Link"),
         ("Research", "Date Researched", "Required for verified records", "Date", "Freshness trail", "Filter"),
         ("Research", "Researcher", "Required for verified records", "Controlled text", "Accountability", "Filter"),
         ("Research", "Verification Status", "Required", "Controlled status", "Human review outcome", "Filter"),
-        ("Research", "Missing Information", "When applicable", "Long text", "Documents public-data limits", "No"),
-        ("Workflow", "Record Decision", "Required before publication", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
+        ("Research", "Missing Information", "When applicable", "Long text", "Records details that could not be confirmed", "No"),
+        ("Workflow", "Record Decision", "Required before final use", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
     ]
     return pd.DataFrame(rows, columns=["Field Group", "Field", "Requirement", "Recommended Type", "Purpose", "Directory Use"])
 
 
 def methodology(df, name, sheet):
     return pd.DataFrame([
-        {"Section": "Purpose", "Report Text": "Build and improve a searchable apartment-building directory using project data and public sources."},
+        {"Section": "Purpose", "Report Text": "Organize property information into a consistent, searchable structure using the records provided and publicly available sources."},
         {"Section": "Input reviewed", "Report Text": f"Workspace: {name}. Worksheet: {sheet or 'not specified'}. Records reviewed: {len(df):,}."},
-        {"Section": "Listing structure", "Report Text": "The Building Listings output follows the supplied nine-column listing example."},
-        {"Section": "Method", "Report Text": "Map imported headings, preserve original columns, check identity and formats, track sources and verification, and keep publication decisions explicit."},
-        {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, duplicated, or inconsistent. Final inclusion remains a human decision."},
-        {"Section": "Recommended next steps", "Report Text": "Resolve high-priority records, verify sources, document unavailable information, and complete editorial review."},
+        {"Section": "Core record view", "Report Text": "The Building Listings sheet keeps the main property, location, ownership, and contact fields together in a concise view."},
+        {"Section": "Method", "Report Text": "Match imported headings, preserve original columns, check identity and formats, track sources and verification, and keep review decisions explicit."},
+        {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, duplicated, or inconsistent. Automated checks support review but do not replace human judgment."},
+        {"Section": "Suggested next checks", "Report Text": "Work through high-priority records, confirm sources, document unavailable information, and read through generated text before use."},
     ])
 
 
@@ -876,24 +876,41 @@ render_brand_header()
 
 with st.sidebar:
     st.subheader("Workspace")
-    st.caption("Open a directory, review it, and download your work before closing the app.")
+    st.caption("Bring in your records, work through what needs attention, and save a fresh copy before you leave.")
     current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
     options = ["Upload a file", "Connect a Google Sheet", "Start blank"]
     default = {"Uploaded file": 0, "Google Sheet": 1, "Blank workspace": 2}.get(current, 0)
     source = st.radio("Where would you like to begin?", options, index=default)
     try:
         if source == "Upload a file":
-            uploaded = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx"])
+            uploaded = st.file_uploader(
+                "Choose a CSV or Excel file",
+                type=["csv", "xlsx"],
+                help="Use a file where each row represents one building or property record.",
+            )
             selected = None
             if uploaded is not None:
                 if uploaded.name.lower().endswith(".xlsx"):
                     names = excel_sheet_names(uploaded)
-                    selected = st.selectbox("Which worksheet holds the buildings?", names, index=preferred_sheet(names))
+                    selected = st.selectbox(
+                        "Which worksheet holds the buildings?",
+                        names,
+                        index=preferred_sheet(names),
+                        help="Choose the tab where the first row contains headings and each row below is one record.",
+                    )
                 load_upload(uploaded, selected)
         elif source == "Connect a Google Sheet":
             with st.form("google_form"):
-                url = st.text_input("Google Sheets link", placeholder="https://docs.google.com/spreadsheets/d/...")
-                selector = st.text_input("Worksheet name or tab ID (optional)")
+                url = st.text_input(
+                    "Google Sheets link",
+                    placeholder="https://docs.google.com/spreadsheets/d/...",
+                    help="The Sheet must be viewable by anyone with the link. Datablix opens a working copy and does not edit the original.",
+                )
+                selector = st.text_input(
+                    "Worksheet name or tab ID (optional)",
+                    placeholder="Example: Apartment Buildings or 0",
+                    help="Leave this blank to use the tab selected in the link or the first available worksheet.",
+                )
                 submit = st.form_submit_button("Load working copy", type="primary", width="stretch")
             if submit and load_google(url, selector): st.rerun()
         else:
@@ -903,7 +920,7 @@ with st.sidebar:
         st.error(str(error))
 
     with st.expander("Need a starting template?"):
-        st.caption("The first nine columns match the listing example.")
+        st.caption("Use this when you want to begin with the core property and contact fields already arranged.")
         st.download_button("Download blank template", csv_bytes(pd.DataFrame(columns=TEMPLATE_COLUMNS)), "datablix_building_listing_template.csv", "text/csv", width="stretch")
 
     if S_WORKING in st.session_state:
@@ -925,14 +942,14 @@ with st.sidebar:
                 st.rerun()
 
 if S_WORKING not in st.session_state:
-    st.info("Open a workspace from the sidebar to get started.")
+    st.info("Choose a starting point from the sidebar. Your records will open here as an editable working copy.")
     with st.expander("What Datablix does", expanded=True):
         st.markdown("""
-        - Opens CSV, Excel, or a viewable Google Sheet.
-        - Matches imported headings without removing original columns.
-        - Keeps the final Building Listings output aligned with the supplied nine-column example.
-        - Separates data-quality issues from research gaps.
-        - Tracks sources, verification, notes, follow-ups, and exports.
+        - Opens CSV, Excel, or a viewable Google Sheet as a working copy.
+        - Recognizes similar column names while keeping the original fields available.
+        - Brings the main property and contact details into one consistent view.
+        - Separates likely data problems from details that are simply still unknown.
+        - Keeps sources, checks, decisions, and notes close to the records they support.
         """)
     st.stop()
 
@@ -946,40 +963,49 @@ qa = qa_checks(working) if has_records else None
 sections = ["Overview", "Research", "Data quality", "Review & edit", "Export"]
 section = st.segmented_control("Section", sections, label_visibility="collapsed", key="db_section") or "Overview"
 if not has_records and section in ["Research", "Data quality", "Export"]:
-    st.info("This workspace has no records yet. Add one in Review & edit."); st.stop()
+    st.info("There are no records here yet. Open **Review & edit** to add the first one."); st.stop()
 
 if section == "Overview":
     st.header("Overview")
     if not has_records:
-        st.info("This workspace is empty. Go to Review & edit to add your first building.")
+        st.info("This workspace is ready. Open **Review & edit** when you are ready to add the first building.")
     else:
         cards = st.columns(4)
         cards[0].metric("Records", f"{len(qa):,}")
-        cards[1].metric("Ready for directory", f"{int(ready_mask(qa).sum()):,}")
+        cards[1].metric("Ready to use", f"{int(ready_mask(qa).sum()):,}")
         cards[2].metric("Critical issues", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
         cards[3].metric("Verified", f"{int(qa['Verification Status'].eq('Verified').sum()):,}")
         completed = int(qa["Research Status"].eq("Completed").sum())
-        st.progress(completed / len(qa), text=f"Research completed: {completed:,} of {len(qa):,} records")
+        st.progress(completed / len(qa), text=f"Checks completed: {completed:,} of {len(qa):,} records")
         with st.expander("Preview building listings", expanded=True):
-            st.caption("This preview uses the same nine headings and order as the listing example.")
+            st.caption("This clean view brings the key property, location, ownership, and contact details together.")
             st.dataframe(listing_export(qa).head(20), width="stretch", hide_index=True)
         with st.expander("How your columns were matched"):
+            st.caption("Use this table when information appears under a different heading than expected. Original columns remain available in the working data.")
             st.dataframe(st.session_state[S_MAPPING], width="stretch", hide_index=True)
 
 elif section == "Research":
     st.header("Research progress")
+    st.caption("See what has been checked, what is still moving, and where a source or decision may need another look.")
     cards = st.columns(4)
     cards[0].metric("Imported to review", f"{int(qa['Research Status'].eq('Imported - Needs Review').sum()):,}")
     cards[1].metric("In progress", f"{int(qa['Research Status'].eq('In Progress').sum()):,}")
     cards[2].metric("Ready for review", f"{int(qa['Research Status'].eq('Ready for Review').sum()):,}")
     cards[3].metric("Completed", f"{int(qa['Research Status'].eq('Completed').sum()):,}")
     tabs = st.tabs(["Source tracker", "Owner coverage", "Draft profiles"])
-    with tabs[0]: st.dataframe(research_log(qa).head(100), width="stretch", hide_index=True)
-    with tabs[1]: st.dataframe(owner_summary(qa), width="stretch", hide_index=True)
-    with tabs[2]: st.dataframe(draft_profiles(qa).head(50), width="stretch", hide_index=True)
+    with tabs[0]:
+        st.caption("Follow the source, date, status, and notes behind each record.")
+        st.dataframe(research_log(qa).head(100), width="stretch", hide_index=True)
+    with tabs[1]:
+        st.caption("Compare how records are grouped by management or ownership name. Similar names may still need a quick manual check.")
+        st.dataframe(owner_summary(qa), width="stretch", hide_index=True)
+    with tabs[2]:
+        st.caption("These sentences are assembled from the current fields. Read them as a starting point and confirm the wording before use.")
+        st.dataframe(draft_profiles(qa).head(50), width="stretch", hide_index=True)
 
 elif section == "Data quality":
     st.header("Data quality and research coverage")
+    st.caption("Flags point to possible errors or conflicts. Gaps simply show where a useful detail is still blank.")
     cards = st.columns(5)
     cards[0].metric("Critical records", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
     cards[1].metric("Records to review", f"{int(qa['QA Status'].eq('Review').sum()):,}")
@@ -987,16 +1013,23 @@ elif section == "Data quality":
     cards[3].metric("Quality flags", f"{int(qa['QA Flag Count'].sum()):,}")
     cards[4].metric("Open research gaps", f"{int(qa['Research Gap Count'].sum()):,}")
     tabs = st.tabs(["Quality issues", "Research coverage", "Records with gaps"])
-    with tabs[0]: st.dataframe(issue_summary(qa), width="stretch", hide_index=True)
-    with tabs[1]: st.dataframe(field_coverage(qa), width="stretch", hide_index=True)
+    with tabs[0]:
+        st.caption("Start with critical items, then work through warnings that may need confirmation.")
+        st.dataframe(issue_summary(qa), width="stretch", hide_index=True)
+    with tabs[1]:
+        st.caption("Coverage shows how often each field is populated. A blank does not always mean the record is incorrect.")
+        st.dataframe(field_coverage(qa), width="stretch", hide_index=True)
     with tabs[2]:
+        st.caption("Use this list to plan the next checks without losing sight of otherwise usable records.")
         cols = ["Record ID", "Working Record Label", "Management/Owner", "Street Address", "Research Gap Count", "Research Gaps", "Target Coverage %", "Follow-up Priority", "Record Readiness"]
         st.dataframe(qa.loc[qa["Research Gap Count"].gt(0), cols].head(100), width="stretch", hide_index=True)
 
 elif section == "Review & edit":
     st.header("Review & edit")
+    st.caption("Filter when the table feels crowded, inspect the context, then edit only the fields that need attention.")
     if has_records:
         with st.expander("Filter the list"):
+            st.caption("Leave all values selected to keep the full list visible. Narrow one filter at a time when you are looking for a specific group.")
             row1 = st.columns(3)
             qa_filter = row1[0].multiselect("Directory quality", sorted(display_values(qa["QA Status"]).unique()), default=sorted(display_values(qa["QA Status"]).unique()))
             owner_filter = row1[1].multiselect("Apartment Building Management/Owner", sorted(display_values(qa["Management/Owner"]).unique()), default=sorted(display_values(qa["Management/Owner"]).unique()))
@@ -1014,9 +1047,11 @@ elif section == "Review & edit":
         st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
         tabs = st.tabs(["Inspect", "Edit"])
         with tabs[0]:
+            st.caption("Use this view to understand the issue before changing the record.")
             inspect = filtered[["Record ID", "Working Record Label", "Building Name", "Management/Owner", "Street Address", "City", "Province", "Postal Code", "Number of Apartments", "Primary Email", "Research Status", "Verification Status", "Research Gaps", "QA Status", "QA Flags", "Workflow Gaps", "Follow-up Priority", "Record Readiness"]].rename(columns={"Building Name": "Apartment Building Name", "Management/Owner": "Apartment Building Management/Owner", "Primary Email": "Email Contact"})
             st.dataframe(inspect, width="stretch", hide_index=True)
         with tabs[1]:
+            st.caption("Choose a small set of fields to keep the editor easy to scan. Save after making your changes.")
             edit_fields = st.multiselect("Fields to edit", [c for c in INTERNAL_COLUMNS if c != "Record ID"], default=["Building Name", "Management/Owner", "Phone", "Primary Email", "Website", "Research Status", "Verification Status", "Record Decision", "Date Researched", "Source URL", "Missing Information", "Reviewer Notes"])
             context = ["Record ID", "Working Record Label"] + edit_fields + ["Research Gaps", "QA Status", "Record Readiness"]
             context = list(dict.fromkeys(c for c in context if c in filtered.columns))
@@ -1040,32 +1075,33 @@ elif section == "Review & edit":
 
     st.divider()
     with st.expander("Add a building not in the file", expanded=not has_records):
+        st.caption("Add what you can confirm now. Unavailable details can stay blank and be followed up later.")
         suggested = generate_id(st.session_state[S_WORKING])
         with st.form("add_record", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
-            record_id = c1.text_input("Record ID", value=suggested)
-            building_name = c1.text_input("Apartment Building Name")
-            owner = c1.text_input("Apartment Building Management/Owner")
-            classification = c1.text_input("Building Classification")
-            units = c1.text_input("Number of Apartments")
-            address = c2.text_input("Street Address")
-            city = c2.text_input("City")
-            province = c2.text_input("Province")
-            pc = c2.text_input("Postal Code")
-            phone = c3.text_input("Phone Number")
-            email = c3.text_input("Email Contact")
-            website = c3.text_input("WebSite")
-            source_url = c3.text_input("Official Source URL")
-            researcher = c3.text_input("Researcher")
+            record_id = c1.text_input("Record ID", value=suggested, help="A unique reference used to keep similar records separate.")
+            building_name = c1.text_input("Apartment Building Name", help="Use the name shown publicly when one is available.")
+            owner = c1.text_input("Apartment Building Management/Owner", help="Enter the company or organization named in the source.")
+            classification = c1.text_input("Building Classification", placeholder="Example: High Rise or Townhome")
+            units = c1.text_input("Number of Apartments", placeholder="Example: 120", help="Enter a number only when the source gives one.")
+            address = c2.text_input("Street Address", placeholder="Example: 100 Main Street")
+            city = c2.text_input("City", placeholder="Example: Ottawa")
+            province = c2.text_input("Province", placeholder="Example: Ontario or ON")
+            pc = c2.text_input("Postal Code", placeholder="Example: K1A 1A1")
+            phone = c3.text_input("Phone Number", placeholder="Example: 613-555-0199")
+            email = c3.text_input("Email Contact", placeholder="Example: leasing@example.ca")
+            website = c3.text_input("WebSite", placeholder="https://example.ca")
+            source_url = c3.text_input("Official Source URL", placeholder="https://example.ca/property", help="Use the exact page where the information was checked.")
+            researcher = c3.text_input("Researcher", placeholder="Name or initials", help="Record who checked the information so the trail is easy to follow.")
             w1, w2, w3 = st.columns(3)
-            research_status = w1.selectbox("Research Status", RESEARCH_STATUSES, index=1)
-            verification_status = w1.selectbox("Verification Status", VERIFICATION_STATUSES)
-            decision = w1.selectbox("Record Decision", RECORD_DECISIONS)
-            source_status = w2.selectbox("Source Status", SOURCE_STATUSES)
-            no_date = w2.checkbox("No research date yet")
+            research_status = w1.selectbox("Research Status", RESEARCH_STATUSES, index=1, help="Choose the stage that best reflects the current work on this record.")
+            verification_status = w1.selectbox("Verification Status", VERIFICATION_STATUSES, help="Use Verified only after the key details have been checked by a person.")
+            decision = w1.selectbox("Record Decision", RECORD_DECISIONS, help="Keep the record, mark a needed update, flag a possible duplicate, or remove it from use.")
+            source_status = w2.selectbox("Source Status", SOURCE_STATUSES, help="Describe whether the source opened, needs another check, or could not be used.")
+            no_date = w2.checkbox("No research date yet", help="Select this when the source has not been checked yet.")
             researched = w2.date_input("Date Researched", value=date.today(), disabled=no_date)
-            missing = w2.text_area("Missing Information")
-            notes = w3.text_area("Reviewer Notes")
+            missing = w2.text_area("Missing Information", placeholder="Note details that were not available or could not be confirmed.")
+            notes = w3.text_area("Reviewer Notes", placeholder="Add corrections, conflicts, decisions, or useful context.")
             add = st.form_submit_button("Add building", type="primary", width="stretch")
         if add:
             current = st.session_state[S_WORKING].copy()
@@ -1093,14 +1129,14 @@ elif section == "Review & edit":
                 st.rerun()
 
 elif section == "Export":
-    st.header("Export project deliverables")
-    st.info("Nothing is saved after you close or refresh the app. Download your work before leaving.")
+    st.header("Download your work")
+    st.info("This workspace is temporary. Download a copy before refreshing the page or closing the app.")
     listings = listing_export(qa)
     follow_up = qa[~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Directory")]
     ready = qa[ready_mask(qa)]
     quality = qa[qa["QA Status"].isin(["Critical", "Review"])]
     sheets = {
-        "Project Summary": project_summary(qa),
+        "Workspace Summary": project_summary(qa),
         "Building Listings": listings,
         "Owner Research List": owner_summary(qa),
         "Draft Profiles": draft_profiles(qa),
@@ -1112,11 +1148,13 @@ elif section == "Export":
         "Working Data": qa,
     }
     filename = safe_filename(st.session_state.get(S_NAME, "datablix"))
-    st.write("The **Building Listings** sheet follows the supplied nine-column example. Supporting research and review information remains in separate tabs.")
+    st.write("The complete workbook keeps the clean building view separate from sources, notes, follow-ups, and working details, so each view stays easier to use.")
+    st.caption("Choose the complete workbook for everything together, or use the smaller downloads below for a single view.")
     row = st.columns(2)
-    row[0].download_button("Download deliverable workbook", excel_bytes(sheets), f"{filename}_deliverables.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", width="stretch")
+    row[0].download_button("Download complete workbook", excel_bytes(sheets), f"{filename}_datablix_workbook.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", width="stretch")
     row[1].download_button("Download follow-up queue", csv_bytes(follow_up), f"{filename}_follow_up_queue.csv", "text/csv", disabled=follow_up.empty, width="stretch")
-    with st.expander("Explore focused downloads"):
+    with st.expander("Download one view at a time"):
+        st.caption("Choose one of these when you do not need the full workbook.")
         r1 = st.columns(3)
         r1[0].download_button("Building listings", csv_bytes(listings), f"{filename}_building_listings.csv", "text/csv", width="stretch")
         r1[1].download_button("Owner research list", csv_bytes(owner_summary(qa)), f"{filename}_owner_research_list.csv", "text/csv", width="stretch")
