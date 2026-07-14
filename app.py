@@ -352,18 +352,16 @@ SESSION_QA_RUN_COUNT = "datablix_qa_run_count"
 
 
 def render_brand_header():
-    """Display the Datablix logo and purpose."""
+    """Display the complete Datablix logo without clipping or overlap."""
     svg_logo = Path("datablix_logo.svg")
     png_logo = Path("datablix_logo.png")
 
     if svg_logo.exists():
         logo_path = svg_logo
         mime_type = "image/svg+xml"
-        logo_class = "datablix-brand-logo"
     elif png_logo.exists():
         logo_path = png_logo
         mime_type = "image/png"
-        logo_class = "datablix-brand-logo padded-png"
     else:
         st.title("Datablix")
         st.write(
@@ -385,38 +383,38 @@ def render_brand_header():
                 align-items: center;
                 justify-content: center;
                 width: 100%;
+                padding: 0.6rem 0 0.4rem 0;
+                margin: 0 auto 1.25rem auto;
                 text-align: center;
-                margin-top: -1.5rem;
-                margin-bottom: 1.4rem;
             }}
 
             .datablix-logo-window {{
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                width: min(720px, 94vw);
-                height: 135px;
-                margin: 0 auto 0.3rem auto;
-                overflow: hidden;
+                width: 100%;
+                min-height: 90px;
+                height: auto;
+                margin: 0 auto 0.55rem auto;
+                padding: 0.25rem 1rem;
+                overflow: visible;
+                box-sizing: border-box;
             }}
 
             .datablix-brand-logo {{
                 display: block;
-                width: 370px;
-                max-width: 88vw;
+                width: clamp(280px, 48vw, 620px);
+                max-width: 92vw;
+                max-height: 190px;
                 height: auto;
                 margin: 0 auto;
                 object-fit: contain;
             }}
 
-            .datablix-brand-logo.padded-png {{
-                width: 720px;
-                max-width: none;
-            }}
-
             .datablix-brand-description {{
                 max-width: 760px;
                 margin: 0 auto;
+                padding: 0 1rem;
                 font-size: 1.05rem;
                 line-height: 1.5;
                 opacity: 0.78;
@@ -424,26 +422,21 @@ def render_brand_header():
 
             @media (max-width: 600px) {{
                 .datablix-brand {{
-                    margin-top: -0.8rem;
+                    padding-top: 0.35rem;
                     margin-bottom: 1rem;
                 }}
 
                 .datablix-logo-window {{
-                    width: 94vw;
-                    height: 100px;
+                    min-height: 72px;
+                    padding: 0.2rem 0.5rem;
                 }}
 
                 .datablix-brand-logo {{
-                    width: 285px;
-                }}
-
-                .datablix-brand-logo.padded-png {{
-                    width: 550px;
+                    width: min(88vw, 430px);
+                    max-height: 150px;
                 }}
 
                 .datablix-brand-description {{
-                    padding-left: 0.75rem;
-                    padding-right: 0.75rem;
                     font-size: 0.96rem;
                 }}
             }}
@@ -452,7 +445,7 @@ def render_brand_header():
         <div class="datablix-brand">
             <div class="datablix-logo-window">
                 <img
-                    class="{logo_class}"
+                    class="datablix-brand-logo"
                     src="data:{mime_type};base64,{encoded_logo}"
                     alt="Datablix logo"
                 >
