@@ -2616,8 +2616,9 @@ def create_methodology_report(dataframe, workspace_name, worksheet_name):
         {
             "Section": "Purpose",
             "Report Text": (
-                "Build and improve a searchable Ottawa apartment directory "
-                "using employer-provided data and publicly available sources."
+                "Build and improve a searchable property directory for the target "
+                "service area using project-provided data and publicly "
+                "available sources."
             ),
         },
         {
@@ -3960,11 +3961,11 @@ elif section == "Review & edit":
                 )
                 city = st.text_input(
                     "City",
-                    value="Ottawa",
+                    placeholder="Example: Target city",
                 )
                 province = st.text_input(
                     "Province",
-                    value="Ontario",
+                    placeholder="Example: Province or region",
                 )
                 postal_code = st.text_input(
                     "Postal Code",
