@@ -1,6 +1,6 @@
 # Datablix
 
-**Datablix turns raw research data into a structured, trackable, and review-ready directory.**
+**Datablix turns rental property research data into a structured, trackable, and review-ready directory.**
 
 Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is collected, reviewed, verified, and organized.
 
