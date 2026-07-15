@@ -22,7 +22,7 @@ Each demo preserves a stage in the evolution of Datablix.
 
 | Area | Summary |
 |---|---|
-| Business Need | Prepare publicly sourced directory information for consistent review and follow-up |
+| Business Need | Prepare publicly sourced rental property directory information for consistent review and follow-up |
 | Primary Challenge | Repetitive spreadsheet-based research, difficulty to monitor, and dependency on manual checks |
 | Users | Researchers, reviewers, project coordinators, directory administrators, and the project sponsor |
 | Organization | Coyle Media Group x Riipen Level Up |
