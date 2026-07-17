@@ -924,25 +924,31 @@ render_brand_header()
 
 st.html("""
 <style>
-.db-start-here{
-    position: fixed;
-    top: 0.75rem;
-    left: 3.2rem;
-    z-index: 1000000;
-    font-size: 0.9rem;
-    font-weight: 700;
-    opacity: 0.85;
-    pointer-events: none;
+button[data-testid="stSidebarCollapseButton"]{
+    width: auto !important;
+    min-width: 7.5rem !important;
+    justify-content: flex-start !important;
+    gap: 0.35rem !important;
 }
+
+button[data-testid="stSidebarCollapseButton"]::after{
+    content: "Start Here";
+    font-size: 0.88rem;
+    font-weight: 700;
+    white-space: nowrap;
+    opacity: 0.88;
+}
+
 @media (max-width: 768px){
-    .db-start-here{
-        top: 0.7rem;
-        left: 3rem;
-        font-size: 0.82rem;
+    button[data-testid="stSidebarCollapseButton"]{
+        min-width: 6.8rem !important;
+    }
+
+    button[data-testid="stSidebarCollapseButton"]::after{
+        font-size: 0.8rem;
     }
 }
 </style>
-<div class="db-start-here">&gt;&gt; Start Here</div>
 """)
 
 with st.sidebar:
