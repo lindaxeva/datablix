@@ -959,9 +959,24 @@ with st.sidebar:
         "and save a fresh copy before you leave."
     )
     current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
-    options = ["Upload a file", "Connect a Google Sheet", "Start blank"]
-    default = {"Uploaded file": 0, "Google Sheet": 1, "Blank workspace": 2}.get(current, 0)
-    source = st.radio("Where would you like to begin?", options, index=default)
+    options = [
+        "Upload a file",
+        "Connect a Google Sheet",
+        "Scan a website",
+        "Start blank",
+    ]
+    default = {
+        "Uploaded file": 0,
+        "Google Sheet": 1,
+        "Website scan": 2,
+        "Blank workspace": 3,
+    }.get(current, 0)
+    source = st.radio(
+        "Where would you like to begin?",
+        options,
+        index=default,
+        key="db_start_source",
+    )
     try:
         if source == "Upload a file":
             uploaded = st.file_uploader(
@@ -994,6 +1009,23 @@ with st.sidebar:
                 )
                 submit = st.form_submit_button("Load working copy", type="primary", width="stretch")
             if submit and load_google(url, selector): st.rerun()
+        elif source == "Scan a website":
+            st.info(
+                "Start from a public property website. Extracted findings stay in a "
+                "review queue until you approve them."
+            )
+            if st.button(
+                "Open website scanner",
+                type="primary",
+                width="stretch",
+                key="sidebar_open_scanner",
+            ):
+                if S_WORKING not in st.session_state:
+                    blank_workspace()
+                    st.session_state[S_SOURCE_TYPE] = "Website scan"
+                    st.session_state[S_NAME] = "website_scan_workspace"
+                st.session_state["db_section"] = "Website scanner"
+                st.rerun()
         else:
             if st.button("Create blank workspace", width="stretch"):
                 blank_workspace(); st.rerun()
@@ -1023,16 +1055,51 @@ with st.sidebar:
                 st.rerun()
 
 if S_WORKING not in st.session_state:
-    st.info("Choose a starting point from the sidebar (>>). Your records will open here as an editable working copy.")
+    st.header("Choose how to begin")
+    st.caption(
+        "Start with records you already have, scan a public website for new candidates, "
+        "or create an empty workspace."
+    )
+
+    start_file, start_scan, start_blank = st.columns(3)
+    with start_file:
+        st.subheader("Open existing records")
+        st.write("Upload a CSV or Excel file, or connect a viewable Google Sheet from the sidebar.")
+        st.caption("Best when you already have a list to review or improve.")
+    with start_scan:
+        st.subheader("Scan a website")
+        st.write("Discover property candidates from permitted public pages and review them before adding them.")
+        if st.button(
+            "Start website scan",
+            type="primary",
+            width="stretch",
+            key="landing_open_scanner",
+        ):
+            blank_workspace()
+            st.session_state[S_SOURCE_TYPE] = "Website scan"
+            st.session_state[S_NAME] = "website_scan_workspace"
+            st.session_state["db_section"] = "Website scanner"
+            st.rerun()
+    with start_blank:
+        st.subheader("Start manually")
+        st.write("Create an empty workspace and add property records one at a time.")
+        if st.button(
+            "Create blank workspace",
+            width="stretch",
+            key="landing_blank_workspace",
+        ):
+            blank_workspace()
+            st.rerun()
+
     with st.expander("What Datablix does", expanded=True):
         st.markdown("""
         - Opens CSV, Excel, or Google Sheets as an editable working copy.
+        - Scans permitted public websites and holds findings for human review.
         - Organizes key fields while preserving original columns.
         - Flags missing information, possible duplicates, and data-quality issues.
-        - Scans permitted public websites and places extracted findings in a review queue.
         - Tracks sources, verification, notes, and record status.
         - Creates review-ready listings and downloadable reports.
-        - [Disabled by Default] Includes optional AI tools to summarize notes, suggest next research actions, and requires human review.
+        - [Disabled by Default] Includes optional AI tools that require human review.
         """)
     st.stop()
 
@@ -1043,13 +1110,61 @@ working = st.session_state[S_WORKING].copy()
 has_records = not working.empty
 qa = qa_checks(working) if has_records else None
 
-sections = ["Overview", "Website scanner", "Research", "Data quality", "Review & edit", "Export"]
-section = st.segmented_control("Section", sections, label_visibility="collapsed", key="db_section") or "Overview"
+sections = [
+    "Overview",
+    "Website scanner",
+    "Review & edit",
+    "Research",
+    "Data quality",
+    "Export",
+]
+if st.session_state.get("db_section") not in sections:
+    st.session_state["db_section"] = "Overview"
+
+st.caption(
+    "Suggested flow: **Start or scan → Review and edit → Check quality → Export**"
+)
+nav_columns = st.columns(len(sections))
+for nav_column, nav_label in zip(nav_columns, sections):
+    with nav_column:
+        if st.button(
+            nav_label,
+            type=(
+                "primary"
+                if st.session_state["db_section"] == nav_label
+                else "secondary"
+            ),
+            width="stretch",
+            key=f"db_nav_{norm_header(nav_label)}",
+        ):
+            st.session_state["db_section"] = nav_label
+            st.rerun()
+
+section = st.session_state["db_section"]
 if not has_records and section in ["Research", "Data quality", "Export"]:
-    st.info("There are no records here yet. Open **Review & edit** to add the first one."); st.stop()
+    st.info(
+        "There are no records here yet. Use **Website scanner** or "
+        "**Review & edit** to add the first one."
+    )
+    st.stop()
 
 if section == "Overview":
     st.header("Overview")
+    action_col1, action_col2 = st.columns([1, 2])
+    with action_col1:
+        if st.button(
+            "Scan a property website",
+            type="primary",
+            width="stretch",
+            key="overview_open_scanner",
+        ):
+            st.session_state["db_section"] = "Website scanner"
+            st.rerun()
+    with action_col2:
+        st.caption(
+            "Use the scanner to discover new property candidates, then review and "
+            "approve them before they enter the working data."
+        )
     if not has_records:
         st.info("This workspace is ready. Open **Review & edit** when you are ready to add the first building.")
     else:
@@ -1068,20 +1183,17 @@ if section == "Overview":
             st.dataframe(st.session_state[S_MAPPING], width="stretch", hide_index=True)
 
 elif section == "Website scanner":
-    # The scanner module uses its own generic working-data key. Keep it
-    # synchronized with Datablix's existing workspace key without changing
-    # the rest of the application.
     scanner_start_count = len(st.session_state[S_WORKING])
-    st.session_state["working_df"] = st.session_state[S_WORKING].copy()
 
-    render_website_scanner_panel()
+    render_website_scanner_panel(working_data_key=S_WORKING)
 
-    scanner_working = st.session_state.get("working_df")
-    if isinstance(scanner_working, pd.DataFrame) and len(scanner_working) > scanner_start_count:
+    scanner_working = st.session_state.get(S_WORKING)
+    if (
+        isinstance(scanner_working, pd.DataFrame)
+        and len(scanner_working) > scanner_start_count
+    ):
         merged = scanner_working.copy()
 
-        # Make scanner-added rows compatible with the existing Datablix
-        # workflow, quality checks, editing tools, and exports.
         for column in INTERNAL_COLUMNS:
             if column not in merged.columns:
                 merged[column] = pd.NA
@@ -1101,12 +1213,15 @@ elif section == "Website scanner":
         merged = ensure_ids(merged)
         merged = normalize_workflow(prepare_data(merged))
         st.session_state[S_WORKING] = merged
-        st.session_state["working_df"] = merged.copy()
-        st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+        st.session_state[S_EDIT_COUNT] = (
+            st.session_state.get(S_EDIT_COUNT, 0) + 1
+        )
         added_count = len(merged) - scanner_start_count
         st.session_state[S_FLASH] = (
-            f"{added_count} approved website-scanned record(s) were added to the workspace."
+            f"{added_count} approved website-scanned record(s) were added. "
+            "Review them before marking them as verified."
         )
+        st.session_state["db_section"] = "Review & edit"
         st.rerun()
 
 elif section == "Research":
