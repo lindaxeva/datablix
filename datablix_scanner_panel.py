@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import re
+import unicodedata
 from dataclasses import asdict
 
 import pandas as pd
@@ -31,7 +33,219 @@ DIRECTORY_FIELD_MAP = {
     "building_classification": "Building Classification",
     "source_url": "Source URL",
     "review_status": "Verification Status",
+    "ontario_scope_status": "Ontario Scope Status",
+    "ontario_scope_reason": "Ontario Scope Reason",
 }
+
+
+ONTARIO_SCOPE_CONFIRMED = "Confirmed Ontario"
+ONTARIO_SCOPE_LIKELY = "Likely Ontario — Review"
+ONTARIO_SCOPE_UNCLEAR = "Location Unclear"
+ONTARIO_SCOPE_OUTSIDE = "Outside Ontario"
+
+ONTARIO_APPROVABLE_STATUSES = {
+    ONTARIO_SCOPE_CONFIRMED,
+    ONTARIO_SCOPE_LIKELY,
+}
+
+ONTARIO_POSTAL_PREFIXES = set("KLMNP")
+
+CANADIAN_PROVINCE_ALIASES = {
+    "alberta": "AB", "ab": "AB",
+    "british columbia": "BC", "bc": "BC",
+    "manitoba": "MB", "mb": "MB",
+    "new brunswick": "NB", "nb": "NB",
+    "newfoundland and labrador": "NL", "newfoundland": "NL",
+    "labrador": "NL", "nl": "NL",
+    "nova scotia": "NS", "ns": "NS",
+    "northwest territories": "NT", "nt": "NT",
+    "nunavut": "NU", "nu": "NU",
+    "ontario": "ON", "on": "ON",
+    "prince edward island": "PE", "pei": "PE", "pe": "PE",
+    "quebec": "QC", "québec": "QC", "qc": "QC",
+    "saskatchewan": "SK", "sk": "SK",
+    "yukon": "YT", "yt": "YT",
+}
+
+# Municipality names are supporting evidence only. Province and postal-code
+# evidence take precedence whenever they are available.
+ONTARIO_MUNICIPALITIES = {
+    "ajax", "alexandria", "alliston", "almonte", "amherstburg", "ancaster",
+    "arnprior", "aurora", "aylmer", "bancroft", "barrie", "beamsville",
+    "belle river", "belleville", "blind river", "bolton", "bracebridge",
+    "bradford", "brampton", "brantford", "brighton", "brockville",
+    "burlington", "caledon", "caledonia", "cambridge", "campbellford",
+    "carleton place", "casselman", "chatham", "chelmsford", "clarington",
+    "cobourg", "cochrane", "collingwood", "cornwall", "deep river", "delhi",
+    "dryden", "dunnville", "east gwillimbury", "elliot lake", "elmira",
+    "elora", "embrun", "erin", "espanola", "essex", "etobicoke", "fergus",
+    "fort erie", "fort frances", "gananoque", "georgetown", "geraldton",
+    "gloucester", "goderich", "grand bend", "gravenhurst", "greater napanee",
+    "greater sudbury", "grimsby", "guelph", "haliburton", "hamilton",
+    "hanover", "harriston", "hawkesbury", "hearst", "huntsville",
+    "ingersoll", "iroquois falls", "kanata", "kapuskasing", "kawartha lakes",
+    "kemptville", "kenora", "keswick", "kincardine", "kingston",
+    "kirkland lake", "kitchener", "lasalle", "leamington", "lindsay",
+    "listowel", "london", "markham", "midland", "milton", "mississauga",
+    "mitchell", "napanee", "nepean", "new hamburg", "new liskeard",
+    "newmarket", "niagara falls", "niagara on the lake", "north bay",
+    "north york", "oakville", "orangeville", "orillia", "oshawa", "ottawa",
+    "owen sound", "paris", "parry sound", "pembroke", "perth", "petawawa",
+    "peterborough", "petrolia", "pickering", "port colborne", "port elgin",
+    "port hope", "prescott", "prince edward county", "renfrew",
+    "richmond hill", "rockland", "sarnia", "sault ste marie", "scarborough",
+    "simcoe", "smiths falls", "south porcupine", "st catharines",
+    "st marys", "st thomas", "stittsville", "stratford", "strathroy",
+    "sturgeon falls", "sudbury", "tecumseh", "temiskaming shores",
+    "thunder bay", "tillsonburg", "timmins", "toronto", "trenton",
+    "uxbridge", "vaughan", "walkerton", "wallaceburg", "waterdown",
+    "waterloo", "welland", "whitby", "wiarton", "windsor", "wingham",
+    "woodstock",
+}
+
+CANADIAN_POSTAL_PATTERN = re.compile(
+    r"^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_location_text(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(
+        character for character in text
+        if not unicodedata.combining(character)
+    )
+    text = text.lower().replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _normalized_postal_code(value) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", _clean_value(value)).upper()
+
+
+def _province_code(value) -> str:
+    return CANADIAN_PROVINCE_ALIASES.get(_normalize_location_text(value), "")
+
+
+def _country_is_canada(value) -> bool:
+    normalized = _normalize_location_text(value)
+    return not normalized or normalized in {"canada", "ca", "can"}
+
+
+def _classify_ontario_scope(row: pd.Series) -> tuple[str, str]:
+    province_text = _clean_value(row.get("province"))
+    province_code = _province_code(province_text)
+    city = _normalize_location_text(row.get("city"))
+    street = _clean_value(row.get("street_address"))
+    postal = _normalized_postal_code(row.get("postal_code"))
+    country = _clean_value(row.get("country"))
+
+    source_context = " ".join(
+        _normalize_location_text(row.get(field))
+        for field in ["source_page_title", "evidence", "source_url"]
+    )
+
+    postal_is_canadian = bool(CANADIAN_POSTAL_PATTERN.fullmatch(postal))
+    postal_is_ontario = (
+        postal_is_canadian
+        and bool(postal)
+        and postal[0] in ONTARIO_POSTAL_PREFIXES
+    )
+    city_is_ontario = city in ONTARIO_MUNICIPALITIES
+    source_mentions_ontario = bool(re.search(r"\bontario\b", source_context))
+
+    if not _country_is_canada(country):
+        return ONTARIO_SCOPE_OUTSIDE, f"Country is recorded as {country}."
+
+    if province_code and province_code != "ON":
+        if postal_is_ontario:
+            return (
+                ONTARIO_SCOPE_UNCLEAR,
+                "Province conflicts with an Ontario postal-code pattern.",
+            )
+        return ONTARIO_SCOPE_OUTSIDE, f"Province is recorded as {province_text}."
+
+    if province_code == "ON":
+        details = ["Province is Ontario"]
+        if street:
+            details.append("a street address is present")
+        if city:
+            details.append(f"city is {_clean_value(row.get('city'))}")
+        return ONTARIO_SCOPE_CONFIRMED, "; ".join(details) + "."
+
+    if postal_is_ontario:
+        return (
+            ONTARIO_SCOPE_CONFIRMED,
+            f"Postal code {_clean_value(row.get('postal_code'))} follows an Ontario pattern.",
+        )
+
+    if city_is_ontario and street:
+        return (
+            ONTARIO_SCOPE_LIKELY,
+            f"{_clean_value(row.get('city'))} is recognized as an Ontario municipality and a street address is present.",
+        )
+
+    if city_is_ontario:
+        return (
+            ONTARIO_SCOPE_LIKELY,
+            f"{_clean_value(row.get('city'))} is recognized as an Ontario municipality; confirm the street or province.",
+        )
+
+    if source_mentions_ontario and street:
+        return (
+            ONTARIO_SCOPE_LIKELY,
+            "The source mentions Ontario and a street address is present; confirm the city or postal code.",
+        )
+
+    if source_mentions_ontario:
+        return (
+            ONTARIO_SCOPE_LIKELY,
+            "The source mentions Ontario; confirm the city and street address.",
+        )
+
+    if street or city or postal or province_text:
+        return (
+            ONTARIO_SCOPE_UNCLEAR,
+            "The available location details do not yet confirm Ontario.",
+        )
+
+    return (
+        ONTARIO_SCOPE_UNCLEAR,
+        "No province, Ontario postal code, recognized Ontario municipality, or street evidence was detected.",
+    )
+
+
+def _apply_ontario_scope(frame: pd.DataFrame) -> pd.DataFrame:
+    scoped = frame.copy()
+    if scoped.empty:
+        scoped["ontario_scope_status"] = pd.Series(dtype="object")
+        scoped["ontario_scope_reason"] = pd.Series(dtype="object")
+        return scoped
+
+    classifications = scoped.apply(_classify_ontario_scope, axis=1)
+    scoped["ontario_scope_status"] = classifications.map(lambda result: result[0])
+    scoped["ontario_scope_reason"] = classifications.map(lambda result: result[1])
+
+    if "approved" not in scoped.columns:
+        scoped["approved"] = False
+
+    outside_or_unclear = scoped["ontario_scope_status"].isin(
+        {ONTARIO_SCOPE_OUTSIDE, ONTARIO_SCOPE_UNCLEAR}
+    )
+    scoped.loc[outside_or_unclear, "approved"] = False
+    return scoped
+
+
+def _ontario_eligible_mask(frame: pd.DataFrame) -> pd.Series:
+    scoped = (
+        frame
+        if "ontario_scope_status" in frame.columns
+        else _apply_ontario_scope(frame)
+    )
+    return scoped["ontario_scope_status"].isin(ONTARIO_APPROVABLE_STATUSES)
+
 
 
 def _records_dataframe(report) -> pd.DataFrame:
@@ -39,16 +253,18 @@ def _records_dataframe(report) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(
             columns=[
-                "approved", "building_name", "management_owner", "street_address",
+                "approved", "ontario_scope_status", "ontario_scope_reason",
+        "building_name", "management_owner", "street_address",
                 "address_line_2", "city", "province", "postal_code", "country",
                 "phone", "primary_email", "website", "number_of_apartments",
                 "building_classification", "source_url", "source_page_title",
                 "extraction_method", "confidence",
                 "review_status", "evidence",
+                "ontario_scope_status", "ontario_scope_reason",
             ]
         )
     frame["confidence"] = pd.to_numeric(frame["confidence"], errors="coerce").fillna(0.0)
-    return frame
+    return _apply_ontario_scope(frame)
 
 
 def _pages_dataframe(report) -> pd.DataFrame:
@@ -74,6 +290,8 @@ SCAN_ADDITIONAL_FIELDS = [
     ("Source Page Title", "source_page_title"),
     ("Extraction Method", "extraction_method"),
     ("Confidence", "confidence"),
+    ("Ontario Scope Status", "ontario_scope_status"),
+    ("Ontario Scope Reason", "ontario_scope_reason"),
     ("Evidence", "evidence"),
 ]
 
@@ -158,11 +376,19 @@ def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> by
             "approved",
             pd.Series(False, index=records_df.index),
         ).fillna(False)
-        approved = records_df.loc[approved_mask].copy()
+        approved = records_df.loc[
+            approved_mask & _ontario_eligible_mask(records_df)
+        ].copy()
         approved_listings = _approved_listing_table(approved)
         ws = writer.book.create_sheet("Approved Listings")
         _write_approved_listing_blocks(ws, approved_listings)
         records_df.to_excel(writer, sheet_name="Record Candidates", index=False)
+        records_df.loc[
+            records_df["ontario_scope_status"].eq(ONTARIO_SCOPE_OUTSIDE)
+        ].to_excel(writer, sheet_name="Outside Ontario", index=False)
+        records_df.loc[
+            records_df["ontario_scope_status"].eq(ONTARIO_SCOPE_UNCLEAR)
+        ].to_excel(writer, sheet_name="Location Review", index=False)
         pages_df.to_excel(writer, sheet_name="Pages Scanned", index=False)
         pd.DataFrame({"Blocked URL": report.blocked_urls}).to_excel(
             writer,
@@ -228,6 +454,11 @@ def render_website_scanner_panel(
             <p>Search permitted public pages for listing details, contacts, building classifications, apartment counts, and supporting evidence. Only approved candidates move into the workspace.</p>
         </section>
         """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="db-guidance"><strong>Ontario-only research scope.</strong>'
+        '<span>The scanner may read a broader company website, but only Ontario properties can be approved, added, or exported. Confirmed non-Ontario records remain in the scan log.</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -567,6 +798,9 @@ def render_website_scanner_panel(
             )
         return
 
+    records_df = _apply_ontario_scope(records_df)
+    st.session_state["website_scan_records"] = records_df
+
     last_scan_scope = st.session_state.get("website_scan_scope", "")
     last_scan_reached_limit = bool(
         st.session_state.get("website_scan_page_limit_reached", False)
@@ -615,6 +849,18 @@ def render_website_scanner_panel(
     m3.metric("JavaScript pages", rendered_pages)
     m4.metric("Blocked or failed", len(report.blocked_urls) + len(report.errors))
 
+    scope_counts = records_df["ontario_scope_status"].value_counts()
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Confirmed Ontario", int(scope_counts.get(ONTARIO_SCOPE_CONFIRMED, 0)))
+    s2.metric("Likely Ontario — review", int(scope_counts.get(ONTARIO_SCOPE_LIKELY, 0)))
+    s3.metric("Location unclear", int(scope_counts.get(ONTARIO_SCOPE_UNCLEAR, 0)))
+    s4.metric("Outside Ontario", int(scope_counts.get(ONTARIO_SCOPE_OUTSIDE, 0)))
+    st.caption(
+        "Only Confirmed Ontario and human-approved Likely Ontario candidates can "
+        "move into the workspace. Location Unclear and Outside Ontario records are "
+        "kept for traceability but excluded automatically."
+    )
+
     with st.expander("Manage current scan results"):
         st.caption("Clearing removes this scan report and its review edits from the current session.")
         confirm_clear = st.checkbox(
@@ -648,6 +894,8 @@ def render_website_scanner_panel(
 
     required_review_columns = [
         "approved",
+        "ontario_scope_status",
+        "ontario_scope_reason",
         "building_name",
         "street_address",
         "city",
@@ -664,6 +912,8 @@ def render_website_scanner_panel(
     ]
     additional_review_columns = [
         "approved",
+        "ontario_scope_status",
+        "ontario_scope_reason",
         "address_line_2",
         "country",
         "source_page_title",
@@ -713,14 +963,30 @@ def render_website_scanner_panel(
         num_rows="fixed",
         disabled=[
             column for column in [
-                "confidence", "source_page_title", "extraction_method", "review_status"
+                "confidence", "source_page_title", "extraction_method",
+                "review_status", "ontario_scope_status", "ontario_scope_reason"
             ] if column in visible_review_columns
         ],
         column_config={
             "approved": st.column_config.CheckboxColumn(
                 "Approve candidate",
                 default=False,
-                help="Approve only after checking the supporting source page.",
+                help=(
+                    "Approve only after checking the source and confirming the "
+                    "candidate is in Ontario."
+                ),
+            ),
+            "ontario_scope_status": st.column_config.TextColumn(
+                "Ontario Scope Status",
+                width="medium",
+                help=(
+                    "Confirmed Ontario may be approved. Likely Ontario requires "
+                    "human review. Unclear and outside-Ontario records are excluded."
+                ),
+            ),
+            "ontario_scope_reason": st.column_config.TextColumn(
+                "Ontario Scope Reason",
+                width="large",
             ),
             "building_name": st.column_config.TextColumn("Apartment Building Name", width="large"),
             "management_owner": st.column_config.TextColumn("Management / Owner", width="large"),
@@ -756,19 +1022,32 @@ def render_website_scanner_panel(
     updated_records = records_df.copy()
     for column in visible_review_columns:
         updated_records.loc[edited_review.index, column] = edited_review[column]
+
+    updated_records = _apply_ontario_scope(updated_records)
     st.session_state["website_scan_records"] = updated_records
 
+    requested_approval = updated_records["approved"].fillna(False)
+    eligible_approval = _ontario_eligible_mask(updated_records)
+    blocked_approval_count = int((requested_approval & ~eligible_approval).sum())
+
     approved = updated_records.loc[
-        updated_records["approved"].fillna(False)
+        requested_approval & eligible_approval
     ].copy()
     approved["review_status"] = "Needs Review"
+
+    if blocked_approval_count:
+        st.warning(
+            f"{blocked_approval_count} selected candidate(s) were not approved because "
+            "their location is unclear or confirmed outside Ontario. Update the city, "
+            "province, street address, or postal code, then review again."
+        )
 
     with st.container(border=True):
         action_left, action_right = st.columns([2, 1], vertical_alignment="center")
         with action_left:
             st.subheader("Add approved records")
             st.write(
-                f"{len(approved):,} of {len(updated_records):,} candidates are approved. "
+                f"{len(approved):,} Ontario-eligible candidate(s) are approved. "
                 "They will enter the workspace as Needs Review, not as verified records."
             )
         with action_right:
@@ -794,6 +1073,8 @@ def render_website_scanner_panel(
             "Keep the source page, extraction details, confidence, and supporting text with the research trail."
         )
         evidence_columns = [
+            "ontario_scope_status",
+            "ontario_scope_reason",
             "building_name",
             "building_classification",
             "number_of_apartments",
@@ -831,10 +1112,21 @@ def render_website_scanner_panel(
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
         )
+        reviewed_records_json = json.loads(
+            updated_records.to_json(orient="records", force_ascii=False)
+        )
         d3.download_button(
             "Download raw scan data — JSON",
-            data=json.dumps(report.as_dict(), indent=2, ensure_ascii=False),
-            file_name="website_scan_report.json",
+            data=json.dumps(
+                {
+                    "research_scope": "Ontario only",
+                    "scan_report": report.as_dict(),
+                    "reviewed_records": reviewed_records_json,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            file_name="website_scan_report_ontario.json",
             mime="application/json",
             width="stretch",
         )
