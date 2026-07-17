@@ -249,3 +249,32 @@ Do not upload confidential user information, private communications, employer-re
 Only scan websites that the user is permitted to access. Respect `robots.txt`, website terms, applicable laws, reasonable request delays, and the configured crawl limits.
 
 Public information may still be outdated, incomplete, duplicated, inconsistent, or incorrect. Scanner results, quality checks, and optional AI summaries support structured review, but final verification and publication decisions remain human responsibilities.
+
+---
+
+# Datablix Known Issues and Fixes
+
+This log documents unexpected application behaviours observed during testing, how they affected the workflow, and the changes made to address them.
+
+| Date reported    | Unexpected behaviour                        | What was observed                                                                                                              | How it was fixed / current status                                                                                                                               |
+| ---------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| July 17, 2026    | No scan results were displayed              | After the website scan stopped, Datablix displayed no records, completion summary, or explanation.                             | The scanner was updated to preserve partial results and display a clear completion or stopping message. A live retest is still required.                        |
+| July 17, 2026    | Scan stopped before reaching 500 pages      | A scan configured for up to 500 pages stopped at approximately 300 pages.                                                      | The stopping logic and status reporting were revised to explain whether the scan completed, reached a limit, encountered repeated failures, or was interrupted. |
+| July 17, 2026    | Scan completion status was unclear          | It was not clear whether the scan had completed successfully, failed, or stopped because of an internal condition.             | A final scan status was added to show the number of pages processed and the reason the scan ended.                                                              |
+| July 17, 2026    | Buttons appeared twice                      | Some workflow and scanner controls were displayed more than once.                                                              | Duplicate interface elements were removed so each action appears only once.                                                                                     |
+| July 17, 2026    | Invalid links could interrupt scanning      | Telephone, email, JavaScript, or malformed links could be treated as website pages.                                            | The scanner was updated to ignore unsupported link types and validate URLs before attempting to scan them.                                                      |
+| July 16–17, 2026 | Website scanner was difficult to find       | The scanner appeared hidden within the application workflow.                                                                   | The scanner was made more visible through the main navigation and workspace interface.                                                                          |
+| July 14, 2026    | Application error occurred                  | An uploaded application log showed that Datablix encountered an error while running.                                           | The relevant application code was revised and tested again. The original hosting-level cause was not conclusively confirmed.                                    |
+| July 14, 2026    | Imported headings were not recognized       | Datablix reported that no matching imported column was found, even when related information existed under a different heading. | Heading normalization and additional column aliases were added.                                                                                                 |
+| July 14, 2026    | Existing information was treated as missing | Values were checked as missing because their imported headings had not been matched correctly.                                 | Datablix now attempts to match and normalize headings before applying missing-value checks.                                                                     |
+| July 13–14, 2026 | Logo was hidden or clipped                  | The Datablix logo was not fully visible in the desktop layout.                                                                 | The logo container, spacing, overflow, and responsive sizing rules were adjusted.                                                                               |
+| July 13, 2026    | Initial logo correction did not work        | The logo remained incorrectly displayed after the first attempted fix.                                                         | A second implementation replaced the original sizing and positioning rules.                                                                                     |
+
+## Status labels
+
+* **Fixed:** The correction has been implemented and confirmed.
+* **Retesting:** A correction has been implemented but still requires live testing.
+* **Open:** The behaviour is still occurring or its cause has not been resolved.
+* **Monitoring:** The issue has not reappeared but remains under observation.
+
+
