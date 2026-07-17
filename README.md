@@ -1,6 +1,6 @@
 # Datablix 3.0
 
-**Datablix 3.0 turns rental property research into structured, trackable, and review-ready listings.**
+**Datablix turns rental property research into structured, trackable, and review-ready listings.**
 
 Datablix 3.0 was developed to strengthen the research workflow supporting the **Ontario Senior Living Directory Development Stage 3** project.
 
