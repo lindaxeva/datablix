@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 import re
+from html import escape
 from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
@@ -260,7 +261,7 @@ def render_brand_header():
         <div class="db-brand">
             <img class="db-logo" src="data:{mime};base64,{encoded}" alt="Datablix logo">
             <div class="db-tag">Turn rental property research into structured, review-ready listings.</div>
-            <div class="db-subtag">Collect public rental listings, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
+            <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
         </div>
         """)
     else:
@@ -268,7 +269,7 @@ def render_brand_header():
         <div class="db-brand">
             <div class="db-brand-name">Datablix</div>
             <div class="db-tag">Turn rental property research into structured, review-ready listings.</div>
-            <div class="db-subtag">Collect public rental listings, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
+            <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
         </div>
         """)
 
@@ -1008,7 +1009,7 @@ def issue_summary(df):
 
 def project_summary(df):
     return pd.DataFrame([
-        {"Metric": "Rental property records", "Value": len(df), "Interpretation": "Rows in the working rental property dataset."},
+        {"Metric": "Records", "Value": len(df), "Interpretation": "Rows in the working rental property dataset."},
         {"Metric": "Management/owner organizations", "Value": resolved(df["Management/Owner"]).dropna().astype(str).str.strip().nunique(), "Interpretation": "Distinct recorded organizations."},
         {"Metric": "Records with usable core identity", "Value": int(df["Core Gap Count"].eq(0).sum()), "Interpretation": "Records with management/owner, street address, and city."},
         {"Metric": "Verified records", "Value": int(df["Verification Status"].eq("Verified").sum()), "Interpretation": "Records marked as human-verified."},
@@ -1040,7 +1041,7 @@ def structure_recommendations():
 
 def methodology(df, name, sheet):
     return pd.DataFrame([
-        {"Section": "Purpose", "Report Text": "Organize rental property information into a consistent, searchable structure using the records provided and publicly available sources."},
+        {"Section": "Purpose", "Report Text": "Organize listing information into a consistent, searchable structure using the records provided and publicly available sources."},
         {"Section": "Input reviewed", "Report Text": f"Workspace: {name}. Worksheet: {sheet or 'not specified'}. Records reviewed: {len(df):,}."},
         {"Section": "Core record view", "Report Text": "The Building Listings sheet keeps the main rental property, location, ownership, and contact fields together in a concise view."},
         {"Section": "Method", "Report Text": "Match imported headings, preserve original columns, check identity and formats, track sources and verification, and keep review decisions explicit."},
@@ -1127,20 +1128,65 @@ def go_to(section_name: str) -> None:
 
 
 def render_page_heading(label: str, title: str, description: str) -> None:
-    """Render a consistent page heading without adding visual clutter."""
-    st.markdown(f'<div class="db-eyebrow">{label}</div>', unsafe_allow_html=True)
-    st.header(title)
-    st.caption(description)
+    """Render a consistent, accessible page introduction."""
+    st.markdown(
+        f"""
+        <section class="db-page-head" aria-label="{escape(title)}">
+            <div class="db-eyebrow">{escape(label)}</div>
+            <h2>{escape(title)}</h2>
+            <p>{escape(description)}</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_process_bar(active_section: str) -> None:
+    """Keep the collect-review-verify-download mental model visible."""
+    stages = [
+        ("Collect", "Website scanner"),
+        ("Review", "Review records"),
+        ("Verify", "Progress & quality"),
+        ("Download", "Downloads"),
+    ]
+    active_index = next(
+        (index for index, (_, section_name) in enumerate(stages) if section_name == active_section),
+        -1,
+    )
+    items = []
+    for index, (label, _section_name) in enumerate(stages):
+        state = "active" if index == active_index else "complete" if 0 <= active_index and index < active_index else "upcoming"
+        current = ' aria-current="step"' if state == "active" else ""
+        items.append(
+            f'<div class="db-process-item {state}"{current}>'
+            f'<span class="db-process-dot" aria-hidden="true"></span>'
+            f'<span>{escape(label)}</span></div>'
+        )
+    st.markdown(
+        '<div class="db-process" aria-label="Rental property research workflow">'
+        + "".join(items)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_guidance(title: str, message: str) -> None:
+    """Place short decision-support copy beside the task it explains."""
+    st.markdown(
+        f'<div class="db-guidance"><strong>{escape(title)}</strong>'
+        f'<span>{escape(message)}</span></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, str, str]:
     """Return a practical next action based on the current workspace."""
     if qa_frame is None or qa_frame.empty:
         return (
-            "Add your first rental property records",
-            "Scan a permitted public rental property website or add a listing by hand to start the workspace.",
+            "Add your first records",
+            "Scan a permitted public website or add a listing manually to start the workspace.",
             "Website scanner",
-            "Open rental property scanner",
+            "Open website scanner",
         )
 
     critical_count = int(qa_frame["QA Status"].eq("Critical").sum())
@@ -1152,35 +1198,35 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
 
     if critical_count:
         return (
-            "Fix critical rental property records first",
-            f"{critical_count:,} rental property record(s) are missing core identity details or carry a critical conflict.",
+            "Fix critical records first",
+            f"{critical_count:,} record(s) are missing core identity details or carry a critical conflict.",
             "Review records",
             "Fix critical records",
         )
     if follow_up_count:
         return (
             "Clear the high-priority follow-ups",
-            f"{follow_up_count:,} rental property record(s) need a duplicate decision, a source follow-up, or a key correction.",
+            f"{follow_up_count:,} record(s) need a duplicate decision, a source follow-up, or a key correction.",
             "Review records",
             "Open review queue",
         )
     if review_count:
         return (
             "Verify the reviewed candidates",
-            f"{review_count:,} rental property record(s) are waiting for a human verification decision.",
+            f"{review_count:,} record(s) are waiting for a human verification decision.",
             "Review records",
             "Verify candidates",
         )
     if ready_count < len(qa_frame):
         return (
             "Check progress and remaining gaps",
-            "See which rental property research is incomplete, which details are missing, and how fresh each source is.",
+            "See which research is incomplete, which details are missing, and how fresh each source is.",
             "Progress & quality",
             "Check progress",
         )
     return (
         "Download a fresh copy",
-        "Every rental property record is ready. Export the workbook before you leave this session.",
+        "Every record is ready. Export the workbook before you leave this session.",
         "Downloads",
         "Download workbook",
     )
@@ -1397,6 +1443,95 @@ button[data-testid="stSidebarCollapseButton"]::after{
 @media (prefers-reduced-motion:reduce){
     *{transition:none !important;animation:none !important}
 }
+
+/* Page-level hierarchy: the heading and its explanation read as one unit. */
+.db-page-head{
+    max-width:920px;
+    margin:.3rem 0 1.25rem;
+    padding:0 0 1rem;
+    border-bottom:1px solid var(--db-border);
+}
+.db-page-head h2{
+    margin:.3rem 0 .35rem;
+    font-family:var(--db-display);
+    font-size:clamp(1.7rem,3vw,2.25rem);
+    line-height:1.12;
+}
+.db-page-head p{
+    max-width:820px;
+    margin:0;
+    font-size:.98rem;
+    line-height:1.55;
+    opacity:.72;
+}
+
+/* Persistent mental model without numbering or dense instructions. */
+.db-process{
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:.55rem;
+    margin:.1rem 0 1.25rem;
+}
+.db-process-item{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:.45rem;
+    min-height:2.35rem;
+    padding:.45rem .7rem;
+    border:1px solid var(--db-border);
+    border-radius:9px;
+    background:var(--db-soft);
+    font-size:.82rem;
+    font-weight:650;
+    opacity:.68;
+}
+.db-process-item.active{
+    border-color:var(--db-accent-edge);
+    background:var(--db-accent-soft);
+    color:var(--db-accent-strong);
+    opacity:1;
+}
+.db-process-item.complete{opacity:.86}
+.db-process-dot{
+    width:.48rem;
+    height:.48rem;
+    border-radius:50%;
+    background:currentColor;
+}
+
+/* Contextual help is visually quieter than an alert and stronger than a caption. */
+.db-guidance{
+    display:flex;
+    flex-wrap:wrap;
+    gap:.25rem .55rem;
+    align-items:baseline;
+    margin:.35rem 0 .9rem;
+    padding:.7rem .85rem;
+    border-left:3px solid var(--db-accent-edge);
+    border-radius:7px;
+    background:var(--db-accent-soft);
+    font-size:.88rem;
+    line-height:1.45;
+}
+.db-guidance strong{font-weight:750}
+.db-guidance span{opacity:.76}
+
+/* Keep navigation scannable and equal in height. */
+div[data-testid="stHorizontalBlock"] .stButton>button{
+    line-height:1.2;
+}
+[data-testid="stTabs"] button{
+    font-weight:650;
+}
+[data-testid="stCaptionContainer"]{
+    line-height:1.45;
+}
+
+@media (max-width:760px){
+    .db-process{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .db-workspace-strip{gap:.4rem .8rem}
+}
 </style>
 """)
 render_brand_header()
@@ -1406,17 +1541,17 @@ render_brand_header()
 # Sidebar: start or switch work
 # -----------------------------
 with st.sidebar:
-    st.subheader("Start or switch rental property workspace")
+    st.subheader("Start or switch workspace")
     st.caption(
-        "Choose where your rental property records come from. Datablix works on a temporary copy and never changes the original source."
+        "Choose how to bring rental property records into Datablix. A temporary working copy protects the original source."
     )
 
     current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
     start_options = [
-        "Open a file",
-        "Load a Google Sheet",
-        "Scan a rental property website",
-        "Start from scratch",
+        "Open file",
+        "Google Sheet",
+        "Scan website",
+        "Blank workspace",
     ]
     start_default = {
         "Uploaded file": 0,
@@ -1433,7 +1568,7 @@ with st.sidebar:
     )
 
     try:
-        if source == "Open a file":
+        if source == "Open file":
             uploaded = st.file_uploader(
                 "CSV or Excel file",
                 type=["csv", "xlsx"],
@@ -1448,12 +1583,12 @@ with st.sidebar:
                         "Worksheet",
                         names,
                         index=preferred_sheet(names),
-                        help="Choose the worksheet where row 1 contains the headings and each row below represents one rental property record.",
+                        help="Choose the worksheet where row 1 contains the headings and each row below represents one record.",
                         key="db_sidebar_sheet",
                     )
                 load_upload(uploaded, selected)
 
-        elif source == "Load a Google Sheet":
+        elif source == "Google Sheet":
             with st.form("google_form"):
                 url = st.text_input(
                     "Google Sheets link",
@@ -1472,12 +1607,12 @@ with st.sidebar:
             if submit and load_google(url, selector):
                 st.rerun()
 
-        elif source == "Scan a rental property website":
+        elif source == "Scan website":
             st.caption(
-                "Detected rental property listings remain in a review queue. Only the records you approve are added to the workspace."
+                "Detected listings stay in a review queue. Only approved records are added to the workspace."
             )
             if st.button(
-                "Open rental property scanner",
+                "Open website scanner",
                 type="primary",
                 width="stretch",
                 key="sidebar_open_scanner",
@@ -1491,7 +1626,7 @@ with st.sidebar:
 
         else:
             if st.button(
-                "Create rental property workspace",
+                "Create blank workspace",
                 width="stretch",
                 key="db_sidebar_blank",
             ):
@@ -1501,12 +1636,12 @@ with st.sidebar:
     except Exception as error:
         st.error(str(error))
 
-    with st.expander("Rental property template"):
+    with st.expander("Blank listing template"):
         st.caption(
-            "A starter CSV with rental property, contact, source, and review columns already in place."
+            "A starter CSV with listing, contact, source, and review columns already in place."
         )
         st.download_button(
-            "Download rental property template",
+            "Download blank template",
             csv_bytes(pd.DataFrame(columns=TEMPLATE_COLUMNS)),
             "datablix_building_listing_template.csv",
             "text/csv",
@@ -1558,8 +1693,8 @@ with st.sidebar:
                     )
                     st.rerun()
 
-        with st.expander("Reset rental property workspace"):
-            st.caption("Return every rental property record to the version first opened in this session.")
+        with st.expander("Reset workspace"):
+            st.caption("Return every record to the version first opened in this session.")
             confirm_reset = st.checkbox(
                 "Discard my session edits",
                 key="db_confirm_reset",
@@ -1572,7 +1707,7 @@ with st.sidebar:
             ):
                 st.session_state[S_WORKING] = st.session_state[S_ORIGINAL].copy()
                 st.session_state[S_EDIT_COUNT] = 0
-                st.session_state[S_FLASH] = "Rental property workspace reset to the original version."
+                st.session_state[S_FLASH] = "Workspace reset to the original version."
                 st.rerun()
 
 
@@ -1583,25 +1718,25 @@ if S_WORKING not in st.session_state:
     render_page_heading(
         "GET STARTED",
         "Build your rental property research workspace",
-        "Start with a file, a Google Sheet, a permitted public rental property website, or a blank workspace.",
+        "Start with a file, a Google Sheet, a permitted public website, or a blank workspace.",
     )
 
     start_mode = st.radio(
         "Choose a starting point",
-        ["Scan a public website", "Open a file", "Load a Google Sheet", "Start from scratch"],
+        ["Scan website", "Open file", "Google Sheet", "Blank workspace"],
         horizontal=True,
         label_visibility="collapsed",
         key="db_landing_mode",
     )
 
-    if start_mode == "Scan a public website":
-        st.subheader("Scan a public rental property website")
+    if start_mode == "Scan website":
+        st.subheader("Scan a public website")
         st.write(
-            "Datablix searches permitted public pages for rental property listings and holds the findings in a review queue. "
-            "Nothing enters your working data until you review and approve it."
+            "Datablix searches permitted public pages for rental property listings and holds every finding for review. "
+            "Nothing is added until you approve it."
         )
         if st.button(
-            "Open rental property scanner",
+            "Open website scanner",
             type="primary",
             width="stretch",
             key="landing_open_scanner",
@@ -1612,8 +1747,8 @@ if S_WORKING not in st.session_state:
             go_to("Website scanner")
             st.rerun()
 
-    elif start_mode == "Open a file":
-        st.subheader("Open a rental property file")
+    elif start_mode == "Open file":
+        st.subheader("Open a rental property data file")
         landing_upload = st.file_uploader(
             "Choose a CSV or Excel file",
             type=["csv", "xlsx"],
@@ -1625,7 +1760,7 @@ if S_WORKING not in st.session_state:
             if landing_upload.name.lower().endswith(".xlsx"):
                 landing_names = excel_sheet_names(landing_upload)
                 landing_sheet = st.selectbox(
-                    "Worksheet containing rental property records",
+                    "Worksheet containing records",
                     landing_names,
                     index=preferred_sheet(landing_names),
                     key="db_landing_sheet",
@@ -1636,7 +1771,7 @@ if S_WORKING not in st.session_state:
             except Exception as error:
                 st.error(str(error))
 
-    elif start_mode == "Load a Google Sheet":
+    elif start_mode == "Google Sheet":
         st.subheader("Load a viewable Google Sheet")
         with st.form("landing_google_form"):
             landing_url = st.text_input(
@@ -1660,12 +1795,12 @@ if S_WORKING not in st.session_state:
                 st.error(str(error))
 
     else:
-        st.subheader("Start with an empty rental property workspace")
+        st.subheader("Start with an empty workspace")
         st.write(
-            "Add rental property records by hand and use the same review, quality, and export tools available for imported records."
+            "Add records by hand and use the same review, quality, and export tools available for imported records."
         )
         if st.button(
-            "Create rental property workspace",
+            "Create blank workspace",
             type="primary",
             width="stretch",
             key="landing_blank_workspace",
@@ -1674,13 +1809,13 @@ if S_WORKING not in st.session_state:
             go_to("Review records")
             st.rerun()
 
-    with st.expander("How the rental property workflow works", expanded=True):
+    with st.expander("How Datablix works", expanded=True):
         flow_columns = st.columns(4)
         flow_items = [
-            ("1. Collect", "Import, scan, or add rental property candidates."),
-            ("2. Review", "Confirm listing fields and record human decisions."),
-            ("3. Verify", "Resolve quality flags, source questions, and research gaps."),
-            ("4. Download", "Save a complete workbook or a focused rental property file."),
+            ("Collect", "Import, scan, or add listing candidates."),
+            ("Review", "Confirm fields and record human decisions."),
+            ("Verify", "Resolve quality flags, source questions, and research gaps."),
+            ("Download", "Save a complete workbook or a focused file."),
         ]
         for column, (heading, copy) in zip(flow_columns, flow_items):
             with column:
@@ -1707,11 +1842,11 @@ sections = [
     "Downloads",
 ]
 NAV_LABELS = {
-    "Overview": "Workspace overview",
-    "Website scanner": "Website scanner",
-    "Review records": "Review and edit records",
-    "Progress & quality": "Progress and data quality",
-    "Downloads": "Download your work",
+    "Overview": "Overview",
+    "Website scanner": "Scan website",
+    "Review records": "Review records",
+    "Progress & quality": "Quality & progress",
+    "Downloads": "Downloads",
 }
 legacy_sections = {
     "Review & edit": "Review records",
@@ -1757,21 +1892,18 @@ for nav_column, section_key in zip(nav_columns, sections):
             go_to(section_key)
             st.rerun()
 
-st.markdown(
-    '<div class="db-step-line">Collect → Review → Verify → Download</div>',
-    unsafe_allow_html=True,
-)
 section = st.session_state["db_section"]
+render_process_bar(section)
 
 if not has_records and section in ["Progress & quality", "Downloads"]:
     st.info(
-        "This workspace has no rental property records yet. Scan a website or add the first listing to begin."
+        "This workspace has no records yet. Scan a website or add the first listing to begin."
     )
     action_a, action_b = st.columns(2)
-    if action_a.button("Open rental property scanner", type="primary", width="stretch"):
+    if action_a.button("Open website scanner", type="primary", width="stretch"):
         go_to("Website scanner")
         st.rerun()
-    if action_b.button("Add a rental property by hand", width="stretch"):
+    if action_b.button("Add record manually", width="stretch"):
         go_to("Review records")
         st.rerun()
     st.stop()
@@ -1788,27 +1920,28 @@ if section == "Overview":
     )
 
     next_title, next_copy, next_section, next_button = recommended_next_action(qa)
-    next_left, next_right = st.columns([2.2, 1])
-    with next_left:
-        st.subheader(next_title)
-        st.write(next_copy)
-    with next_right:
-        if st.button(
-            next_button,
-            type="primary",
-            width="stretch",
-            key="db_overview_next",
-        ):
-            go_to(next_section)
-            st.rerun()
+    with st.container(border=True):
+        next_left, next_right = st.columns([2.2, 1], vertical_alignment="center")
+        with next_left:
+            st.subheader(next_title)
+            st.write(next_copy)
+        with next_right:
+            if st.button(
+                next_button,
+                type="primary",
+                width="stretch",
+                key="db_overview_next",
+            ):
+                go_to(next_section)
+                st.rerun()
 
     if not has_records:
         st.info(
-            "This workspace is empty. Scan a rental property website or add a listing by hand to begin."
+            "This workspace is empty. Scan a public website or add a listing manually to begin."
         )
         quick_scan, quick_manual = st.columns(2)
         if quick_scan.button(
-            "Scan a rental property website",
+            "Scan website",
             type="primary",
             width="stretch",
             key="overview_scan_empty",
@@ -1816,7 +1949,7 @@ if section == "Overview":
             go_to("Website scanner")
             st.rerun()
         if quick_manual.button(
-            "Add a rental property by hand",
+            "Add record manually",
             width="stretch",
             key="overview_manual_empty",
         ):
@@ -1824,7 +1957,7 @@ if section == "Overview":
             st.rerun()
     else:
         metric_columns = st.columns(4)
-        metric_columns[0].metric("Rental property records", f"{len(qa):,}")
+        metric_columns[0].metric("Records", f"{len(qa):,}")
         metric_columns[1].metric("Listings ready to use", f"{int(ready_mask(qa).sum()):,}")
         metric_columns[2].metric(
             "Need attention",
@@ -1838,7 +1971,7 @@ if section == "Overview":
         completed = int(qa["Research Status"].eq("Completed").sum())
         st.progress(
             completed / len(qa),
-            text=f"Rental property research complete: {completed:,} of {len(qa):,} records",
+            text=f"Research complete: {completed:,} of {len(qa):,} records",
         )
 
         quick_1, quick_2, quick_3 = st.columns(3)
@@ -1852,13 +1985,13 @@ if section == "Overview":
             go_to("Downloads")
             st.rerun()
 
-        st.subheader("Rental property listing preview")
+        st.subheader("Listing preview")
         st.caption(
-            "Each rental property is shown in a clear field-and-value listing. The nine required listing fields appear first, followed by any additional verified findings."
+            "Each record follows the required field-and-value layout. Required listing fields appear first, followed by confirmed additional findings."
         )
         render_listing_preview(qa, limit=5)
 
-        with st.expander("Rental property workspace details and column matching"):
+        with st.expander("Workspace details and column matching"):
             detail_columns = st.columns(3)
             detail_columns[0].metric("Source type", workspace_source)
             detail_columns[1].metric("Original columns", f"{len(working.columns):,}")
@@ -1913,7 +2046,7 @@ elif section == "Website scanner":
         st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
         added_count = len(merged) - scanner_start_count
         st.session_state[S_FLASH] = (
-            f"Added {added_count} approved rental property record(s) from the website scan. Review the details and evidence before marking them verified."
+            f"Added {added_count} approved record(s) from the website scan. Review the details and evidence before marking them verified."
         )
         go_to("Review records")
         st.rerun()
@@ -1926,7 +2059,11 @@ elif section == "Review records":
     render_page_heading(
         "REVIEW",
         "Review and edit records",
-        "Correct rental property listing information, complete research gaps, and record clear verification decisions.",
+        "Correct listing information, complete research gaps, and record clear verification decisions.",
+    )
+    render_guidance(
+        "Blank values stay neutral.",
+        "A blank means the information has not been confirmed; it does not automatically mean the feature or detail is unavailable.",
     )
 
     filtered = qa.copy() if has_records else pd.DataFrame()
@@ -2008,18 +2145,18 @@ elif section == "Review records":
             mask &= display_values(qa["Record Readiness"]).isin(readiness_filter)
 
         filtered = qa.loc[mask].copy()
-        st.caption(f"Showing {len(filtered):,} of {len(qa):,} rental property records.")
+        st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
 
-        review_tabs = st.tabs(["Review queue", "Edit records", "AI note helper"])
+        review_tabs = st.tabs(["Review queue", "Edit fields", "Summarize notes"])
 
         with review_tabs[0]:
             if filtered.empty:
                 st.info(
-                    "No rental property records match this search and focus. Clear the search box or switch the focus to All records."
+                    "No records match this search and focus. Clear the search box or switch the focus to All records."
                 )
             else:
                 st.caption(
-                    "Review the quality issue, research gap, source status, and readiness columns before changing a rental property record."
+                    "Review the quality issue, research gap, source status, and readiness columns before changing a record."
                 )
                 inspect_columns = [
                     "Record ID", "Working Record Label", "Management/Owner",
@@ -2043,7 +2180,7 @@ elif section == "Review records":
         with review_tabs[1]:
             if filtered.empty:
                 st.info(
-                    "No rental property records match this search and focus. Widen the filters to continue editing."
+                    "No records match this search and focus. Widen the filters to continue editing."
                 )
             else:
                 edit_presets = {
@@ -2064,7 +2201,7 @@ elif section == "Review records":
                 preset = st.selectbox(
                     "Fields to review",
                     [*edit_presets.keys(), "Custom fields"],
-                    help="Choose a focused field group or select Custom fields to review a different combination of rental property information.",
+                    help="Choose a focused field group or select Custom fields to review a different combination of listing information.",
                     key="db_edit_preset",
                 )
                 if preset == "Custom fields":
@@ -2124,14 +2261,14 @@ elif section == "Review records":
                 save_col, save_note = st.columns([1, 2])
                 with save_col:
                     save_changes = st.button(
-                        "Save rental property changes",
+                        "Save changes",
                         type="primary",
                         width="stretch",
                         key="db_save_edits",
                     )
                 with save_note:
                     st.caption(
-                        "Saving updates the rental property working copy and refreshes the quality checks immediately."
+                        "Saving updates the working copy and refreshes quality checks immediately."
                     )
                 if save_changes:
                     save_edits(edited, [c for c in edit_fields if c in edited.columns])
@@ -2146,7 +2283,7 @@ elif section == "Review records":
                     "To switch it on, add `AI_ENABLED = true` and `OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
                 )
             elif filtered.empty:
-                st.info("No rental property records match this search and focus. Widen the filters to choose a record.")
+                st.info("No records match this search and focus. Widen the filters to choose a record.")
             else:
                 st.caption(
                     "Turn detailed rental property research notes into a concise review summary. Nothing is saved until you approve it."
@@ -2191,7 +2328,7 @@ elif section == "Review records":
                     "Notes to summarize",
                     key=notes_key,
                     height=180,
-                    placeholder="Record what was confirmed, which rental property source was checked, and what still needs verification.",
+                    placeholder="Record what was confirmed, which source was checked, and what still needs verification.",
                 )
                 generate_summary = st.button(
                     "Prepare summary",
@@ -2229,13 +2366,13 @@ elif section == "Review records":
                     st.rerun()
 
     st.divider()
-    with st.expander("Add a rental property by hand", expanded=not has_records):
+    with st.expander("Add record manually", expanded=not has_records):
         st.caption(
-            "Enter only confirmed rental property information. Leave unavailable details blank and record unresolved items in Missing Information."
+            "Enter confirmed information only. Leave unconfirmed values blank and record unresolved details in Missing Information."
         )
         suggested = generate_id(st.session_state[S_WORKING])
         with st.form("add_record", clear_on_submit=True):
-            st.markdown("**Rental property and location**")
+            st.markdown("**Listing and location**")
             p1, p2, p3 = st.columns(3)
             record_id = p1.text_input(
                 "Record ID",
@@ -2260,7 +2397,7 @@ elif section == "Review records":
             province = p3.text_input("Province", placeholder="Example: Ontario or ON")
             pc = p3.text_input("Postal Code", placeholder="Example: K1A 1A1")
 
-            st.markdown("**Contact and source evidence**")
+            st.markdown("**Contact and source**")
             c1, c2, c3 = st.columns(3)
             phone = c1.text_input("Phone Number", placeholder="Example: 613-555-0199")
             email = c1.text_input("Email Contact", placeholder="Example: leasing@example.ca")
@@ -2281,7 +2418,7 @@ elif section == "Review records":
                 disabled=no_date,
             )
 
-            st.markdown("**Review status**")
+            st.markdown("**Review and verification**")
             w1, w2, w3 = st.columns(3)
             research_status = w1.selectbox(
                 "Research Status",
@@ -2303,7 +2440,7 @@ elif section == "Review records":
                 placeholder="Corrections, conflicts, decisions, or useful context.",
             )
             add = st.form_submit_button(
-                "Add rental property",
+                "Add record",
                 type="primary",
                 width="stretch",
             )
@@ -2353,9 +2490,9 @@ elif section == "Review records":
 # -----------------------------
 elif section == "Progress & quality":
     render_page_heading(
-        "MONITOR",
+        "VERIFY",
         "Progress and data quality",
-        "Track rental property research completion, missing information, possible duplicates, source status, and follow-up needs.",
+        "Track research completion, missing information, possible duplicates, source status, and follow-up needs.",
     )
 
     top_metrics = st.columns(5)
@@ -2369,13 +2506,13 @@ elif section == "Progress & quality":
         "Research progress",
         "Quality issues",
         "Field coverage",
-        "Owner view",
+        "Management / owner",
         "Draft profiles",
     ])
 
     with progress_tabs[0]:
         st.caption(
-            "Review each rental property record's source, research date, workflow status, and next action in one table."
+            "Review each record's source, research date, workflow status, and next action in one table."
         )
         st.dataframe(
             research_log(qa).head(250),
@@ -2387,9 +2524,9 @@ elif section == "Progress & quality":
     with progress_tabs[1]:
         issue_data = issue_summary(qa)
         if issue_data.empty:
-            st.success("No rental property data issues are currently flagged.")
+            st.success("No data-quality issues are currently flagged.")
         else:
-            st.caption("Review critical rental property issues first, then work through the warnings.")
+            st.caption("Review critical issues first, then work through the warnings.")
             st.dataframe(
                 issue_data,
                 width="stretch",
@@ -2402,7 +2539,7 @@ elif section == "Progress & quality":
         needs_attention = qa[
             ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
         ][attention_columns]
-        st.subheader("Rental property records needing attention")
+        st.subheader("Records needing attention")
         st.dataframe(
             needs_attention,
             width="stretch",
@@ -2422,7 +2559,7 @@ elif section == "Progress & quality":
 
     with progress_tabs[3]:
         st.caption(
-            "Rental property records are grouped by the management or ownership name on file, making it easier to research one organization at a time."
+            "Records are grouped by the management or ownership name on file, making it easier to research one organization at a time."
         )
         st.dataframe(
             owner_summary(qa),
@@ -2448,12 +2585,12 @@ elif section == "Progress & quality":
 # -----------------------------
 elif section == "Downloads":
     render_page_heading(
-        "DOWNLOAD",
+        "EXPORT",
         "Download your work",
-        "Export the complete rental property workspace, formatted listings, research records, or focused review tables.",
+        "Export the complete workspace, formatted listings, research records, or focused review tables.",
     )
     st.warning(
-        "This rental property workspace lives only in your browser session. Download a copy before refreshing the page or closing the app."
+        "This workspace lives only in the current browser session. Download a copy before refreshing the page or closing the app."
     )
 
     listings = listing_export(qa)
@@ -2481,18 +2618,18 @@ elif section == "Downloads":
     filename = safe_filename(st.session_state.get(S_NAME, "datablix"))
 
     export_metrics = st.columns(4)
-    export_metrics[0].metric("All rental property records", f"{len(qa):,}")
+    export_metrics[0].metric("All records", f"{len(qa):,}")
     export_metrics[1].metric("Listings ready to use", f"{len(ready):,}")
     export_metrics[2].metric("Follow-up records", f"{len(follow_up):,}")
     export_metrics[3].metric("Quality review", f"{len(quality):,}")
 
-    st.subheader("Complete rental property workbook")
+    st.subheader("Complete workbook")
     st.write(
         "The complete workbook keeps rental property listings, source evidence, follow-ups, draft profiles, field coverage, and working data in separate sheets."
     )
     download_main, download_followup = st.columns([1.4, 1])
     download_main.download_button(
-        "Download complete rental property workbook",
+        "Download complete workbook",
         excel_bytes(sheets),
         f"{filename}_datablix_workbook.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2508,7 +2645,7 @@ elif section == "Downloads":
         width="stretch",
     )
 
-    with st.expander("Download a focused rental property view"):
+    with st.expander("Download a focused view"):
         st.caption(
             "Use the Excel version for the formatted rental property listing layout. The flat CSV keeps one rental property per row for sorting, filtering, or re-importing."
         )
