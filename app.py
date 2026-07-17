@@ -1001,22 +1001,22 @@ st.html("""
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&display=swap');
 
 :root{
-    --db-accent:#146C5A;            /* verified green: the colour of a signed-off record */
-    --db-accent-strong:#0E5346;
-    --db-accent-soft:rgba(20,108,90,.09);
-    --db-accent-edge:rgba(20,108,90,.45);
-    --db-ink:#1E2A27;
-    --db-border:rgba(30,42,39,.14);
-    --db-soft:rgba(30,42,39,.035);
-    --db-soft-strong:rgba(30,42,39,.07);
+    --db-accent:#1287CE;            /* sky blue, matching the Datablix logo; deep enough for white button text */
+    --db-accent-strong:#0E6BA4;
+    --db-accent-soft:rgba(18,135,206,.09);
+    --db-accent-edge:rgba(18,135,206,.45);
+    --db-ink:#1C272E;
+    --db-border:rgba(28,39,46,.14);
+    --db-soft:rgba(28,39,46,.035);
+    --db-soft-strong:rgba(28,39,46,.07);
     --db-display:'Sora','Source Sans Pro',sans-serif;
 }
 @media(prefers-color-scheme:dark){
     :root{
-        --db-accent:#3FBFA0;
-        --db-accent-strong:#5AD4B6;
-        --db-accent-soft:rgba(63,191,160,.12);
-        --db-accent-edge:rgba(63,191,160,.5);
+        --db-accent:#4FB6F0;
+        --db-accent-strong:#79C8F5;
+        --db-accent-soft:rgba(79,182,240,.12);
+        --db-accent-edge:rgba(79,182,240,.5);
         --db-border:rgba(255,255,255,.14);
         --db-soft:rgba(255,255,255,.04);
         --db-soft-strong:rgba(255,255,255,.075);
@@ -1168,6 +1168,13 @@ button[data-testid="stBaseButton-primaryFormSubmit"]{
     background:var(--db-accent) !important;
     border-color:var(--db-accent) !important;
     color:#fff !important;
+}
+@media(prefers-color-scheme:dark){
+    button[data-testid="stBaseButton-primary"],
+    button[kind="primary"],
+    button[data-testid="stBaseButton-primaryFormSubmit"]{
+        color:#0B1D2A !important;
+    }
 }
 .stButton>button:focus-visible,
 .stDownloadButton>button:focus-visible{
