@@ -252,7 +252,7 @@ Public information may still be outdated, incomplete, duplicated, inconsistent, 
 
 ---
 
-# Datablix Known Issues and Fixes
+#3 Datablix Known Issues and Fixes
 
 This log documents unexpected application behaviours observed during testing, how they affected the workflow, and the changes made to address them.
 
@@ -270,11 +270,6 @@ This log documents unexpected application behaviours observed during testing, ho
 | July 13–14, 2026 | Logo was hidden or clipped                  | The Datablix logo was not fully visible in the desktop layout.                                                                 | The logo container, spacing, overflow, and responsive sizing rules were adjusted.                                                                               |
 | July 13, 2026    | Initial logo correction did not work        | The logo remained incorrectly displayed after the first attempted fix.                                                         | A second implementation replaced the original sizing and positioning rules.                                                                                     |
 
-## Status labels
 
-* **Fixed:** The correction has been implemented and confirmed.
-* **Retesting:** A correction has been implemented but still requires live testing.
-* **Open:** The behaviour is still occurring or its cause has not been resolved.
-* **Monitoring:** The issue has not reappeared but remains under observation.
 
 
