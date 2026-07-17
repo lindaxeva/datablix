@@ -6,6 +6,8 @@ Datablix was developed to support the **Ontario Senior Living Directory Developm
 
 It combines data intake, column matching, source tracking, data-quality checks, research monitoring, human verification, optional AI assistance, and task-specific exports in one workflow.
 
+Users can upload CSV or Excel files, connect a viewable Google Sheet, or begin with a blank workspace. Datablix creates an editable working copy without changing the original source.
+
 ## Live Demos
 
 Each demo represents a stage in the development of Datablix.
