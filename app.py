@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 import pandas as pd
 import streamlit as st
 from openai import OpenAI
+from datablix_scanner_panel import render_website_scanner_panel
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
