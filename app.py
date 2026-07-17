@@ -1029,6 +1029,7 @@ if S_WORKING not in st.session_state:
         - Opens CSV, Excel, or Google Sheets as an editable working copy.
         - Organizes key fields while preserving original columns.
         - Flags missing information, possible duplicates, and data-quality issues.
+        - Scans permitted public websites and places extracted findings in a review queue.
         - Tracks sources, verification, notes, and record status.
         - Creates review-ready listings and downloadable reports.
         - [Disabled by Default] Includes optional AI tools to summarize notes, suggest next research actions, and requires human review.
@@ -1042,7 +1043,7 @@ working = st.session_state[S_WORKING].copy()
 has_records = not working.empty
 qa = qa_checks(working) if has_records else None
 
-sections = ["Overview", "Research", "Data quality", "Review & edit", "Export"]
+sections = ["Overview", "Website scanner", "Research", "Data quality", "Review & edit", "Export"]
 section = st.segmented_control("Section", sections, label_visibility="collapsed", key="db_section") or "Overview"
 if not has_records and section in ["Research", "Data quality", "Export"]:
     st.info("There are no records here yet. Open **Review & edit** to add the first one."); st.stop()
@@ -1065,6 +1066,48 @@ if section == "Overview":
         with st.expander("How your columns were matched"):
             st.caption("Use this table when information appears under a different heading than expected. Original columns remain available in the working data.")
             st.dataframe(st.session_state[S_MAPPING], width="stretch", hide_index=True)
+
+elif section == "Website scanner":
+    # The scanner module uses its own generic working-data key. Keep it
+    # synchronized with Datablix's existing workspace key without changing
+    # the rest of the application.
+    scanner_start_count = len(st.session_state[S_WORKING])
+    st.session_state["working_df"] = st.session_state[S_WORKING].copy()
+
+    render_website_scanner_panel()
+
+    scanner_working = st.session_state.get("working_df")
+    if isinstance(scanner_working, pd.DataFrame) and len(scanner_working) > scanner_start_count:
+        merged = scanner_working.copy()
+
+        # Make scanner-added rows compatible with the existing Datablix
+        # workflow, quality checks, editing tools, and exports.
+        for column in INTERNAL_COLUMNS:
+            if column not in merged.columns:
+                merged[column] = pd.NA
+
+        new_row_mask = merged.index >= scanner_start_count
+        today_text = date.today().isoformat()
+
+        merged.loc[new_row_mask, "Research Status"] = "Ready for Review"
+        merged.loc[new_row_mask, "Source Status"] = "Active"
+        merged.loc[new_row_mask, "Verification Status"] = "Needs Review"
+        merged.loc[new_row_mask, "Record Decision"] = "Undecided"
+        merged.loc[new_row_mask, "Date Researched"] = today_text
+        merged.loc[new_row_mask, "Missing Information"] = (
+            "Website-scanned candidate. Confirm all extracted details before final use."
+        )
+
+        merged = ensure_ids(merged)
+        merged = normalize_workflow(prepare_data(merged))
+        st.session_state[S_WORKING] = merged
+        st.session_state["working_df"] = merged.copy()
+        st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+        added_count = len(merged) - scanner_start_count
+        st.session_state[S_FLASH] = (
+            f"{added_count} approved website-scanned record(s) were added to the workspace."
+        )
+        st.rerun()
 
 elif section == "Research":
     st.header("Research progress")
