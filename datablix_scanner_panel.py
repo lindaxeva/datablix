@@ -106,22 +106,24 @@ def _merge_into_working_data(approved: pd.DataFrame, working_data_key: str) -> t
 def render_website_scanner_panel(
     working_data_key: str = WORKING_DATA_KEY,
 ) -> None:
+    st.markdown('<div class="db-eyebrow">COLLECT</div>', unsafe_allow_html=True)
     st.header("Scan a property website")
     st.caption(
-        "Paste a public website, scan its permitted pages, review the extracted "
-        "records, and add only the findings you approve."
+        "Paste a public website, scan its permitted pages, and review what the "
+        "scanner finds. Only the candidates you approve join your workspace."
     )
 
-    st.info(
-        "**Workflow:** 1) Choose the scan coverage  →  2) Start the scan  →  "
-        "3) Review the candidates  →  4) Add approved records to your workspace."
+    st.markdown(
+        '<div class="db-step-line">Choose coverage → Start the scan → '
+        'Review candidates → Add approved records</div>',
+        unsafe_allow_html=True,
     )
 
     st.markdown("#### 1. Choose a website")
     website_url = st.text_input(
         "Website address",
         placeholder="https://examplepropertycompany.ca",
-        help="Use the main public website for the property owner or management company.",
+        help="Use the main public website of the property owner or management company.",
         key="full_scan_website_url",
     )
 
@@ -137,8 +139,8 @@ def render_website_scanner_panel(
         index=1,
         horizontal=True,
         help=(
-            "Quick checks a small site section. Standard suits most company websites. "
-            "Full site explores more permitted pages."
+            "Quick checks a small section of the site. Standard suits most company "
+            "websites. Full site explores more of the permitted pages."
         ),
         key="full_scan_scope",
     )
@@ -154,7 +156,7 @@ def render_website_scanner_panel(
                 max_value=2_000,
                 value=100,
                 step=25,
-                help="The scan stops at this limit even when the site contains more pages.",
+                help="The scan stops at this limit even when the site has more pages.",
                 key="full_scan_max_pages_custom",
             )
             max_depth = custom_col2.number_input(
@@ -163,7 +165,7 @@ def render_website_scanner_panel(
                 max_value=20,
                 value=5,
                 step=1,
-                help="Controls how many link levels the scanner follows from the starting page.",
+                help="How many link levels the scanner follows from the starting page.",
                 key="full_scan_max_depth_custom",
             )
         else:
@@ -184,8 +186,8 @@ def render_website_scanner_panel(
                     "Always render JavaScript",
                 ],
                 help=(
-                    "Automatic reads ordinary HTML first and uses a browser only when "
-                    "the page appears to require JavaScript."
+                    "Automatic reads ordinary HTML first and opens a browser only "
+                    "when a page appears to require JavaScript."
                 ),
                 key="full_scan_render_mode",
             )
@@ -195,7 +197,7 @@ def render_website_scanner_panel(
                 max_value=30.0,
                 value=0.75,
                 step=0.25,
-                help="A slower rate reduces load on the website.",
+                help="A longer delay is gentler on the website being scanned.",
                 key="full_scan_delay",
             )
         with advanced_col2:
@@ -207,7 +209,7 @@ def render_website_scanner_panel(
             include_subdomains = st.checkbox(
                 "Include subdomains",
                 value=scope == "Full site",
-                help="Use this when listings are hosted on a related subdomain.",
+                help="Turn this on when listings live on a related subdomain.",
                 key="full_scan_subdomains",
             )
             follow_queries = st.checkbox(
@@ -220,6 +222,7 @@ def render_website_scanner_panel(
                 "Respect robots.txt",
                 value=True,
                 disabled=True,
+                help="Always on. The scanner never visits pages a site asks crawlers to skip.",
                 key="full_scan_robots",
             )
 
@@ -237,7 +240,10 @@ def render_website_scanner_panel(
     )
 
     if submitted and not acknowledgement:
-        st.error("Confirm that the scan is limited to permitted public pages.")
+        st.error(
+            "Tick the confirmation above to start the scan. It confirms the scan "
+            "is limited to permitted public pages."
+        )
         return
 
     if submitted:
@@ -282,17 +288,17 @@ def render_website_scanner_panel(
                 progress_callback=update_progress,
             )
         except WebsiteScanError as exc:
-            status.update(label="Scan could not start", state="error", expanded=True)
+            status.update(label="The scan could not start", state="error", expanded=True)
             st.error(str(exc))
         except Exception as exc:
-            status.update(label="Scan stopped", state="error", expanded=True)
+            status.update(label="The scan stopped unexpectedly", state="error", expanded=True)
             st.exception(exc)
         else:
             progress.progress(1.0)
             status.update(
                 label=(
-                    f"Scan complete: {len(report.pages)} pages and "
-                    f"{len(report.records)} unique candidate records"
+                    f"Scan complete: {len(report.pages)} pages read, "
+                    f"{len(report.records)} unique candidate records found"
                 ),
                 state="complete",
                 expanded=False,
@@ -304,7 +310,8 @@ def render_website_scanner_panel(
     records_df = st.session_state.get("website_scan_records")
     if report is None or not isinstance(records_df, pd.DataFrame):
         st.caption(
-            "The scanner will show a review table here after the first completed scan."
+            "After your first scan finishes, the candidates will appear here in a "
+            "review table."
         )
         return
 
@@ -322,7 +329,7 @@ def render_website_scanner_panel(
     )
 
     st.divider()
-    st.markdown("#### 2. Review the scan")
+    st.markdown("#### 2. Review the candidates")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Pages scanned", successful_pages)
     m2.metric("Candidate records", len(records_df))
@@ -341,8 +348,8 @@ def render_website_scanner_panel(
             st.rerun()
     with help_col:
         st.caption(
-            "Check each candidate against its source page. Confidence supports review; "
-            "it does not replace verification."
+            "Open each source page before ticking Approve. The confidence score "
+            "helps you prioritize review; it does not replace verification."
         )
 
     review_columns = [
@@ -418,8 +425,8 @@ def render_website_scanner_panel(
 
     st.markdown("#### 3. Add approved records")
     st.caption(
-        f"Selected for addition: **{len(approved):,}** of "
-        f"**{len(updated_records):,}** candidate records."
+        f"Approved so far: **{len(approved):,}** of "
+        f"**{len(updated_records):,}** candidates."
     )
     if st.button(
         f"Add {len(approved):,} approved record(s) to the workspace",
@@ -433,10 +440,15 @@ def render_website_scanner_panel(
             working_data_key=working_data_key,
         )
         st.success(
-            f"Added {added} record(s). Skipped {duplicates} possible duplicate(s)."
+            f"Added {added} record(s) to the workspace. Skipped {duplicates} "
+            "that matched an existing name and address."
         )
 
-    with st.expander("Evidence, downloads, and technical log"):
+    with st.expander("Evidence, downloads, and scan log"):
+        st.caption(
+            "The evidence table shows where each candidate came from and how it "
+            "was extracted. Keep it with your research trail."
+        )
         evidence_columns = [
             "building_name",
             "source_url",
@@ -459,7 +471,7 @@ def render_website_scanner_panel(
         excel_data = _excel_bytes(updated_records, pages_df, report)
         d1, d2, d3 = st.columns(3)
         d1.download_button(
-            "Approved CSV",
+            "Download approved CSV",
             data=csv_data,
             file_name="approved_website_records.csv",
             mime="text/csv",
@@ -467,14 +479,14 @@ def render_website_scanner_panel(
             width="stretch",
         )
         d2.download_button(
-            "Full scan workbook",
+            "Download scan workbook",
             data=excel_data,
             file_name="website_scan_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
         )
         d3.download_button(
-            "Raw scan JSON",
+            "Download raw scan JSON",
             data=json.dumps(report.as_dict(), indent=2, ensure_ascii=False),
             file_name="website_scan_report.json",
             mime="application/json",
@@ -484,14 +496,14 @@ def render_website_scanner_panel(
         st.write("**Pages scanned**")
         st.dataframe(pages_df, width="stretch", hide_index=True)
         if report.blocked_urls:
-            st.write("**Blocked by robots.txt or scan policy**")
+            st.write("**Skipped: blocked by robots.txt or scan policy**")
             st.dataframe(
                 pd.DataFrame({"URL": report.blocked_urls}),
                 width="stretch",
                 hide_index=True,
             )
         if report.errors:
-            st.write("**Errors**")
+            st.write("**Errors during the scan**")
             st.dataframe(
                 pd.DataFrame({"Error": report.errors}),
                 width="stretch",
