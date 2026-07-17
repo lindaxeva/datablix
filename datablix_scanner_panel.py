@@ -244,24 +244,6 @@ def render_website_scanner_panel(
         key="full_scan_website_url",
     )
 
-    with st.expander("Add a coverage check (optional)", expanded=False):
-        expected_portfolio_count = st.number_input(
-            "Expected number of properties",
-            min_value=0,
-            max_value=100_000,
-            value=0,
-            step=1,
-            help=(
-                "Enter a count from an official portfolio page, an assignment list, "
-                "or another trusted reference. Leave this at 0 when the total is unknown."
-            ),
-            key="full_scan_expected_portfolio_count",
-        )
-        st.caption(
-            "Datablix compares this reference count with detected candidates. "
-            "It is a coverage signal—not proof that every candidate is a unique property."
-        )
-
     coverage_settings = {
         "Quick check": (25, 3),
         "Recommended": (500, 12),
@@ -431,6 +413,18 @@ def render_website_scanner_panel(
     )
 
     if submitted:
+        st.session_state["website_scan_active"] = True
+        st.session_state["website_scan_last_progress"] = {
+            "pages_processed": 0,
+            "records_found": 0,
+            "blocked_count": 0,
+            "error_count": 0,
+            "current_url": website_url,
+            "max_pages": int(max_pages),
+        }
+        st.session_state.pop("website_scan_report", None)
+        st.session_state.pop("website_scan_records", None)
+
         render_mode = {
             "Automatic": "auto",
             "HTML only": "html",
@@ -454,6 +448,7 @@ def render_website_scanner_panel(
         counters = st.empty()
 
         def update_progress(update: dict) -> None:
+            st.session_state["website_scan_last_progress"] = dict(update)
             processed = update.get("pages_processed", 0)
             maximum = max(update.get("max_pages", 1), 1)
             progress.progress(min(processed / maximum, 1.0))
@@ -472,125 +467,116 @@ def render_website_scanner_panel(
                 progress_callback=update_progress,
             )
         except WebsiteScanError as exc:
+            st.session_state["website_scan_active"] = False
+            st.session_state["website_scan_stop_message"] = str(exc)
             status.update(label="The scan could not start", state="error", expanded=True)
             st.error(str(exc))
         except Exception as exc:
+            st.session_state["website_scan_active"] = False
+            st.session_state["website_scan_stop_message"] = str(exc)
             status.update(label="The scan stopped unexpectedly", state="error", expanded=True)
             st.exception(exc)
         else:
+            st.session_state["website_scan_active"] = False
             progress.progress(1.0)
-            page_limit_reached = len(report.pages) >= int(max_pages)
 
-            if page_limit_reached:
+            completion_reason = getattr(report, "completion_reason", "")
+            page_limit_reached = (
+                completion_reason == "page_limit"
+                or len(report.pages) >= int(max_pages)
+            )
+
+            if completion_reason == "failure_limit":
+                visible_message = (
+                    f"Scan stopped after repeated page failures: "
+                    f"{len(report.pages)} pages processed and "
+                    f"{len(report.records)} unique candidates found."
+                )
                 status.update(
-                    label=(
-                        f"Page limit reached: {len(report.pages)} pages processed, "
-                        f"{len(report.records)} unique listing candidates found"
-                    ),
+                    label=visible_message,
+                    state="error",
+                    expanded=True,
+                )
+                st.error(
+                    visible_message
+                    + " Review the Errors section before trying again."
+                )
+            elif page_limit_reached:
+                visible_message = (
+                    f"Page limit reached: {len(report.pages)} pages processed and "
+                    f"{len(report.records)} unique candidates found."
+                )
+                status.update(
+                    label=visible_message,
                     state="complete",
                     expanded=True,
                 )
                 st.warning(
-                    "The scanner reached the selected page limit. The collected results "
-                    "are available for review, but additional permitted pages may remain."
+                    visible_message
+                    + " Additional permitted pages may remain."
                 )
             else:
+                visible_message = (
+                    f"Coverage complete: {len(report.pages)} eligible pages processed "
+                    f"and {len(report.records)} unique candidates found."
+                )
                 status.update(
-                    label=(
-                        f"Scan complete: {len(report.pages)} pages processed, "
-                        f"{len(report.records)} unique listing candidates found"
-                    ),
+                    label=visible_message,
                     state="complete",
-                    expanded=False,
+                    expanded=True,
+                )
+                st.success(
+                    visible_message
+                    + " The scan stopped because no more eligible pages were available."
                 )
 
+            st.session_state["website_scan_stop_message"] = visible_message
             st.session_state["website_scan_report"] = report
             st.session_state["website_scan_records"] = _records_dataframe(report)
             st.session_state["website_scan_scope"] = scope
             st.session_state["website_scan_page_limit_reached"] = page_limit_reached
-            st.session_state["website_scan_expected_count"] = int(
-                expected_portfolio_count
-            )
 
     report = st.session_state.get("website_scan_report")
     records_df = st.session_state.get("website_scan_records")
     if report is None or not isinstance(records_df, pd.DataFrame):
-        st.caption(
-            "Scan results will appear here for review. Nothing is added to the workspace automatically."
-        )
+        last_progress = st.session_state.get("website_scan_last_progress", {})
+        scan_active = bool(st.session_state.get("website_scan_active", False))
+        processed = int(last_progress.get("pages_processed", 0) or 0)
+
+        if scan_active and processed > 0:
+            st.warning(
+                f"The previous scan appears to have been interrupted after "
+                f"{processed:,} pages. No completed report was returned. "
+                "Try the Recommended scan again with Automatic rendering, or use "
+                "HTML only when the website does not require JavaScript."
+            )
+        else:
+            st.caption(
+                "Scan results will appear here for review. Nothing is added to the "
+                "workspace automatically."
+            )
         return
 
     last_scan_scope = st.session_state.get("website_scan_scope", "")
     last_scan_reached_limit = bool(
         st.session_state.get("website_scan_page_limit_reached", False)
     )
-    expected_count = int(
-        st.session_state.get("website_scan_expected_count", 0) or 0
-    )
-    detected_count = len(records_df)
-    possible_gap = max(expected_count - detected_count, 0)
 
-    if expected_count > 0:
-        comparison_a, comparison_b, comparison_c = st.columns(3)
-        comparison_a.metric("Expected properties", f"{expected_count:,}")
-        comparison_b.metric("Detected candidates", f"{detected_count:,}")
-        comparison_c.metric("Possible coverage gap", f"{possible_gap:,}")
-        st.caption(
-            "Candidate counts may include duplicates or pages requiring review. "
-            "Use this comparison as a coverage check, not as final verification."
-        )
-
-    recommended_limit_signal = (
-        last_scan_scope == "Recommended" and last_scan_reached_limit
-    )
-    recommended_gap_signal = (
-        last_scan_scope == "Recommended"
-        and expected_count > 0
-        and detected_count < expected_count
-    )
-
-    if recommended_limit_signal or recommended_gap_signal:
-        reasons = []
-        if recommended_limit_signal:
-            reasons.append("the recommended scan reached its 500-page limit")
-        if recommended_gap_signal:
-            reasons.append(
-                f"{possible_gap:,} fewer candidate(s) were detected than expected"
-            )
-
+    if last_scan_scope == "Recommended" and last_scan_reached_limit:
         st.warning(
-            "An extended scan may be useful because "
-            + " and ".join(reasons)
-            + ". Review the current candidates first, then run the extended scan "
-            "when the difference is not explained by duplicates or an outdated reference count."
+            "The recommended scan reached its 500-page limit. Some permitted pages "
+            "may remain, so an extended scan is the appropriate next step."
         )
         st.button(
             "Select extended scan",
             type="primary",
             on_click=_select_extended_scan,
-            key="select_extended_scan_after_coverage_check",
-        )
-    elif last_scan_scope == "Recommended" and expected_count > 0:
-        st.success(
-            "The recommended scan detected at least the expected number of candidates "
-            "without reaching its page limit. Review for duplicates and accuracy before "
-            "treating the portfolio as complete."
+            key="select_extended_scan_after_limit",
         )
     elif last_scan_scope == "Recommended":
         st.success(
             "Recommended coverage completed without reaching its page limit. "
-            "An extended scan is not needed unless another trusted source shows "
-            "that listings are missing."
-        )
-    elif (
-        last_scan_scope == "Extended scan"
-        and expected_count > 0
-        and detected_count < expected_count
-    ):
-        st.warning(
-            f"The extended scan still detected {possible_gap:,} fewer candidate(s) "
-            "than expected. Review blocked pages, errors, portfolio sections, and the "
-            "reference count before continuing manually."
+            "An extended scan is not needed unless a known listing is missing."
         )
 
     pages_df = _pages_dataframe(report)
@@ -638,9 +624,11 @@ def render_website_scanner_panel(
             keys_to_clear.extend([
                 "website_scan_report",
                 "website_scan_records",
+                "website_scan_active",
+                "website_scan_last_progress",
+                "website_scan_stop_message",
                 "website_scan_scope",
                 "website_scan_page_limit_reached",
-                "website_scan_expected_count",
                 "full_scan_review_focus",
                 "confirm_clear_full_scan",
             ])
