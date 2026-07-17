@@ -747,27 +747,60 @@ class FullSiteScanner:
             raise WebsiteScanError("Enter a website address.")
         if not value.startswith(("http://", "https://")):
             value = f"https://{value}"
+
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise WebsiteScanError("Enter a valid HTTP or HTTPS website address.")
         if parsed.username or parsed.password:
             raise WebsiteScanError("Website addresses containing credentials are not supported.")
-        return FullSiteScanner._canonicalize_url(value)
+
+        normalized = FullSiteScanner._canonicalize_url(value)
+        if not normalized:
+            raise WebsiteScanError("Enter a valid HTTP or HTTPS website address.")
+        return normalized
 
     @staticmethod
     def _canonicalize_url(url: str, keep_query: bool = False) -> str:
-        url, _fragment = urldefrag(url.strip())
-        parsed = urlparse(url)
-        scheme = parsed.scheme.lower()
-        hostname = (parsed.hostname or "").lower()
-        if not hostname:
-            return url
+        """Return a safe, normalized HTTP(S) URL or an empty string.
 
-        port = parsed.port
-        if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
-            netloc = f"{hostname}:{port}"
+        Public websites sometimes contain malformed links such as a phone number
+        placed where a URL port would normally appear. ``urllib.parse`` raises a
+        ``ValueError`` when ``parsed.port`` is read from those links, so scanner
+        discovery must treat them as unusable links rather than stop the scan.
+        """
+        clean_url = str(url or "").strip()
+        if not clean_url:
+            return ""
+
+        clean_url, _fragment = urldefrag(clean_url)
+
+        try:
+            parsed = urlparse(clean_url)
+            scheme = parsed.scheme.lower()
+            if scheme not in {"http", "https"}:
+                return ""
+
+            hostname = (parsed.hostname or "").lower().rstrip(".")
+            if not hostname:
+                return ""
+
+            # Accessing parsed.port can itself raise ValueError for malformed
+            # links such as https://example.com:1-866-898-9967.
+            try:
+                port = parsed.port
+            except ValueError:
+                return ""
+        except (TypeError, ValueError):
+            return ""
+
+        host_for_netloc = f"[{hostname}]" if ":" in hostname else hostname
+        if port and not (
+            (scheme == "http" and port == 80)
+            or (scheme == "https" and port == 443)
+        ):
+            netloc = f"{host_for_netloc}:{port}"
         else:
-            netloc = hostname
+            netloc = host_for_netloc
 
         path = re.sub(r"/{2,}", "/", parsed.path or "/")
         if path != "/" and path.endswith("/"):
@@ -814,7 +847,16 @@ class FullSiteScanner:
             raise WebsiteScanError("Local network addresses cannot be scanned.")
 
         try:
-            addresses = socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+            port = parsed.port
+        except ValueError as exc:
+            raise WebsiteScanError("The website address contains an invalid port.") from exc
+
+        try:
+            addresses = socket.getaddrinfo(
+                hostname,
+                port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
         except socket.gaierror as exc:
             raise WebsiteScanError("The website hostname could not be resolved.") from exc
 
@@ -852,7 +894,7 @@ class FullSiteScanner:
         if len(queued) >= self.options.maximum_queue_urls:
             return
         normalized = self._canonicalize_url(url)
-        if normalized in queued or not self._is_in_scope(normalized):
+        if not normalized or normalized in queued or not self._is_in_scope(normalized):
             return
         if self._should_skip_url(normalized):
             return
@@ -903,13 +945,44 @@ class FullSiteScanner:
 
     def _extract_internal_links(self, base_url: str, soup: BeautifulSoup) -> list[str]:
         links: set[str] = set()
+        ignored_schemes = {
+            "mailto",
+            "tel",
+            "sms",
+            "fax",
+            "javascript",
+            "data",
+            "blob",
+            "file",
+            "whatsapp",
+        }
+
         for tag in soup.find_all("a", href=True):
             href = self._clean_text(tag.get("href"))
-            if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
+            if not href or href.startswith("#"):
                 continue
-            candidate = self._canonicalize_url(urljoin(base_url, href))
+
+            # Skip every non-web scheme before urljoin() can reinterpret it.
+            try:
+                href_scheme = urlparse(href).scheme.lower()
+            except (TypeError, ValueError):
+                continue
+            if href_scheme in ignored_schemes:
+                continue
+            if href_scheme and href_scheme not in {"http", "https"}:
+                continue
+
+            try:
+                candidate = self._canonicalize_url(urljoin(base_url, href))
+            except (TypeError, ValueError):
+                continue
+
+            # A malformed link is ignored; it must not stop the full scan.
+            if not candidate:
+                continue
             if self._is_in_scope(candidate) and not self._should_skip_url(candidate):
                 links.add(candidate)
+
         return sorted(links, key=lambda value: (self._url_priority(value), value))
 
     def _extract_records(
