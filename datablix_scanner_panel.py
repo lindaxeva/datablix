@@ -217,6 +217,9 @@ def _merge_into_working_data(approved: pd.DataFrame, working_data_key: str) -> t
 def render_website_scanner_panel(
     working_data_key: str = WORKING_DATA_KEY,
 ) -> None:
+    # The app shell already renders the shared Collect → Review → Verify →
+    # Download process bar. Keep only the scanner page heading here so the
+    # workflow controls do not appear twice.
     st.markdown(
         """
         <section class="db-page-head" aria-label="Scan a rental property website">
@@ -224,12 +227,6 @@ def render_website_scanner_panel(
             <h2>Scan a rental property website</h2>
             <p>Search permitted public pages for listing details, contacts, building classifications, apartment counts, and supporting evidence. Only approved candidates move into the workspace.</p>
         </section>
-        <div class="db-process" aria-label="Rental property research workflow">
-            <div class="db-process-item active" aria-current="step"><span class="db-process-dot" aria-hidden="true"></span><span>Collect</span></div>
-            <div class="db-process-item upcoming"><span class="db-process-dot" aria-hidden="true"></span><span>Review</span></div>
-            <div class="db-process-item upcoming"><span class="db-process-dot" aria-hidden="true"></span><span>Verify</span></div>
-            <div class="db-process-item upcoming"><span class="db-process-dot" aria-hidden="true"></span><span>Download</span></div>
-        </div>
         """,
         unsafe_allow_html=True,
     )
