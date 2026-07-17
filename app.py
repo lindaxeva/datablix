@@ -923,8 +923,16 @@ div[data-testid="stExpander"],div[data-testid="stDataFrame"],div[data-testid="st
 render_brand_header()
 
 with st.sidebar:
+    st.markdown("### ➜ Start here")
+    st.caption(
+        "Upload a file, connect a Google Sheet, or begin with a blank workspace."
+    )
+
     st.subheader("Workspace")
-    st.caption("Bring in your records, work through what needs attention, and save a fresh copy before you leave.")
+    st.caption(
+        "Bring in your records, work through what needs attention, "
+        "and save a fresh copy before you leave."
+    )
     current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
     options = ["Upload a file", "Connect a Google Sheet", "Start blank"]
     default = {"Uploaded file": 0, "Google Sheet": 1, "Blank workspace": 2}.get(current, 0)
