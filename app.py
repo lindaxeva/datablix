@@ -221,6 +221,7 @@ S_EDIT_COUNT = "db_edit_count"
 # =========================================================
 
 def render_brand_header():
+    """Render the Datablix identity with a clear purpose statement."""
     svg = Path("datablix_logo.svg")
     png = Path("datablix_logo.png")
     if svg.exists() or png.exists():
@@ -228,17 +229,20 @@ def render_brand_header():
         mime = "image/svg+xml" if path.suffix.lower() == ".svg" else "image/png"
         encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
         st.html(f"""
-        <style>
-        .db-brand{{text-align:center;margin:.1rem auto 1rem}}
-        .db-logo{{width:clamp(260px,44vw,560px);max-width:88vw;max-height:140px;object-fit:contain}}
-        .db-tag{{font-size:1.08rem;font-weight:500;opacity:.82}}
-        </style>
-        <div class="db-brand"><img class="db-logo" src="data:{mime};base64,{encoded}" alt="Datablix logo">
-        <div class="db-tag">Your rental property research data assistant</div></div>
+        <div class="db-brand">
+            <img class="db-logo" src="data:{mime};base64,{encoded}" alt="Datablix logo">
+            <div class="db-tag">Your rental property research data assistant</div>
+            <div class="db-subtag">Scan, organize, review, and export public property information.</div>
+        </div>
         """)
     else:
-        st.title("Datablix")
-        st.write("Your rental property research data assistant.")
+        st.html("""
+        <div class="db-brand">
+            <div class="db-brand-name">Datablix</div>
+            <div class="db-tag">Your rental property research data assistant</div>
+            <div class="db-subtag">Scan, organize, review, and export public property information.</div>
+        </div>
+        """)
 
 
 def norm_header(value):
@@ -910,91 +914,260 @@ def save_edits(edited, columns):
 # Interface
 # =========================================================
 
+
+def go_to(section_name: str) -> None:
+    """Move to another primary area on the next Streamlit rerun."""
+    st.session_state["db_section"] = section_name
+
+
+def render_page_heading(label: str, title: str, description: str) -> None:
+    """Render a consistent page heading without adding visual clutter."""
+    st.markdown(f'<div class="db-eyebrow">{label}</div>', unsafe_allow_html=True)
+    st.header(title)
+    st.caption(description)
+
+
+def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, str, str]:
+    """Return a practical next action based on the current workspace."""
+    if qa_frame is None or qa_frame.empty:
+        return (
+            "Add your first records",
+            "Scan a public website or add a property manually to begin your working directory.",
+            "Website scanner",
+            "Open website scanner",
+        )
+
+    critical_count = int(qa_frame["QA Status"].eq("Critical").sum())
+    review_count = int(qa_frame["Verification Status"].eq("Needs Review").sum())
+    follow_up_count = int(qa_frame["Record Readiness"].isin([
+        "Duplicate Review", "Needs Follow-up", "Fix Critical Data"
+    ]).sum())
+    ready_count = int(ready_mask(qa_frame).sum())
+
+    if critical_count:
+        return (
+            "Fix critical records first",
+            f"{critical_count:,} record(s) are missing core identity details or have a critical conflict.",
+            "Review records",
+            "Review critical records",
+        )
+    if follow_up_count:
+        return (
+            "Work through high-priority follow-ups",
+            f"{follow_up_count:,} record(s) need a duplicate decision, source follow-up, or key correction.",
+            "Review records",
+            "Open review queue",
+        )
+    if review_count:
+        return (
+            "Verify reviewed candidates",
+            f"{review_count:,} record(s) are ready for a human verification decision.",
+            "Review records",
+            "Review candidates",
+        )
+    if ready_count < len(qa_frame):
+        return (
+            "Check progress and remaining gaps",
+            "Use the progress view to see incomplete research, missing details, and source freshness.",
+            "Progress & quality",
+            "Check progress",
+        )
+    return (
+        "Download a fresh copy",
+        "Your current records are ready. Export the workbook before leaving this session.",
+        "Downloads",
+        "Open downloads",
+    )
+
+
 st.html("""
 <style>
-.block-container{max-width:1480px;padding-top:1.1rem;padding-bottom:4rem}
-h1,h2,h3{letter-spacing:-.02em}
-div[data-testid="stMetric"]{background:rgba(247,250,252,.82);border:1px solid rgba(49,51,63,.10);border-radius:14px;padding:.85rem 1rem;min-height:104px}
-div[data-testid="stFileUploader"]{border:1px dashed rgba(37,99,235,.36);border-radius:14px;padding:.35rem .65rem .8rem;background:rgba(239,246,255,.38)}
-div[data-testid="stExpander"],div[data-testid="stDataFrame"],div[data-testid="stDataEditor"]{border:1px solid rgba(49,51,63,.11);border-radius:12px;overflow:hidden}
-.stButton>button,.stDownloadButton>button{border-radius:10px;font-weight:650;min-height:2.7rem}
-@media(prefers-color-scheme:dark){div[data-testid="stMetric"]{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12)}}
+:root{
+    --db-border: rgba(49,51,63,.13);
+    --db-soft: rgba(127,127,127,.055);
+    --db-soft-strong: rgba(127,127,127,.09);
+}
+.block-container{
+    max-width:1380px;
+    padding-top:1rem;
+    padding-bottom:4rem;
+}
+h1,h2,h3{
+    letter-spacing:-.025em;
+}
+h2{
+    margin-bottom:.1rem;
+}
+.db-brand{
+    text-align:center;
+    margin:.15rem auto 1.15rem;
+}
+.db-logo{
+    width:clamp(280px,42vw,540px);
+    max-width:88vw;
+    max-height:128px;
+    object-fit:contain;
+}
+.db-brand-name{
+    font-size:2.1rem;
+    font-weight:760;
+    letter-spacing:-.045em;
+    line-height:1.05;
+}
+.db-tag{
+    margin-top:.25rem;
+    font-size:1.03rem;
+    font-weight:560;
+    opacity:.82;
+}
+.db-subtag{
+    margin-top:.2rem;
+    font-size:.9rem;
+    opacity:.64;
+}
+.db-eyebrow{
+    margin-top:.25rem;
+    margin-bottom:-.35rem;
+    font-size:.76rem;
+    font-weight:750;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    opacity:.62;
+}
+.db-workspace-strip{
+    display:flex;
+    flex-wrap:wrap;
+    gap:.55rem 1rem;
+    align-items:center;
+    padding:.72rem .9rem;
+    margin:.25rem 0 1rem;
+    border:1px solid var(--db-border);
+    border-radius:11px;
+    background:var(--db-soft);
+    font-size:.88rem;
+}
+.db-workspace-strip strong{
+    font-weight:700;
+}
+.db-step-line{
+    margin:.2rem 0 .9rem;
+    font-size:.88rem;
+    opacity:.72;
+}
+.db-card-copy{
+    min-height:3.6rem;
+}
+div[data-testid="stSidebar"]{
+    border-right:1px solid var(--db-border);
+}
+div[data-testid="stMetric"]{
+    background:var(--db-soft);
+    border:1px solid var(--db-border);
+    border-radius:12px;
+    padding:.8rem .9rem;
+    min-height:100px;
+}
+div[data-testid="stMetric"] label{
+    font-weight:650;
+}
+div[data-testid="stFileUploader"]{
+    border:1px dashed rgba(49,51,63,.23);
+    border-radius:11px;
+    padding:.3rem .6rem .7rem;
+    background:var(--db-soft);
+}
+div[data-testid="stExpander"],
+div[data-testid="stDataFrame"],
+div[data-testid="stDataEditor"]{
+    border:1px solid var(--db-border);
+    border-radius:10px;
+    overflow:hidden;
+}
+.stButton>button,.stDownloadButton>button{
+    border-radius:9px;
+    font-weight:650;
+    min-height:2.65rem;
+}
+button[data-testid="stSidebarCollapseButton"]{
+    width:auto !important;
+    min-width:7.4rem !important;
+    justify-content:flex-start !important;
+    gap:.35rem !important;
+}
+button[data-testid="stSidebarCollapseButton"]::after{
+    content:"Start here";
+    font-size:.86rem;
+    font-weight:700;
+    white-space:nowrap;
+    opacity:.84;
+}
+@media (max-width:900px){
+    .db-card-copy{min-height:auto}
+    button[data-testid="stSidebarCollapseButton"]{min-width:6.7rem !important}
+}
+@media(prefers-color-scheme:dark){
+    :root{
+        --db-border:rgba(255,255,255,.13);
+        --db-soft:rgba(255,255,255,.035);
+        --db-soft-strong:rgba(255,255,255,.065);
+    }
+}
 </style>
 """)
 render_brand_header()
 
-st.html("""
-<style>
-button[data-testid="stSidebarCollapseButton"]{
-    width: auto !important;
-    min-width: 7.5rem !important;
-    justify-content: flex-start !important;
-    gap: 0.35rem !important;
-}
 
-button[data-testid="stSidebarCollapseButton"]::after{
-    content: "Start Here";
-    font-size: 0.88rem;
-    font-weight: 700;
-    white-space: nowrap;
-    opacity: 0.88;
-}
-
-@media (max-width: 768px){
-    button[data-testid="stSidebarCollapseButton"]{
-        min-width: 6.8rem !important;
-    }
-
-    button[data-testid="stSidebarCollapseButton"]::after{
-        font-size: 0.8rem;
-    }
-}
-</style>
-""")
-
+# -----------------------------
+# Sidebar: start or switch work
+# -----------------------------
 with st.sidebar:
-    st.subheader("Workspace")
+    st.subheader("Start or switch workspace")
     st.caption(
-        "Bring in your records, work through what needs attention, "
-        "and save a fresh copy before you leave."
+        "Choose a source, then use the main workspace to review, verify, and download your records."
     )
+
     current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
-    options = [
+    start_options = [
         "Upload a file",
         "Connect a Google Sheet",
         "Scan a website",
         "Start blank",
     ]
-    default = {
+    start_default = {
         "Uploaded file": 0,
         "Google Sheet": 1,
         "Website scan": 2,
         "Blank workspace": 3,
     }.get(current, 0)
+
     source = st.radio(
-        "Where would you like to begin?",
-        options,
-        index=default,
+        "Starting point",
+        start_options,
+        index=start_default,
         key="db_start_source",
     )
+
     try:
         if source == "Upload a file":
             uploaded = st.file_uploader(
-                "Choose a CSV or Excel file",
+                "CSV or Excel file",
                 type=["csv", "xlsx"],
                 help="Use a file where each row represents one building or property record.",
+                key="db_sidebar_upload",
             )
             selected = None
             if uploaded is not None:
                 if uploaded.name.lower().endswith(".xlsx"):
                     names = excel_sheet_names(uploaded)
                     selected = st.selectbox(
-                        "Which worksheet holds the buildings?",
+                        "Worksheet",
                         names,
                         index=preferred_sheet(names),
                         help="Choose the tab where the first row contains headings and each row below is one record.",
+                        key="db_sidebar_sheet",
                     )
                 load_upload(uploaded, selected)
+
         elif source == "Connect a Google Sheet":
             with st.form("google_form"):
                 url = st.text_input(
@@ -1005,14 +1178,18 @@ with st.sidebar:
                 selector = st.text_input(
                     "Worksheet name or tab ID (optional)",
                     placeholder="Example: Apartment Buildings or 0",
-                    help="Leave this blank to use the tab selected in the link or the first available worksheet.",
                 )
-                submit = st.form_submit_button("Load working copy", type="primary", width="stretch")
-            if submit and load_google(url, selector): st.rerun()
+                submit = st.form_submit_button(
+                    "Load working copy",
+                    type="primary",
+                    width="stretch",
+                )
+            if submit and load_google(url, selector):
+                st.rerun()
+
         elif source == "Scan a website":
-            st.info(
-                "Start from a public property website. Extracted findings stay in a "
-                "review queue until you approve them."
+            st.caption(
+                "Extracted findings stay in a review queue until you approve them."
             )
             if st.button(
                 "Open website scanner",
@@ -1024,53 +1201,120 @@ with st.sidebar:
                     blank_workspace()
                     st.session_state[S_SOURCE_TYPE] = "Website scan"
                     st.session_state[S_NAME] = "website_scan_workspace"
-                st.session_state["db_section"] = "Website scanner"
+                go_to("Website scanner")
                 st.rerun()
+
         else:
-            if st.button("Create blank workspace", width="stretch"):
-                blank_workspace(); st.rerun()
+            if st.button(
+                "Create blank workspace",
+                width="stretch",
+                key="db_sidebar_blank",
+            ):
+                blank_workspace()
+                st.rerun()
+
     except Exception as error:
         st.error(str(error))
 
-    with st.expander("Need a starting template?"):
-        st.caption("Use this when you want to begin with the core property and contact fields already arranged.")
-        st.download_button("Download blank template", csv_bytes(pd.DataFrame(columns=TEMPLATE_COLUMNS)), "datablix_building_listing_template.csv", "text/csv", width="stretch")
+    with st.expander("Blank template"):
+        st.caption(
+            "Download a starter file with the main property, contact, and review fields already arranged."
+        )
+        st.download_button(
+            "Download template",
+            csv_bytes(pd.DataFrame(columns=TEMPLATE_COLUMNS)),
+            "datablix_building_listing_template.csv",
+            "text/csv",
+            width="stretch",
+        )
 
     if S_WORKING in st.session_state:
         st.divider()
-        label = st.session_state.get(S_NAME, "workspace")
-        if st.session_state.get(S_SHEET): label += f" · {st.session_state[S_SHEET]}"
-        st.success(f"Open: {label}")
+        sidebar_working = st.session_state[S_WORKING]
+        workspace_label = st.session_state.get(S_NAME, "workspace")
+        if st.session_state.get(S_SHEET):
+            workspace_label += f" · {st.session_state[S_SHEET]}"
+
+        st.caption("CURRENT WORKSPACE")
+        st.markdown(f"**{workspace_label}**")
+        sidebar_metrics = st.columns(2)
+        sidebar_metrics[0].metric("Records", f"{len(sidebar_working):,}")
+        sidebar_metrics[1].metric(
+            "Session edits",
+            f"{st.session_state.get(S_EDIT_COUNT, 0):,}",
+        )
+
+        quick_left, quick_right = st.columns(2)
+        if quick_left.button("Review", width="stretch", key="sidebar_review"):
+            go_to("Review records")
+            st.rerun()
+        if quick_right.button("Download", width="stretch", key="sidebar_download"):
+            go_to("Downloads")
+            st.rerun()
+
         if st.session_state.get(S_SOURCE_TYPE) == "Google Sheet":
-            with st.expander("Reload from Google Sheets"):
-                confirm = st.checkbox("Replace my current edits") if st.session_state.get(S_EDIT_COUNT, 0) else True
-                if st.button("Reload from Google Sheets", disabled=not confirm, width="stretch"):
-                    load_google(st.session_state[S_SOURCE_REF], st.session_state[S_SELECTOR], force=True); st.rerun()
+            with st.expander("Reload Google Sheet"):
+                confirm_reload = (
+                    st.checkbox("Replace my current session edits")
+                    if st.session_state.get(S_EDIT_COUNT, 0)
+                    else True
+                )
+                if st.button(
+                    "Reload source",
+                    disabled=not confirm_reload,
+                    width="stretch",
+                    key="db_reload_google",
+                ):
+                    load_google(
+                        st.session_state[S_SOURCE_REF],
+                        st.session_state[S_SELECTOR],
+                        force=True,
+                    )
+                    st.rerun()
+
         with st.expander("Reset workspace"):
-            confirm = st.checkbox("I understand this discards my session edits")
-            if st.button("Reset to original data", disabled=not confirm, width="stretch"):
+            st.caption("This returns the workspace to the version first opened in this session.")
+            confirm_reset = st.checkbox(
+                "Discard my session edits",
+                key="db_confirm_reset",
+            )
+            if st.button(
+                "Reset to original",
+                disabled=not confirm_reset,
+                width="stretch",
+                key="db_reset_workspace",
+            ):
                 st.session_state[S_WORKING] = st.session_state[S_ORIGINAL].copy()
                 st.session_state[S_EDIT_COUNT] = 0
                 st.session_state[S_FLASH] = "The workspace was reset."
                 st.rerun()
 
+
+# -----------------------------
+# Landing screen
+# -----------------------------
 if S_WORKING not in st.session_state:
-    st.header("Choose how to begin")
-    st.caption(
-        "Start with records you already have, scan a public website for new candidates, "
-        "or create an empty workspace."
+    render_page_heading(
+        "GET STARTED",
+        "Build a review-ready property workspace",
+        "Open existing records, scan a permitted public website, or begin with an empty workspace.",
     )
 
-    start_file, start_scan, start_blank = st.columns(3)
-    with start_file:
-        st.subheader("Open existing records")
-        st.write("Upload a CSV or Excel file, or connect a viewable Google Sheet from the sidebar.")
-        st.caption("Best when you already have a list to review or improve.")
-    with start_scan:
-        st.subheader("Scan a website")
-        st.write("Discover property candidates from permitted public pages and review them before adding them.")
+    start_mode = st.radio(
+        "Choose a starting point",
+        ["Website scan", "Upload file", "Google Sheet", "Blank workspace"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="db_landing_mode",
+    )
+
+    if start_mode == "Website scan":
+        st.subheader("Scan a public property website")
+        st.write(
+            "Discover candidate property records from permitted pages. Nothing enters your working data until you review and approve it."
+        )
         if st.button(
-            "Start website scan",
+            "Open website scanner",
             type="primary",
             width="stretch",
             key="landing_open_scanner",
@@ -1078,30 +1322,85 @@ if S_WORKING not in st.session_state:
             blank_workspace()
             st.session_state[S_SOURCE_TYPE] = "Website scan"
             st.session_state[S_NAME] = "website_scan_workspace"
-            st.session_state["db_section"] = "Website scanner"
+            go_to("Website scanner")
             st.rerun()
-    with start_blank:
-        st.subheader("Start manually")
-        st.write("Create an empty workspace and add property records one at a time.")
+
+    elif start_mode == "Upload file":
+        st.subheader("Open a CSV or Excel file")
+        landing_upload = st.file_uploader(
+            "Choose your file",
+            type=["csv", "xlsx"],
+            help="Each row should represent one building or property record.",
+            key="db_landing_upload",
+        )
+        landing_sheet = None
+        if landing_upload is not None:
+            if landing_upload.name.lower().endswith(".xlsx"):
+                landing_names = excel_sheet_names(landing_upload)
+                landing_sheet = st.selectbox(
+                    "Worksheet containing the records",
+                    landing_names,
+                    index=preferred_sheet(landing_names),
+                    key="db_landing_sheet",
+                )
+            try:
+                load_upload(landing_upload, landing_sheet)
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    elif start_mode == "Google Sheet":
+        st.subheader("Open a viewable Google Sheet")
+        with st.form("landing_google_form"):
+            landing_url = st.text_input(
+                "Google Sheets link",
+                placeholder="https://docs.google.com/spreadsheets/d/...",
+            )
+            landing_selector = st.text_input(
+                "Worksheet name or tab ID (optional)",
+                placeholder="Example: Apartment Buildings or 0",
+            )
+            landing_submit = st.form_submit_button(
+                "Load working copy",
+                type="primary",
+                width="stretch",
+            )
+        if landing_submit:
+            try:
+                if load_google(landing_url, landing_selector):
+                    st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    else:
+        st.subheader("Start with an empty workspace")
+        st.write(
+            "Add records manually now, then use the same review, quality, and export tools."
+        )
         if st.button(
             "Create blank workspace",
+            type="primary",
             width="stretch",
             key="landing_blank_workspace",
         ):
             blank_workspace()
+            go_to("Review records")
             st.rerun()
 
-    with st.expander("What Datablix does", expanded=True):
-        st.markdown("""
-        - Opens CSV, Excel, or Google Sheets as an editable working copy.
-        - Scans permitted public websites and holds findings for human review.
-        - Organizes key fields while preserving original columns.
-        - Flags missing information, possible duplicates, and data-quality issues.
-        - Tracks sources, verification, notes, and record status.
-        - Creates review-ready listings and downloadable reports.
-        - [Disabled by Default] Includes optional AI tools that require human review.
-        """)
+    with st.expander("What happens after records are added", expanded=True):
+        flow_columns = st.columns(4)
+        flow_items = [
+            ("1. Collect", "Import, scan, or add property candidates."),
+            ("2. Review", "Correct fields and record human decisions."),
+            ("3. Check", "Resolve quality flags and research gaps."),
+            ("4. Download", "Save a fresh workbook or focused CSV."),
+        ]
+        for column, (heading, copy) in zip(flow_columns, flow_items):
+            with column:
+                st.markdown(f"**{heading}**")
+                st.caption(copy)
     st.stop()
+
 
 if S_FLASH in st.session_state:
     st.toast(st.session_state.pop(S_FLASH), icon="✅")
@@ -1110,81 +1409,187 @@ working = st.session_state[S_WORKING].copy()
 has_records = not working.empty
 qa = qa_checks(working) if has_records else None
 
+# -----------------------------
+# Primary navigation
+# -----------------------------
 sections = [
     "Overview",
     "Website scanner",
-    "Review & edit",
-    "Research",
-    "Data quality",
-    "Export",
+    "Review records",
+    "Progress & quality",
+    "Downloads",
 ]
-if st.session_state.get("db_section") not in sections:
-    st.session_state["db_section"] = "Overview"
+legacy_sections = {
+    "Review & edit": "Review records",
+    "Research": "Progress & quality",
+    "Data quality": "Progress & quality",
+    "Export": "Downloads",
+}
+current_section = st.session_state.get("db_section", "Overview")
+current_section = legacy_sections.get(current_section, current_section)
+if current_section not in sections:
+    current_section = "Overview"
+st.session_state["db_section"] = current_section
 
-st.caption(
-    "Suggested flow: **Start or scan → Review and edit → Check quality → Export**"
+workspace_source = st.session_state.get(S_SOURCE_TYPE, "Workspace")
+workspace_name = st.session_state.get(S_NAME, "workspace")
+workspace_sheet = st.session_state.get(S_SHEET, "")
+workspace_display = workspace_name + (f" · {workspace_sheet}" if workspace_sheet else "")
+
+st.markdown(
+    (
+        '<div class="db-workspace-strip">'
+        f'<span><strong>Workspace:</strong> {workspace_display}</span>'
+        f'<span><strong>Source:</strong> {workspace_source}</span>'
+        f'<span><strong>Records:</strong> {len(working):,}</span>'
+        f'<span><strong>Session edits:</strong> {st.session_state.get(S_EDIT_COUNT, 0):,}</span>'
+        '</div>'
+    ),
+    unsafe_allow_html=True,
 )
+
 nav_columns = st.columns(len(sections))
 for nav_column, nav_label in zip(nav_columns, sections):
     with nav_column:
         if st.button(
             nav_label,
-            type=(
-                "primary"
-                if st.session_state["db_section"] == nav_label
-                else "secondary"
-            ),
+            type="primary" if st.session_state["db_section"] == nav_label else "secondary",
             width="stretch",
             key=f"db_nav_{norm_header(nav_label)}",
         ):
-            st.session_state["db_section"] = nav_label
+            go_to(nav_label)
             st.rerun()
 
+st.markdown(
+    '<div class="db-step-line">Collect → Review → Check progress → Download</div>',
+    unsafe_allow_html=True,
+)
 section = st.session_state["db_section"]
-if not has_records and section in ["Research", "Data quality", "Export"]:
+
+if not has_records and section in ["Progress & quality", "Downloads"]:
     st.info(
-        "There are no records here yet. Use **Website scanner** or "
-        "**Review & edit** to add the first one."
+        "There are no records in this workspace yet. Use **Website scanner** or **Review records** to add the first one."
     )
+    action_a, action_b = st.columns(2)
+    if action_a.button("Open website scanner", type="primary", width="stretch"):
+        go_to("Website scanner")
+        st.rerun()
+    if action_b.button("Add a record manually", width="stretch"):
+        go_to("Review records")
+        st.rerun()
     st.stop()
 
+
+# -----------------------------
+# Overview
+# -----------------------------
 if section == "Overview":
-    st.header("Overview")
-    action_col1, action_col2 = st.columns([1, 2])
-    with action_col1:
+    render_page_heading(
+        "WORKSPACE",
+        "Overview",
+        "See what is ready, what needs attention, and the most useful next action.",
+    )
+
+    next_title, next_copy, next_section, next_button = recommended_next_action(qa)
+    next_left, next_right = st.columns([2.2, 1])
+    with next_left:
+        st.subheader(next_title)
+        st.write(next_copy)
+    with next_right:
         if st.button(
+            next_button,
+            type="primary",
+            width="stretch",
+            key="db_overview_next",
+        ):
+            go_to(next_section)
+            st.rerun()
+
+    if not has_records:
+        st.info(
+            "This workspace is empty. Scan a website or add a record manually to begin."
+        )
+        quick_scan, quick_manual = st.columns(2)
+        if quick_scan.button(
             "Scan a property website",
             type="primary",
             width="stretch",
-            key="overview_open_scanner",
+            key="overview_scan_empty",
         ):
-            st.session_state["db_section"] = "Website scanner"
+            go_to("Website scanner")
             st.rerun()
-    with action_col2:
-        st.caption(
-            "Use the scanner to discover new property candidates, then review and "
-            "approve them before they enter the working data."
-        )
-    if not has_records:
-        st.info("This workspace is ready. Open **Review & edit** when you are ready to add the first building.")
+        if quick_manual.button(
+            "Add a record manually",
+            width="stretch",
+            key="overview_manual_empty",
+        ):
+            go_to("Review records")
+            st.rerun()
     else:
-        cards = st.columns(4)
-        cards[0].metric("Records", f"{len(qa):,}")
-        cards[1].metric("Ready to use", f"{int(ready_mask(qa).sum()):,}")
-        cards[2].metric("Critical issues", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
-        cards[3].metric("Verified", f"{int(qa['Verification Status'].eq('Verified').sum()):,}")
-        completed = int(qa["Research Status"].eq("Completed").sum())
-        st.progress(completed / len(qa), text=f"Checks completed: {completed:,} of {len(qa):,} records")
-        with st.expander("Preview building listings", expanded=True):
-            st.caption("This clean view brings the key property, location, ownership, and contact details together.")
-            st.dataframe(listing_export(qa).head(20), width="stretch", hide_index=True)
-        with st.expander("How your columns were matched"):
-            st.caption("Use this table when information appears under a different heading than expected. Original columns remain available in the working data.")
-            st.dataframe(st.session_state[S_MAPPING], width="stretch", hide_index=True)
+        metric_columns = st.columns(4)
+        metric_columns[0].metric("Total records", f"{len(qa):,}")
+        metric_columns[1].metric("Ready to use", f"{int(ready_mask(qa).sum()):,}")
+        metric_columns[2].metric(
+            "Need attention",
+            f"{int((~ready_mask(qa) & ~qa['Record Readiness'].eq('Excluded from Directory')).sum()):,}",
+        )
+        metric_columns[3].metric(
+            "Human verified",
+            f"{int(qa['Verification Status'].eq('Verified').sum()):,}",
+        )
 
+        completed = int(qa["Research Status"].eq("Completed").sum())
+        st.progress(
+            completed / len(qa),
+            text=f"Research marked complete: {completed:,} of {len(qa):,} records",
+        )
+
+        quick_1, quick_2, quick_3 = st.columns(3)
+        if quick_1.button("Scan another website", width="stretch"):
+            go_to("Website scanner")
+            st.rerun()
+        if quick_2.button("Review records", width="stretch"):
+            go_to("Review records")
+            st.rerun()
+        if quick_3.button("Download current work", width="stretch"):
+            go_to("Downloads")
+            st.rerun()
+
+        st.subheader("Building preview")
+        st.caption(
+            "A concise listing view of the first 20 records. Use Review records for corrections and decisions."
+        )
+        st.dataframe(
+            listing_export(qa).head(20),
+            width="stretch",
+            hide_index=True,
+            height=420,
+        )
+
+        with st.expander("Workspace details and column matching"):
+            detail_columns = st.columns(3)
+            detail_columns[0].metric("Source type", workspace_source)
+            detail_columns[1].metric("Original columns", f"{len(working.columns):,}")
+            detail_columns[2].metric(
+                "Mapped fields",
+                f"{int(st.session_state[S_MAPPING]['Mapping Status'].ne('Not found').sum()):,}",
+            )
+            st.caption(
+                "Original columns remain in the working data. This table shows how imported headings were matched to consistent fields."
+            )
+            st.dataframe(
+                st.session_state[S_MAPPING],
+                width="stretch",
+                hide_index=True,
+                height=360,
+            )
+
+
+# -----------------------------
+# Website scanner
+# -----------------------------
 elif section == "Website scanner":
     scanner_start_count = len(st.session_state[S_WORKING])
-
     render_website_scanner_panel(working_data_key=S_WORKING)
 
     scanner_working = st.session_state.get(S_WORKING)
@@ -1213,246 +1618,400 @@ elif section == "Website scanner":
         merged = ensure_ids(merged)
         merged = normalize_workflow(prepare_data(merged))
         st.session_state[S_WORKING] = merged
-        st.session_state[S_EDIT_COUNT] = (
-            st.session_state.get(S_EDIT_COUNT, 0) + 1
-        )
+        st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
         added_count = len(merged) - scanner_start_count
         st.session_state[S_FLASH] = (
-            f"{added_count} approved website-scanned record(s) were added. "
-            "Review them before marking them as verified."
+            f"{added_count} approved website-scanned record(s) were added. Review them before marking them as verified."
         )
-        st.session_state["db_section"] = "Review & edit"
+        go_to("Review records")
         st.rerun()
 
-elif section == "Research":
-    st.header("Research progress")
-    st.caption("See what has been checked, what is still moving, and where a source or decision may need another look.")
-    cards = st.columns(4)
-    cards[0].metric("Imported to review", f"{int(qa['Research Status'].eq('Imported - Needs Review').sum()):,}")
-    cards[1].metric("In progress", f"{int(qa['Research Status'].eq('In Progress').sum()):,}")
-    cards[2].metric("Ready for review", f"{int(qa['Research Status'].eq('Ready for Review').sum()):,}")
-    cards[3].metric("Completed", f"{int(qa['Research Status'].eq('Completed').sum()):,}")
-    tabs = st.tabs(["Source tracker", "Owner coverage", "Draft profiles"])
-    with tabs[0]:
-        st.caption("Follow the source, date, status, and notes behind each record.")
-        st.dataframe(research_log(qa).head(100), width="stretch", hide_index=True)
-    with tabs[1]:
-        st.caption("Compare how records are grouped by management or ownership name. Similar names may still need a quick manual check.")
-        st.dataframe(owner_summary(qa), width="stretch", hide_index=True)
-    with tabs[2]:
-        st.caption("These sentences are assembled from the current fields. Read them as a starting point and confirm the wording before use.")
-        st.dataframe(draft_profiles(qa).head(50), width="stretch", hide_index=True)
 
-elif section == "Data quality":
-    st.header("Data quality and research coverage")
-    st.caption("Flags point to possible errors or conflicts. Gaps simply show where a useful detail is still blank.")
-    cards = st.columns(5)
-    cards[0].metric("Critical records", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
-    cards[1].metric("Records to review", f"{int(qa['QA Status'].eq('Review').sum()):,}")
-    cards[2].metric("Quality pass", f"{int(qa['QA Status'].eq('Pass').sum()):,}")
-    cards[3].metric("Quality flags", f"{int(qa['QA Flag Count'].sum()):,}")
-    cards[4].metric("Open research gaps", f"{int(qa['Research Gap Count'].sum()):,}")
-    tabs = st.tabs(["Quality issues", "Research coverage", "Records with gaps"])
-    with tabs[0]:
-        st.caption("Start with critical items, then work through warnings that may need confirmation.")
-        st.dataframe(issue_summary(qa), width="stretch", hide_index=True)
-    with tabs[1]:
-        st.caption("Coverage shows how often each field is populated. A blank does not always mean the record is incorrect.")
-        st.dataframe(field_coverage(qa), width="stretch", hide_index=True)
-    with tabs[2]:
-        st.caption("Use this list to plan the next checks without losing sight of otherwise usable records.")
-        cols = ["Record ID", "Working Record Label", "Management/Owner", "Street Address", "Research Gap Count", "Research Gaps", "Target Coverage %", "Follow-up Priority", "Record Readiness"]
-        st.dataframe(qa.loc[qa["Research Gap Count"].gt(0), cols].head(100), width="stretch", hide_index=True)
+# -----------------------------
+# Review records
+# -----------------------------
+elif section == "Review records":
+    render_page_heading(
+        "HUMAN REVIEW",
+        "Review records",
+        "Find the records that need attention, inspect the evidence, and save deliberate corrections or decisions.",
+    )
 
-elif section == "Review & edit":
-    st.header("Review & edit")
-    st.caption("Filter when the table feels crowded, inspect the context, then edit only the fields that need attention.")
+    filtered = qa.copy() if has_records else pd.DataFrame()
+
     if has_records:
-        with st.expander("Filter the list"):
-            st.caption("Leave all values selected to keep the full list visible. Narrow one filter at a time when you are looking for a specific group.")
-            row1 = st.columns(3)
-            qa_filter = row1[0].multiselect("Directory quality", sorted(display_values(qa["QA Status"]).unique()), default=sorted(display_values(qa["QA Status"]).unique()))
-            owner_filter = row1[1].multiselect("Apartment Building Management/Owner", sorted(display_values(qa["Management/Owner"]).unique()), default=sorted(display_values(qa["Management/Owner"]).unique()))
-            research_filter = row1[2].multiselect("Research status", sorted(display_values(qa["Research Status"]).unique()), default=sorted(display_values(qa["Research Status"]).unique()))
-            row2 = st.columns(2)
-            verification_filter = row2[0].multiselect("Verification status", sorted(display_values(qa["Verification Status"]).unique()), default=sorted(display_values(qa["Verification Status"]).unique()))
-            readiness_filter = row2[1].multiselect("Directory readiness", sorted(display_values(qa["Record Readiness"]).unique()), default=sorted(display_values(qa["Record Readiness"]).unique()))
-        filtered = qa[
-            display_values(qa["QA Status"]).isin(qa_filter)
-            & display_values(qa["Management/Owner"]).isin(owner_filter)
-            & display_values(qa["Research Status"]).isin(research_filter)
-            & display_values(qa["Verification Status"]).isin(verification_filter)
-            & display_values(qa["Record Readiness"]).isin(readiness_filter)
-        ]
-        st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
-        tabs = st.tabs(["Inspect", "Edit", "AI note helper"])
-        with tabs[0]:
-            st.caption("Use this view to understand the issue before changing the record.")
-            inspect = filtered[["Record ID", "Working Record Label", "Building Name", "Management/Owner", "Street Address", "City", "Province", "Postal Code", "Number of Apartments", "Primary Email", "Research Status", "Verification Status", "Research Gaps", "QA Status", "QA Flags", "Workflow Gaps", "Follow-up Priority", "Record Readiness"]].rename(columns={"Building Name": "Apartment Building Name", "Management/Owner": "Apartment Building Management/Owner", "Primary Email": "Email Contact"})
-            st.dataframe(inspect, width="stretch", hide_index=True)
-        with tabs[1]:
-            st.caption("Choose a small set of fields to keep the editor easy to scan. Save after making your changes.")
-            edit_fields = st.multiselect("Fields to edit", [c for c in INTERNAL_COLUMNS if c != "Record ID"], default=["Building Name", "Management/Owner", "Phone", "Primary Email", "Website", "Research Status", "Verification Status", "Record Decision", "Date Researched", "Source URL", "Missing Information", "Reviewer Notes"])
-            context = ["Record ID", "Working Record Label"] + edit_fields + ["Research Gaps", "QA Status", "Record Readiness"]
-            context = list(dict.fromkeys(c for c in context if c in filtered.columns))
-            locked = [c for c in context if c in ["Record ID", "Working Record Label", "Research Gaps", "QA Status", "Record Readiness"]]
-            edited = st.data_editor(
-                filtered[context], width="stretch", hide_index=True, num_rows="fixed", disabled=locked,
-                column_config={
-                    "Building Name": st.column_config.TextColumn("Apartment Building Name"),
-                    "Management/Owner": st.column_config.TextColumn("Apartment Building Management/Owner", width="large"),
-                    "Phone": st.column_config.TextColumn("Phone Number"),
-                    "Primary Email": st.column_config.TextColumn("Email Contact", width="large"),
-                    "Website": st.column_config.TextColumn("WebSite", width="large"),
-                    "Research Status": st.column_config.SelectboxColumn("Research Status", options=RESEARCH_STATUSES, required=True),
-                    "Source Status": st.column_config.SelectboxColumn("Source Status", options=SOURCE_STATUSES, required=True),
-                    "Verification Status": st.column_config.SelectboxColumn("Verification Status", options=VERIFICATION_STATUSES, required=True),
-                    "Record Decision": st.column_config.SelectboxColumn("Record Decision", options=RECORD_DECISIONS, required=True),
-                }, key=f"editor_{st.session_state.get(S_EDIT_COUNT,0)}_{hashlib.sha1('|'.join(edit_fields).encode()).hexdigest()[:8]}"
-            )
-            if st.button("Save edits", type="primary"):
-                save_edits(edited, [c for c in edit_fields if c in edited.columns]); st.rerun()
+        search_col, focus_col = st.columns([2, 1])
+        search_text = search_col.text_input(
+            "Search records",
+            placeholder="Building, owner, address, city, record ID...",
+            key="db_review_search",
+        )
+        focus = focus_col.selectbox(
+            "Focus",
+            ["Needs attention", "All records", "Ready for review", "Verified", "Ready to use"],
+            key="db_review_focus",
+        )
 
-        with tabs[2]:
-            if not ai_is_available():
-                st.info(
-                    "AI assistance is currently unavailable. "
-                    "All regular Datablix tools remain available."
-                )
-                st.caption(
-                    "To enable it later, add `AI_ENABLED = true` and "
-                    "`OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
-                )
+        mask = pd.Series(True, index=qa.index)
+        if search_text.strip():
+            search_blob = (
+                qa[[
+                    "Record ID", "Building Name", "Management/Owner", "Street Address",
+                    "City", "Postal Code", "Primary Email", "Phone"
+                ]]
+                .astype("string")
+                .fillna("")
+                .agg(" ".join, axis=1)
+                .str.lower()
+            )
+            mask &= search_blob.str.contains(search_text.strip().lower(), regex=False)
+
+        if focus == "Needs attention":
+            mask &= ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Directory")
+        elif focus == "Ready for review":
+            mask &= qa["Research Status"].eq("Ready for Review") | qa["Verification Status"].eq("Needs Review")
+        elif focus == "Verified":
+            mask &= qa["Verification Status"].eq("Verified")
+        elif focus == "Ready to use":
+            mask &= ready_mask(qa)
+
+        with st.expander("More filters"):
+            filter_row1 = st.columns(3)
+            quality_filter = filter_row1[0].multiselect(
+                "Directory quality",
+                sorted(display_values(qa["QA Status"]).unique()),
+                help="Leave blank to include every quality status.",
+            )
+            owner_filter = filter_row1[1].multiselect(
+                "Management or owner",
+                sorted(display_values(qa["Management/Owner"]).unique()),
+                help="Leave blank to include every organization.",
+            )
+            research_filter = filter_row1[2].multiselect(
+                "Research status",
+                sorted(display_values(qa["Research Status"]).unique()),
+                help="Leave blank to include every research status.",
+            )
+            filter_row2 = st.columns(2)
+            verification_filter = filter_row2[0].multiselect(
+                "Verification status",
+                sorted(display_values(qa["Verification Status"]).unique()),
+                help="Leave blank to include every verification status.",
+            )
+            readiness_filter = filter_row2[1].multiselect(
+                "Record readiness",
+                sorted(display_values(qa["Record Readiness"]).unique()),
+                help="Leave blank to include every readiness status.",
+            )
+
+        if quality_filter:
+            mask &= display_values(qa["QA Status"]).isin(quality_filter)
+        if owner_filter:
+            mask &= display_values(qa["Management/Owner"]).isin(owner_filter)
+        if research_filter:
+            mask &= display_values(qa["Research Status"]).isin(research_filter)
+        if verification_filter:
+            mask &= display_values(qa["Verification Status"]).isin(verification_filter)
+        if readiness_filter:
+            mask &= display_values(qa["Record Readiness"]).isin(readiness_filter)
+
+        filtered = qa.loc[mask].copy()
+        st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
+
+        review_tabs = st.tabs(["Review queue", "Edit records", "AI note helper"])
+
+        with review_tabs[0]:
+            if filtered.empty:
+                st.info("No records match the current search and filters.")
             else:
                 st.caption(
-                    "Turn detailed notes into a shorter review summary. "
-                    "Nothing is added to the record until you choose to save it."
+                    "Read the issue, research gap, and readiness columns before changing a record."
+                )
+                inspect_columns = [
+                    "Record ID", "Working Record Label", "Management/Owner",
+                    "Street Address", "City", "Postal Code", "Research Status",
+                    "Verification Status", "QA Status", "QA Flags", "Research Gaps",
+                    "Follow-up Priority", "Record Readiness",
+                ]
+                inspect = filtered[inspect_columns].rename(
+                    columns={
+                        "Management/Owner": "Management / Owner",
+                        "Working Record Label": "Record",
+                    }
+                )
+                st.dataframe(
+                    inspect,
+                    width="stretch",
+                    hide_index=True,
+                    height=520,
                 )
 
-                if filtered.empty:
-                    st.info("No records match the current filters.")
+        with review_tabs[1]:
+            if filtered.empty:
+                st.info("No records are available to edit under the current filters.")
+            else:
+                edit_presets = {
+                    "Core listing details": [
+                        "Building Name", "Management/Owner", "Street Address", "Address Line 2",
+                        "City", "Province", "Postal Code", "Building Classification",
+                        "Number of Apartments", "Rental Rate Range",
+                    ],
+                    "Contact and sources": [
+                        "Phone", "Primary Email", "Secondary Email", "Website", "Source URL",
+                        "Date Researched", "Researcher", "Source Status",
+                    ],
+                    "Workflow and review": [
+                        "Research Status", "Verification Status", "Record Decision",
+                        "Missing Information", "Reviewer Notes",
+                    ],
+                }
+                preset = st.selectbox(
+                    "Editing view",
+                    [*edit_presets.keys(), "Custom fields"],
+                    help="Choose a focused set of fields to avoid a very wide editor.",
+                    key="db_edit_preset",
+                )
+                if preset == "Custom fields":
+                    edit_fields = st.multiselect(
+                        "Fields to edit",
+                        [c for c in INTERNAL_COLUMNS if c != "Record ID"],
+                        default=[
+                            "Building Name", "Management/Owner", "Phone", "Primary Email",
+                            "Website", "Research Status", "Verification Status", "Record Decision",
+                        ],
+                        key="db_custom_edit_fields",
+                    )
                 else:
-                    ai_options = filtered["Record ID"].astype(str).tolist()
-                    selected_ai_id = st.selectbox(
-                        "Choose a record",
-                        ai_options,
-                        format_func=lambda rid: (
-                            f"{rid} · "
-                            f"{filtered.loc[filtered['Record ID'].astype(str).eq(rid), 'Working Record Label'].iloc[0]}"
+                    edit_fields = edit_presets[preset]
+
+                context = ["Record ID", "Working Record Label"] + edit_fields + [
+                    "Research Gaps", "QA Status", "Record Readiness"
+                ]
+                context = list(dict.fromkeys(c for c in context if c in filtered.columns))
+                locked = [
+                    c for c in context
+                    if c in ["Record ID", "Working Record Label", "Research Gaps", "QA Status", "Record Readiness"]
+                ]
+                edited = st.data_editor(
+                    filtered[context],
+                    width="stretch",
+                    hide_index=True,
+                    height=520,
+                    num_rows="fixed",
+                    disabled=locked,
+                    column_config={
+                        "Building Name": st.column_config.TextColumn("Apartment Building Name"),
+                        "Management/Owner": st.column_config.TextColumn("Management / Owner", width="large"),
+                        "Phone": st.column_config.TextColumn("Phone Number"),
+                        "Primary Email": st.column_config.TextColumn("Email Contact", width="large"),
+                        "Website": st.column_config.TextColumn("Website", width="large"),
+                        "Source URL": st.column_config.LinkColumn("Source URL", width="large"),
+                        "Date Researched": st.column_config.DateColumn("Date Researched", format="YYYY-MM-DD"),
+                        "Research Status": st.column_config.SelectboxColumn(
+                            "Research Status", options=RESEARCH_STATUSES, required=True
                         ),
-                        key="db_ai_record_id",
-                    )
-
-                    ai_row = filtered.loc[
-                        filtered["Record ID"].astype(str).eq(selected_ai_id)
-                    ].iloc[0]
-                    source_parts = []
-                    if not is_unresolved(ai_row.get("Reviewer Notes")):
-                        source_parts.append(f"Reviewer notes: {ai_row['Reviewer Notes']}")
-                    if not is_unresolved(ai_row.get("Missing Information")):
-                        source_parts.append(f"Missing information: {ai_row['Missing Information']}")
-                    if not is_unresolved(ai_row.get("Research Gaps")) and str(ai_row.get("Research Gaps")) != "None":
-                        source_parts.append(f"Open research gaps: {ai_row['Research Gaps']}")
-                    if not is_unresolved(ai_row.get("Source URL")):
-                        source_parts.append(f"Source recorded: {ai_row['Source URL']}")
-
-                    source_text = "\n".join(source_parts)
-                    notes_key = f"db_ai_notes_{selected_ai_id}"
-                    summary_key = f"db_ai_summary_{selected_ai_id}"
-                    loaded_key = f"db_ai_loaded_{selected_ai_id}"
-
-                    if not st.session_state.get(loaded_key):
-                        st.session_state[notes_key] = source_text
-                        st.session_state.setdefault(summary_key, "")
-                        st.session_state[loaded_key] = True
-
-                    ai_notes = st.text_area(
-                        "Notes to summarize",
-                        key=notes_key,
-                        height=180,
-                        placeholder=(
-                            "Add what was confirmed, what source was checked, "
-                            "and what still needs verification."
+                        "Source Status": st.column_config.SelectboxColumn(
+                            "Source Status", options=SOURCE_STATUSES, required=True
                         ),
-                        help="You can edit this working text. The original record is not changed.",
-                    )
-
-                    ai_col1, ai_col2 = st.columns([1, 2])
-                    with ai_col1:
-                        generate_summary = st.button(
-                            "Create AI summary",
-                            type="primary",
-                            disabled=not ai_notes.strip(),
-                            width="stretch",
-                            key=f"db_generate_ai_{selected_ai_id}",
-                        )
-                    with ai_col2:
-                        if get_openai_api_key():
-                            st.caption("AI is configured. Review every result before saving it.")
-                        else:
-                            st.warning(
-                                "Add `OPENAI_API_KEY` in Streamlit Cloud → App settings → Secrets to enable this button."
-                            )
-
-                    if generate_summary:
-                        try:
-                            with st.spinner("Preparing a concise review summary..."):
-                                st.session_state[summary_key] = create_ai_summary(ai_notes)
-                        except Exception as error:
-                            st.error(str(error))
-
-                    ai_summary = st.text_area(
-                        "AI-prepared summary",
-                        key=summary_key,
-                        height=160,
-                        placeholder="The generated summary will appear here for review and editing.",
-                        help="Edit the wording before saving it to Reviewer Notes.",
-                    )
-
-                    save_ai = st.button(
-                        "Save summary to Reviewer Notes",
-                        disabled=not ai_summary.strip(),
+                        "Verification Status": st.column_config.SelectboxColumn(
+                            "Verification Status", options=VERIFICATION_STATUSES, required=True
+                        ),
+                        "Record Decision": st.column_config.SelectboxColumn(
+                            "Record Decision", options=RECORD_DECISIONS, required=True
+                        ),
+                    },
+                    key=(
+                        f"editor_{st.session_state.get(S_EDIT_COUNT, 0)}_"
+                        f"{hashlib.sha1('|'.join(edit_fields).encode()).hexdigest()[:8]}"
+                    ),
+                )
+                save_col, save_note = st.columns([1, 2])
+                with save_col:
+                    save_changes = st.button(
+                        "Save changes",
+                        type="primary",
                         width="stretch",
-                        key=f"db_save_ai_{selected_ai_id}",
+                        key="db_save_edits",
                     )
-                    if save_ai:
-                        working_ai = st.session_state[S_WORKING].copy()
-                        target_mask = working_ai["Record ID"].astype(str).eq(selected_ai_id)
-                        working_ai.loc[target_mask, "Reviewer Notes"] = ai_summary.strip()
-                        st.session_state[S_WORKING] = normalize_workflow(prepare_data(working_ai))
-                        st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-                        st.session_state[S_FLASH] = f"AI summary saved to Reviewer Notes for {selected_ai_id}."
-                        st.rerun()
+                with save_note:
+                    st.caption(
+                        "Saving updates the temporary working copy and immediately re-runs the checks."
+                    )
+                if save_changes:
+                    save_edits(edited, [c for c in edit_fields if c in edited.columns])
+                    st.rerun()
+
+        with review_tabs[2]:
+            if not ai_is_available():
+                st.info(
+                    "AI assistance is currently unavailable. All regular Datablix tools remain available."
+                )
+                st.caption(
+                    "To enable it later, add `AI_ENABLED = true` and `OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
+                )
+            elif filtered.empty:
+                st.info("No records match the current filters.")
+            else:
+                st.caption(
+                    "Turn detailed notes into a shorter review summary. Nothing is saved until you approve it."
+                )
+                ai_options = filtered["Record ID"].astype(str).tolist()
+                selected_ai_id = st.selectbox(
+                    "Record",
+                    ai_options,
+                    format_func=lambda rid: (
+                        f"{rid} · {filtered.loc[filtered['Record ID'].astype(str).eq(rid), 'Working Record Label'].iloc[0]}"
+                    ),
+                    key="db_ai_record_id",
+                )
+
+                ai_row = filtered.loc[
+                    filtered["Record ID"].astype(str).eq(selected_ai_id)
+                ].iloc[0]
+                source_parts = []
+                if not is_unresolved(ai_row.get("Reviewer Notes")):
+                    source_parts.append(f"Reviewer notes: {ai_row['Reviewer Notes']}")
+                if not is_unresolved(ai_row.get("Missing Information")):
+                    source_parts.append(f"Missing information: {ai_row['Missing Information']}")
+                if (
+                    not is_unresolved(ai_row.get("Research Gaps"))
+                    and str(ai_row.get("Research Gaps")) != "None"
+                ):
+                    source_parts.append(f"Open research gaps: {ai_row['Research Gaps']}")
+                if not is_unresolved(ai_row.get("Source URL")):
+                    source_parts.append(f"Source recorded: {ai_row['Source URL']}")
+
+                source_text = "\n".join(source_parts)
+                notes_key = f"db_ai_notes_{selected_ai_id}"
+                summary_key = f"db_ai_summary_{selected_ai_id}"
+                loaded_key = f"db_ai_loaded_{selected_ai_id}"
+
+                if not st.session_state.get(loaded_key):
+                    st.session_state[notes_key] = source_text
+                    st.session_state.setdefault(summary_key, "")
+                    st.session_state[loaded_key] = True
+
+                ai_notes = st.text_area(
+                    "Notes to summarize",
+                    key=notes_key,
+                    height=180,
+                    placeholder="Add what was confirmed, which source was checked, and what still needs verification.",
+                )
+                generate_summary = st.button(
+                    "Prepare summary",
+                    type="primary",
+                    disabled=not ai_notes.strip() or not get_openai_api_key(),
+                    key=f"db_generate_ai_{selected_ai_id}",
+                )
+                if generate_summary:
+                    try:
+                        with st.spinner("Preparing a concise review summary..."):
+                            st.session_state[summary_key] = create_ai_summary(ai_notes)
+                    except Exception as error:
+                        st.error(str(error))
+
+                ai_summary = st.text_area(
+                    "Review and edit the summary",
+                    key=summary_key,
+                    height=160,
+                    placeholder="The prepared summary will appear here.",
+                )
+                if st.button(
+                    "Save to Reviewer Notes",
+                    disabled=not ai_summary.strip(),
+                    width="stretch",
+                    key=f"db_save_ai_{selected_ai_id}",
+                ):
+                    working_ai = st.session_state[S_WORKING].copy()
+                    target_mask = working_ai["Record ID"].astype(str).eq(selected_ai_id)
+                    working_ai.loc[target_mask, "Reviewer Notes"] = ai_summary.strip()
+                    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working_ai))
+                    st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+                    st.session_state[S_FLASH] = (
+                        f"AI summary saved to Reviewer Notes for {selected_ai_id}."
+                    )
+                    st.rerun()
+
     st.divider()
-    with st.expander("Add a building not in the file", expanded=not has_records):
-        st.caption("Add what you can confirm now. Unavailable details can stay blank and be followed up later.")
+    with st.expander("Add a property manually", expanded=not has_records):
+        st.caption(
+            "Enter confirmed details now. Leave unavailable information blank and document it later."
+        )
         suggested = generate_id(st.session_state[S_WORKING])
         with st.form("add_record", clear_on_submit=True):
+            st.markdown("**Property and location**")
+            p1, p2, p3 = st.columns(3)
+            record_id = p1.text_input(
+                "Record ID",
+                value=suggested,
+                help="A unique reference used to keep similar records separate.",
+            )
+            building_name = p1.text_input("Apartment Building Name")
+            owner = p1.text_input("Management / Owner")
+            classification = p2.text_input(
+                "Building Classification",
+                placeholder="Example: High Rise or Townhome",
+            )
+            units = p2.text_input(
+                "Number of Apartments",
+                placeholder="Example: 120",
+            )
+            address = p2.text_input(
+                "Street Address",
+                placeholder="Example: 100 Main Street",
+            )
+            city = p3.text_input("City", placeholder="Example: Ottawa")
+            province = p3.text_input("Province", placeholder="Example: Ontario or ON")
+            pc = p3.text_input("Postal Code", placeholder="Example: K1A 1A1")
+
+            st.markdown("**Contact and evidence**")
             c1, c2, c3 = st.columns(3)
-            record_id = c1.text_input("Record ID", value=suggested, help="A unique reference used to keep similar records separate.")
-            building_name = c1.text_input("Apartment Building Name", help="Use the name shown publicly when one is available.")
-            owner = c1.text_input("Apartment Building Management/Owner", help="Enter the company or organization named in the source.")
-            classification = c1.text_input("Building Classification", placeholder="Example: High Rise or Townhome")
-            units = c1.text_input("Number of Apartments", placeholder="Example: 120", help="Enter a number only when the source gives one.")
-            address = c2.text_input("Street Address", placeholder="Example: 100 Main Street")
-            city = c2.text_input("City", placeholder="Example: Ottawa")
-            province = c2.text_input("Province", placeholder="Example: Ontario or ON")
-            pc = c2.text_input("Postal Code", placeholder="Example: K1A 1A1")
-            phone = c3.text_input("Phone Number", placeholder="Example: 613-555-0199")
-            email = c3.text_input("Email Contact", placeholder="Example: leasing@example.ca")
-            website = c3.text_input("WebSite", placeholder="https://example.ca")
-            source_url = c3.text_input("Official Source URL", placeholder="https://example.ca/property", help="Use the exact page where the information was checked.")
-            researcher = c3.text_input("Researcher", placeholder="Name or initials", help="Record who checked the information so the trail is easy to follow.")
+            phone = c1.text_input("Phone Number", placeholder="Example: 613-555-0199")
+            email = c1.text_input("Email Contact", placeholder="Example: leasing@example.ca")
+            website = c2.text_input("Website", placeholder="https://example.ca")
+            source_url = c2.text_input(
+                "Official Source URL",
+                placeholder="https://example.ca/property",
+                help="Use the exact page where the information was checked.",
+            )
+            researcher = c3.text_input(
+                "Researcher",
+                placeholder="Name or initials",
+            )
+            no_date = c3.checkbox("Research date not recorded yet")
+            researched = c3.date_input(
+                "Date Researched",
+                value=date.today(),
+                disabled=no_date,
+            )
+
+            st.markdown("**Review status**")
             w1, w2, w3 = st.columns(3)
-            research_status = w1.selectbox("Research Status", RESEARCH_STATUSES, index=1, help="Choose the stage that best reflects the current work on this record.")
-            verification_status = w1.selectbox("Verification Status", VERIFICATION_STATUSES, help="Use Verified only after the key details have been checked by a person.")
-            decision = w1.selectbox("Record Decision", RECORD_DECISIONS, help="Keep the record, mark a needed update, flag a possible duplicate, or remove it from use.")
-            source_status = w2.selectbox("Source Status", SOURCE_STATUSES, help="Describe whether the source opened, needs another check, or could not be used.")
-            no_date = w2.checkbox("No research date yet", help="Select this when the source has not been checked yet.")
-            researched = w2.date_input("Date Researched", value=date.today(), disabled=no_date)
-            missing = w2.text_area("Missing Information", placeholder="Note details that were not available or could not be confirmed.")
-            notes = w3.text_area("Reviewer Notes", placeholder="Add corrections, conflicts, decisions, or useful context.")
-            add = st.form_submit_button("Add building", type="primary", width="stretch")
+            research_status = w1.selectbox(
+                "Research Status",
+                RESEARCH_STATUSES,
+                index=1,
+            )
+            verification_status = w1.selectbox(
+                "Verification Status",
+                VERIFICATION_STATUSES,
+            )
+            source_status = w2.selectbox("Source Status", SOURCE_STATUSES)
+            decision = w2.selectbox("Record Decision", RECORD_DECISIONS)
+            missing = w3.text_area(
+                "Missing Information",
+                placeholder="Details that were unavailable or could not be confirmed.",
+            )
+            notes = w3.text_area(
+                "Reviewer Notes",
+                placeholder="Corrections, conflicts, decisions, or useful context.",
+            )
+            add = st.form_submit_button(
+                "Add property",
+                type="primary",
+                width="stretch",
+            )
+
         if add:
             current = st.session_state[S_WORKING].copy()
             final_id = record_id.strip() or suggested
@@ -1461,28 +2020,148 @@ elif section == "Review & edit":
             else:
                 record = {c: pd.NA for c in current.columns}
                 record.update({
-                    "Record ID": final_id, "Building Name": building_name,
-                    "Management/Owner": owner, "Street Address": address,
-                    "City": city, "Province": canonical_province(province),
-                    "Postal Code": postal_code(pc), "Phone": phone,
-                    "Primary Email": email, "Website": website,
-                    "Number of Apartments": units, "Building Classification": classification,
-                    "Source URL": source_url, "Date Researched": pd.NA if no_date else researched.isoformat(),
-                    "Researcher": researcher, "Research Status": research_status,
-                    "Source Status": source_status, "Verification Status": verification_status,
-                    "Missing Information": missing, "Reviewer Notes": notes,
+                    "Record ID": final_id,
+                    "Building Name": building_name,
+                    "Management/Owner": owner,
+                    "Street Address": address,
+                    "City": city,
+                    "Province": canonical_province(province),
+                    "Postal Code": postal_code(pc),
+                    "Phone": phone,
+                    "Primary Email": email,
+                    "Website": website,
+                    "Number of Apartments": units,
+                    "Building Classification": classification,
+                    "Source URL": source_url,
+                    "Date Researched": pd.NA if no_date else researched.isoformat(),
+                    "Researcher": researcher,
+                    "Research Status": research_status,
+                    "Source Status": source_status,
+                    "Verification Status": verification_status,
+                    "Missing Information": missing,
+                    "Reviewer Notes": notes,
                     "Record Decision": decision,
                 })
-                st.session_state[S_WORKING] = normalize_workflow(pd.concat([current, pd.DataFrame([record])], ignore_index=True))
+                st.session_state[S_WORKING] = normalize_workflow(
+                    pd.concat([current, pd.DataFrame([record])], ignore_index=True)
+                )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
                 st.session_state[S_FLASH] = f"{final_id} was added to the workspace."
                 st.rerun()
 
-elif section == "Export":
-    st.header("Download your work")
-    st.info("This workspace is temporary. Download a copy before refreshing the page or closing the app.")
+
+# -----------------------------
+# Progress and quality
+# -----------------------------
+elif section == "Progress & quality":
+    render_page_heading(
+        "MONITOR",
+        "Progress and quality",
+        "Track research status, source coverage, quality issues, and the records still needing follow-up.",
+    )
+
+    top_metrics = st.columns(5)
+    top_metrics[0].metric("Completed", f"{int(qa['Research Status'].eq('Completed').sum()):,}")
+    top_metrics[1].metric("Ready for review", f"{int(qa['Research Status'].eq('Ready for Review').sum()):,}")
+    top_metrics[2].metric("Critical", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
+    top_metrics[3].metric("Quality warnings", f"{int(qa['Warning Count'].sum()):,}")
+    top_metrics[4].metric("Open field gaps", f"{int(qa['Research Gap Count'].sum()):,}")
+
+    progress_tabs = st.tabs([
+        "Research progress",
+        "Quality issues",
+        "Field coverage",
+        "Owner view",
+        "Draft profiles",
+    ])
+
+    with progress_tabs[0]:
+        st.caption(
+            "Follow the source, date, workflow status, and next action behind each record."
+        )
+        st.dataframe(
+            research_log(qa).head(250),
+            width="stretch",
+            hide_index=True,
+            height=540,
+        )
+
+    with progress_tabs[1]:
+        issue_data = issue_summary(qa)
+        if issue_data.empty:
+            st.success("No directory data issues are currently flagged.")
+        else:
+            st.caption("Start with critical items, then review warnings.")
+            st.dataframe(
+                issue_data,
+                width="stretch",
+                hide_index=True,
+            )
+        attention_columns = [
+            "Record ID", "Working Record Label", "QA Status", "QA Flags",
+            "Research Gaps", "Follow-up Priority", "Record Readiness",
+        ]
+        needs_attention = qa[
+            ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Directory")
+        ][attention_columns]
+        st.subheader("Records needing attention")
+        st.dataframe(
+            needs_attention,
+            width="stretch",
+            hide_index=True,
+            height=420,
+        )
+
+    with progress_tabs[2]:
+        st.caption(
+            "Coverage shows how often each useful field is populated. A blank is an open research gap, not automatically an error."
+        )
+        st.dataframe(
+            field_coverage(qa),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with progress_tabs[3]:
+        st.caption(
+            "Compare records grouped under each recorded management or ownership name."
+        )
+        st.dataframe(
+            owner_summary(qa),
+            width="stretch",
+            hide_index=True,
+            height=500,
+        )
+
+    with progress_tabs[4]:
+        st.caption(
+            "These sentences are assembled from current fields. Confirm facts and wording before use."
+        )
+        st.dataframe(
+            draft_profiles(qa).head(100),
+            width="stretch",
+            hide_index=True,
+            height=520,
+        )
+
+
+# -----------------------------
+# Downloads
+# -----------------------------
+elif section == "Downloads":
+    render_page_heading(
+        "SAVE YOUR WORK",
+        "Downloads",
+        "Export the complete workbook or choose a focused file for a specific next step.",
+    )
+    st.warning(
+        "This workspace is temporary. Download a fresh copy before refreshing the page or closing the app."
+    )
+
     listings = listing_export(qa)
-    follow_up = qa[~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Directory")]
+    follow_up = qa[
+        ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Directory")
+    ]
     ready = qa[ready_mask(qa)]
     quality = qa[qa["QA Status"].isin(["Critical", "Review"])]
     sheets = {
@@ -1494,22 +2173,88 @@ elif section == "Export":
         "Follow-up Queue": follow_up,
         "Field Coverage": field_coverage(qa),
         "Structure Recommendations": structure_recommendations(),
-        "Methodology & Limits": methodology(qa, st.session_state.get(S_NAME, "workspace"), st.session_state.get(S_SHEET, "")),
+        "Methodology & Limits": methodology(
+            qa,
+            st.session_state.get(S_NAME, "workspace"),
+            st.session_state.get(S_SHEET, ""),
+        ),
         "Working Data": qa,
     }
     filename = safe_filename(st.session_state.get(S_NAME, "datablix"))
-    st.write("The complete workbook keeps the clean building view separate from sources, notes, follow-ups, and working details, so each view stays easier to use.")
-    st.caption("Choose the complete workbook for everything together, or use the smaller downloads below for a single view.")
-    row = st.columns(2)
-    row[0].download_button("Download complete workbook", excel_bytes(sheets), f"{filename}_datablix_workbook.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", width="stretch")
-    row[1].download_button("Download follow-up queue", csv_bytes(follow_up), f"{filename}_follow_up_queue.csv", "text/csv", disabled=follow_up.empty, width="stretch")
-    with st.expander("Download one view at a time"):
-        st.caption("Choose one of these when you do not need the full workbook.")
-        r1 = st.columns(3)
-        r1[0].download_button("Building listings", csv_bytes(listings), f"{filename}_building_listings.csv", "text/csv", width="stretch")
-        r1[1].download_button("Owner research list", csv_bytes(owner_summary(qa)), f"{filename}_owner_research_list.csv", "text/csv", width="stretch")
-        r1[2].download_button("Draft profiles", csv_bytes(draft_profiles(qa)), f"{filename}_draft_profiles.csv", "text/csv", width="stretch")
-        r2 = st.columns(3)
-        r2[0].download_button("Source verification tracker", csv_bytes(research_log(qa)), f"{filename}_source_verification.csv", "text/csv", width="stretch")
-        r2[1].download_button("Directory-ready listings", csv_bytes(listing_export(ready)), f"{filename}_directory_ready.csv", "text/csv", disabled=ready.empty, width="stretch")
-        r2[2].download_button("Quality review queue", csv_bytes(quality), f"{filename}_quality_review_queue.csv", "text/csv", disabled=quality.empty, width="stretch")
+
+    export_metrics = st.columns(4)
+    export_metrics[0].metric("All records", f"{len(qa):,}")
+    export_metrics[1].metric("Ready listings", f"{len(ready):,}")
+    export_metrics[2].metric("Follow-up records", f"{len(follow_up):,}")
+    export_metrics[3].metric("Quality review", f"{len(quality):,}")
+
+    st.subheader("Recommended download")
+    st.write(
+        "The complete workbook keeps listings, source evidence, follow-ups, profiles, coverage, and working details in separate sheets."
+    )
+    download_main, download_followup = st.columns([1.4, 1])
+    download_main.download_button(
+        "Download complete workbook",
+        excel_bytes(sheets),
+        f"{filename}_datablix_workbook.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        width="stretch",
+    )
+    download_followup.download_button(
+        "Download follow-up queue",
+        csv_bytes(follow_up),
+        f"{filename}_follow_up_queue.csv",
+        "text/csv",
+        disabled=follow_up.empty,
+        width="stretch",
+    )
+
+    with st.expander("Download a single view"):
+        st.caption("Use these smaller files when you do not need the complete workbook.")
+        row1 = st.columns(3)
+        row1[0].download_button(
+            "Building listings",
+            csv_bytes(listings),
+            f"{filename}_building_listings.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row1[1].download_button(
+            "Owner research list",
+            csv_bytes(owner_summary(qa)),
+            f"{filename}_owner_research_list.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row1[2].download_button(
+            "Draft profiles",
+            csv_bytes(draft_profiles(qa)),
+            f"{filename}_draft_profiles.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row2 = st.columns(3)
+        row2[0].download_button(
+            "Source verification tracker",
+            csv_bytes(research_log(qa)),
+            f"{filename}_source_verification.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row2[1].download_button(
+            "Directory-ready listings",
+            csv_bytes(listing_export(ready)),
+            f"{filename}_directory_ready.csv",
+            "text/csv",
+            disabled=ready.empty,
+            width="stretch",
+        )
+        row2[2].download_button(
+            "Quality review queue",
+            csv_bytes(quality),
+            f"{filename}_quality_review_queue.csv",
+            "text/csv",
+            disabled=quality.empty,
+            width="stretch",
+        )
