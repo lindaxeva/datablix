@@ -1022,7 +1022,7 @@ with st.sidebar:
                 st.rerun()
 
 if S_WORKING not in st.session_state:
-    st.info("Choose a starting point from the sidebar. Your records will open here as an editable working copy.")
+    st.info("Choose a starting point from the sidebar (>>). Your records will open here as an editable working copy.")
     with st.expander("What Datablix does", expanded=True):
         st.markdown("""
         - Opens CSV, Excel, or Google Sheets as an editable working copy.
