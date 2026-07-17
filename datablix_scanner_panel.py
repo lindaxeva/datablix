@@ -6,6 +6,7 @@ from dataclasses import asdict
 
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Alignment, Border, Font, Side
 
 from full_site_scanner import ScanOptions, WebsiteScanError, scan_website
 
@@ -27,6 +28,7 @@ DIRECTORY_FIELD_MAP = {
     "primary_email": "Primary Email",
     "website": "Website",
     "number_of_apartments": "Number of Apartments",
+    "building_classification": "Building Classification",
     "source_url": "Source URL",
     "review_status": "Verification Status",
 }
@@ -40,7 +42,8 @@ def _records_dataframe(report) -> pd.DataFrame:
                 "approved", "building_name", "management_owner", "street_address",
                 "address_line_2", "city", "province", "postal_code", "country",
                 "phone", "primary_email", "website", "number_of_apartments",
-                "source_url", "source_page_title", "extraction_method", "confidence",
+                "building_classification", "source_url", "source_page_title",
+                "extraction_method", "confidence",
                 "review_status", "evidence",
             ]
         )
@@ -52,16 +55,124 @@ def _pages_dataframe(report) -> pd.DataFrame:
     return pd.DataFrame([asdict(page) for page in report.pages])
 
 
+SCAN_LISTING_FIELDS = [
+    ("Apartment Building Name", "building_name"),
+    ("Street Address", "street_address"),
+    ("City and Postal Code", None),
+    ("Building Classification", "building_classification"),
+    ("Number of Apartments", "number_of_apartments"),
+    ("Apartment Building Management/Owner", "management_owner"),
+    ("Phone Number", "phone"),
+    ("Email Contact", "primary_email"),
+    ("WebSite", "website"),
+]
+
+SCAN_ADDITIONAL_FIELDS = [
+    ("Address Line 2", "address_line_2"),
+    ("Country", "country"),
+    ("Official Source URL", "source_url"),
+    ("Source Page Title", "source_page_title"),
+    ("Extraction Method", "extraction_method"),
+    ("Confidence", "confidence"),
+    ("Evidence", "evidence"),
+]
+
+
+def _clean_value(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _scan_location(row: pd.Series) -> str:
+    city = _clean_value(row.get("city"))
+    province = _clean_value(row.get("province"))
+    postal = _clean_value(row.get("postal_code"))
+    tail = " ".join(value for value in [province, postal] if value)
+    return f"{city}, {tail}" if city and tail else city or tail
+
+
+def _approved_listing_table(frame: pd.DataFrame) -> pd.DataFrame:
+    output = pd.DataFrame(index=frame.index)
+    for label, source_field in SCAN_LISTING_FIELDS:
+        output[label] = (
+            frame.apply(_scan_location, axis=1)
+            if source_field is None
+            else frame.get(source_field, "")
+        )
+    for label, source_field in SCAN_ADDITIONAL_FIELDS:
+        output[label] = frame.get(source_field, "")
+    return output.reset_index(drop=True)
+
+
+def _write_approved_listing_blocks(ws, approved: pd.DataFrame) -> None:
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ws.merge_cells("A1:B1")
+    ws["A1"] = "Create a listing for each Apartment Building as per sample below"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].alignment = Alignment(wrap_text=True)
+
+    row_number = 3
+    required_fields = [label for label, _ in SCAN_LISTING_FIELDS]
+    for listing_number, (_, row) in enumerate(approved.iterrows(), start=1):
+        name = _clean_value(row.get("Apartment Building Name")) or f"Listing {listing_number}"
+        ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=2)
+        ws.cell(
+            row=row_number,
+            column=1,
+            value=f"Apartment Building {listing_number}: {name}",
+        ).font = Font(bold=True, size=12)
+        row_number += 1
+
+        for field_name, raw_value in row.items():
+            value = _clean_value(raw_value)
+            if field_name not in required_fields and not value:
+                continue
+            field_cell = ws.cell(row=row_number, column=1, value=field_name)
+            value_cell = ws.cell(row=row_number, column=2, value=value)
+            field_cell.font = Font(bold=True)
+            field_cell.border = border
+            value_cell.border = border
+            field_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            value_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            if field_name in {"WebSite", "Official Source URL"} and value.startswith(("http://", "https://")):
+                value_cell.hyperlink = value
+                value_cell.style = "Hyperlink"
+            elif field_name == "Email Contact" and value:
+                value_cell.hyperlink = f"mailto:{value}"
+                value_cell.style = "Hyperlink"
+            row_number += 1
+        row_number += 2
+
+    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 75
+    ws.freeze_panes = "A3"
+    ws.sheet_view.showGridLines = False
+
+
 def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        approved_mask = records_df.get(
+            "approved",
+            pd.Series(False, index=records_df.index),
+        ).fillna(False)
+        approved = records_df.loc[approved_mask].copy()
+        approved_listings = _approved_listing_table(approved)
+        ws = writer.book.create_sheet("Approved Listings")
+        _write_approved_listing_blocks(ws, approved_listings)
         records_df.to_excel(writer, sheet_name="Record Candidates", index=False)
         pages_df.to_excel(writer, sheet_name="Pages Scanned", index=False)
         pd.DataFrame({"Blocked URL": report.blocked_urls}).to_excel(
-            writer, sheet_name="Blocked", index=False
+            writer,
+            sheet_name="Blocked",
+            index=False,
         )
         pd.DataFrame({"Error": report.errors}).to_excel(
-            writer, sheet_name="Errors", index=False
+            writer,
+            sheet_name="Errors",
+            index=False,
         )
     return output.getvalue()
 
@@ -366,6 +477,7 @@ def render_website_scanner_panel(
         "primary_email",
         "website",
         "number_of_apartments",
+        "building_classification",
         "source_url",
         "confidence",
     ]
@@ -403,6 +515,10 @@ def render_website_scanner_panel(
             "number_of_apartments": st.column_config.TextColumn(
                 "Number of Apartments"
             ),
+            "building_classification": st.column_config.TextColumn(
+                "Building Classification",
+                help="For example: High Rise - 28, Low Rise, Townhome, or Duplex.",
+            ),
             "source_url": st.column_config.LinkColumn("Source Page"),
             "confidence": st.column_config.ProgressColumn(
                 "Confidence",
@@ -421,7 +537,7 @@ def render_website_scanner_panel(
     approved = updated_records.loc[
         updated_records["approved"].fillna(False)
     ].copy()
-    approved["review_status"] = "Human reviewed"
+    approved["review_status"] = "Verified"
 
     st.markdown("#### 3. Add approved records")
     st.caption(
@@ -451,6 +567,8 @@ def render_website_scanner_panel(
         )
         evidence_columns = [
             "building_name",
+            "building_classification",
+            "number_of_apartments",
             "source_url",
             "source_page_title",
             "extraction_method",
@@ -467,7 +585,7 @@ def render_website_scanner_panel(
                 hide_index=True,
             )
 
-        csv_data = approved.to_csv(index=False).encode("utf-8-sig")
+        csv_data = _approved_listing_table(approved).to_csv(index=False).encode("utf-8-sig")
         excel_data = _excel_bytes(updated_records, pages_df, report)
         d1, d2, d3 = st.columns(3)
         d1.download_button(
