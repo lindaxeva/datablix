@@ -231,16 +231,16 @@ def render_brand_header():
         st.html(f"""
         <div class="db-brand">
             <img class="db-logo" src="data:{mime};base64,{encoded}" alt="Datablix logo">
-            <div class="db-tag">Your rental property research data assistant</div>
-            <div class="db-subtag">Scan, organize, review, and export public property information.</div>
+            <div class="db-tag">The research desk for rental property data</div>
+            <div class="db-subtag">Collect public listings, review the evidence, and export a directory you can stand behind.</div>
         </div>
         """)
     else:
         st.html("""
         <div class="db-brand">
             <div class="db-brand-name">Datablix</div>
-            <div class="db-tag">Your rental property research data assistant</div>
-            <div class="db-subtag">Scan, organize, review, and export public property information.</div>
+            <div class="db-tag">The research desk for rental property data</div>
+            <div class="db-subtag">Collect public listings, review the evidence, and export a directory you can stand behind.</div>
         </div>
         """)
 
@@ -451,7 +451,7 @@ def map_schema(df):
             rows.append({"Datablix Field": target, "Imported Column(s)": ", ".join(matches), "Mapping Status": "Mapped"})
         else:
             mapped[target] = pd.NA
-            rows.append({"Datablix Field": target, "Imported Column(s)": "—", "Mapping Status": "Not found"})
+            rows.append({"Datablix Field": target, "Imported Column(s)": "None", "Mapping Status": "Not found"})
 
     combined = source_columns(imported, COMBINED_LOCATION_ALIASES)
     if combined:
@@ -502,7 +502,11 @@ def map_schema(df):
 def validate_input(df):
     groups = [ALIASES["Building Name"], ALIASES["Management/Owner"], ALIASES["Street Address"], ALIASES["City"], COMBINED_LOCATION_ALIASES, ALIASES["Website"], ALIASES["Phone"]]
     if sum(bool(source_columns(df, g)) for g in groups) < 2:
-        raise ValueError("This worksheet does not look like a row-based apartment directory. Choose the tab where each row is one building.")
+        raise ValueError(
+            "Datablix could not find property columns in this worksheet. "
+            "Pick the tab where the first row contains headings such as building name, "
+            "address, or owner, and each row below is one building."
+        )
 
 
 def excel_sheet_names(uploaded):
@@ -558,7 +562,10 @@ def sheet_csv_url(url, selector=""):
         return clean
     sid = sheet_id(clean)
     if not sid:
-        raise ValueError("This does not look like a standard Google Sheets sharing link.")
+        raise ValueError(
+            "This link does not look like a Google Sheets sharing link. "
+            "Copy it from Share > Copy link inside the Sheet."
+        )
     if selector and not selector.isdigit():
         return f"https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&sheet={quote(selector)}"
     gid = selector if selector.isdigit() else sheet_gid(clean)
@@ -572,14 +579,23 @@ def read_google_sheet(url, selector=""):
             data = response.read()
             content_type = response.headers.get("Content-Type", "").lower()
     except Exception as error:
-        raise ValueError("Datablix could not read this Google Sheet. Confirm the link and set General access to Anyone with the link, Viewer.") from error
+        raise ValueError(
+            "Datablix could not open this Google Sheet. Check the link, then set the Sheet's "
+            "General access to 'Anyone with the link' with the Viewer role and try again."
+        ) from error
     preview = data[:500].decode("utf-8", errors="ignore").lower()
     if "text/html" in content_type or "<html" in preview:
-        raise ValueError("Google returned a webpage instead of spreadsheet data. Confirm the sharing setting or use a published CSV link.")
+        raise ValueError(
+            "Google returned a webpage instead of spreadsheet data. Set the Sheet's General "
+            "access to 'Anyone with the link', or paste a published CSV link instead."
+        )
     try:
         df = pd.read_csv(io.BytesIO(data))
     except Exception as error:
-        raise ValueError("The Sheet opened, but Datablix could not read the first row as column headings.") from error
+        raise ValueError(
+            "The Sheet opened, but its first row could not be read as column headings. "
+            "Make sure row 1 contains the column names."
+        ) from error
     sid = sheet_id(url)
     return prepare_data(df), data, f"google_sheet_{sid[:10]}.csv" if sid else "google_sheet.csv", selector or sheet_gid(url) or "linked worksheet"
 
@@ -867,7 +883,7 @@ def load_upload(uploaded, sheet=None):
     validate_input(df)
     mapped, mapping = map_schema(df)
     signature = f"{uploaded.name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
-    open_workspace(mapped, mapping, signature, uploaded.name, sheet, "Uploaded file", uploaded.name, message=f"{uploaded.name} uploaded successfully.")
+    open_workspace(mapped, mapping, signature, uploaded.name, sheet, "Uploaded file", uploaded.name, message=f"Opened {uploaded.name} as a working copy.")
 
 
 def load_google(url, selector="", force=False):
@@ -876,11 +892,11 @@ def load_google(url, selector="", force=False):
     mapped, mapping = map_schema(df)
     signature = f"{name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
     if not force and st.session_state.get(S_FILE) == signature:
-        st.session_state[S_FLASH] = "This Google Sheet is already open. Your current edits were kept."
+        st.session_state[S_FLASH] = "This Google Sheet is already open. Your session edits were kept."
         return False
     if force:
         st.session_state.pop(S_FILE, None)
-    open_workspace(mapped, mapping, signature, name, sheet, "Google Sheet", str(url).strip(), str(selector).strip(), "Google Sheet loaded as an editable working copy.")
+    open_workspace(mapped, mapping, signature, name, sheet, "Google Sheet", str(url).strip(), str(selector).strip(), "Opened the Google Sheet as a working copy. The original Sheet is never edited.")
     return True
 
 
@@ -888,7 +904,7 @@ def blank_workspace():
     df = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
     mapping = pd.DataFrame({"Datablix Field": INTERNAL_COLUMNS, "Imported Column(s)": INTERNAL_COLUMNS, "Mapping Status": "Template field"})
     st.session_state.pop(S_FILE, None)
-    open_workspace(df, mapping, "blank-workspace", "datablix_directory_research.csv", "", "Blank workspace", message="A blank workspace was created.")
+    open_workspace(df, mapping, "blank-workspace", "datablix_directory_research.csv", "", "Blank workspace", message="Created a blank workspace.")
 
 
 def generate_id(df):
@@ -907,7 +923,7 @@ def save_edits(edited, columns):
     working["Postal Code"] = working["Postal Code"].apply(postal_code)
     st.session_state[S_WORKING] = normalize_workflow(prepare_data(working))
     st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-    st.session_state[S_FLASH] = "Updates were saved and the checks were re-run."
+    st.session_state[S_FLASH] = "Changes saved. Quality checks were re-run."
 
 
 # =========================================================
@@ -932,7 +948,7 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
     if qa_frame is None or qa_frame.empty:
         return (
             "Add your first records",
-            "Scan a public website or add a property manually to begin your working directory.",
+            "Scan a permitted public website or add a property by hand to start the working directory.",
             "Website scanner",
             "Open website scanner",
         )
@@ -947,60 +963,82 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
     if critical_count:
         return (
             "Fix critical records first",
-            f"{critical_count:,} record(s) are missing core identity details or have a critical conflict.",
+            f"{critical_count:,} record(s) are missing core identity details or carry a critical conflict.",
             "Review records",
-            "Review critical records",
+            "Fix critical records",
         )
     if follow_up_count:
         return (
-            "Work through high-priority follow-ups",
-            f"{follow_up_count:,} record(s) need a duplicate decision, source follow-up, or key correction.",
+            "Clear the high-priority follow-ups",
+            f"{follow_up_count:,} record(s) need a duplicate decision, a source follow-up, or a key correction.",
             "Review records",
             "Open review queue",
         )
     if review_count:
         return (
-            "Verify reviewed candidates",
-            f"{review_count:,} record(s) are ready for a human verification decision.",
+            "Verify the reviewed candidates",
+            f"{review_count:,} record(s) are waiting for a human verification decision.",
             "Review records",
-            "Review candidates",
+            "Verify candidates",
         )
     if ready_count < len(qa_frame):
         return (
             "Check progress and remaining gaps",
-            "Use the progress view to see incomplete research, missing details, and source freshness.",
+            "See which research is incomplete, which details are missing, and how fresh each source is.",
             "Progress & quality",
             "Check progress",
         )
     return (
         "Download a fresh copy",
-        "Your current records are ready. Export the workbook before leaving this session.",
+        "Every record is ready. Export the workbook before you leave this session.",
         "Downloads",
-        "Open downloads",
+        "Download workbook",
     )
 
 
 st.html("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&display=swap');
+
 :root{
-    --db-border: rgba(49,51,63,.13);
-    --db-soft: rgba(127,127,127,.055);
-    --db-soft-strong: rgba(127,127,127,.09);
+    --db-accent:#146C5A;            /* verified green: the colour of a signed-off record */
+    --db-accent-strong:#0E5346;
+    --db-accent-soft:rgba(20,108,90,.09);
+    --db-accent-edge:rgba(20,108,90,.45);
+    --db-ink:#1E2A27;
+    --db-border:rgba(30,42,39,.14);
+    --db-soft:rgba(30,42,39,.035);
+    --db-soft-strong:rgba(30,42,39,.07);
+    --db-display:'Sora','Source Sans Pro',sans-serif;
 }
+@media(prefers-color-scheme:dark){
+    :root{
+        --db-accent:#3FBFA0;
+        --db-accent-strong:#5AD4B6;
+        --db-accent-soft:rgba(63,191,160,.12);
+        --db-accent-edge:rgba(63,191,160,.5);
+        --db-border:rgba(255,255,255,.14);
+        --db-soft:rgba(255,255,255,.04);
+        --db-soft-strong:rgba(255,255,255,.075);
+    }
+}
+
 .block-container{
     max-width:1380px;
     padding-top:1rem;
     padding-bottom:4rem;
 }
+
+/* Type: Sora carries the identity in headings and the brand mark only. */
 h1,h2,h3{
-    letter-spacing:-.025em;
+    font-family:var(--db-display);
+    letter-spacing:-.02em;
 }
-h2{
-    margin-bottom:.1rem;
-}
+h2{margin-bottom:.1rem}
+
 .db-brand{
     text-align:center;
-    margin:.15rem auto 1.15rem;
+    margin:.15rem auto 1.3rem;
 }
 .db-logo{
     width:clamp(280px,42vw,540px);
@@ -1009,73 +1047,99 @@ h2{
     object-fit:contain;
 }
 .db-brand-name{
-    font-size:2.1rem;
-    font-weight:760;
-    letter-spacing:-.045em;
+    font-family:var(--db-display);
+    font-size:2.15rem;
+    font-weight:800;
+    letter-spacing:-.04em;
     line-height:1.05;
 }
+.db-brand-name::after{
+    content:"";
+    display:block;
+    width:2.6rem;
+    height:3px;
+    margin:.45rem auto 0;
+    border-radius:2px;
+    background:var(--db-accent);
+}
 .db-tag{
-    margin-top:.25rem;
+    margin-top:.4rem;
     font-size:1.03rem;
-    font-weight:560;
-    opacity:.82;
+    font-weight:600;
+    opacity:.85;
 }
 .db-subtag{
     margin-top:.2rem;
     font-size:.9rem;
-    opacity:.64;
+    opacity:.62;
 }
+
 .db-eyebrow{
     margin-top:.25rem;
     margin-bottom:-.35rem;
-    font-size:.76rem;
+    font-size:.74rem;
     font-weight:750;
-    letter-spacing:.08em;
+    letter-spacing:.1em;
     text-transform:uppercase;
-    opacity:.62;
+    color:var(--db-accent);
+    opacity:.95;
 }
+
+/* Workspace ledger strip: the one place session state is always visible. */
 .db-workspace-strip{
     display:flex;
     flex-wrap:wrap;
-    gap:.55rem 1rem;
+    gap:.55rem 1.35rem;
     align-items:center;
-    padding:.72rem .9rem;
+    padding:.72rem 1rem;
     margin:.25rem 0 1rem;
     border:1px solid var(--db-border);
-    border-radius:11px;
+    border-left:4px solid var(--db-accent-edge);
+    border-radius:10px;
     background:var(--db-soft);
     font-size:.88rem;
 }
-.db-workspace-strip strong{
+.db-workspace-strip strong{font-weight:700}
+.db-workspace-strip .db-num{
+    font-variant-numeric:tabular-nums;
     font-weight:700;
+    color:var(--db-accent);
 }
+
 .db-step-line{
-    margin:.2rem 0 .9rem;
-    font-size:.88rem;
-    opacity:.72;
+    margin:.2rem 0 1rem;
+    font-size:.82rem;
+    letter-spacing:.02em;
+    opacity:.66;
 }
-.db-card-copy{
-    min-height:3.6rem;
-}
+.db-card-copy{min-height:3.6rem}
+
 div[data-testid="stSidebar"]{
     border-right:1px solid var(--db-border);
 }
+
 div[data-testid="stMetric"]{
     background:var(--db-soft);
     border:1px solid var(--db-border);
+    border-top:3px solid var(--db-accent-edge);
     border-radius:12px;
     padding:.8rem .9rem;
     min-height:100px;
 }
-div[data-testid="stMetric"] label{
-    font-weight:650;
+div[data-testid="stMetric"] label{font-weight:650}
+div[data-testid="stMetricValue"]{
+    font-variant-numeric:tabular-nums;
+    font-family:var(--db-display);
+    letter-spacing:-.02em;
 }
+
 div[data-testid="stFileUploader"]{
-    border:1px dashed rgba(49,51,63,.23);
+    border:1px dashed var(--db-accent-edge);
     border-radius:11px;
     padding:.3rem .6rem .7rem;
-    background:var(--db-soft);
+    background:var(--db-accent-soft);
 }
+
 div[data-testid="stExpander"],
 div[data-testid="stDataFrame"],
 div[data-testid="stDataEditor"]{
@@ -1083,11 +1147,38 @@ div[data-testid="stDataEditor"]{
     border-radius:10px;
     overflow:hidden;
 }
+
 .stButton>button,.stDownloadButton>button{
     border-radius:9px;
     font-weight:650;
     min-height:2.65rem;
 }
+button[data-testid="stBaseButton-primary"],
+button[kind="primary"]{
+    background:var(--db-accent) !important;
+    border-color:var(--db-accent) !important;
+    color:#fff !important;
+}
+button[data-testid="stBaseButton-primary"]:hover,
+button[kind="primary"]:hover{
+    background:var(--db-accent-strong) !important;
+    border-color:var(--db-accent-strong) !important;
+}
+button[data-testid="stBaseButton-primaryFormSubmit"]{
+    background:var(--db-accent) !important;
+    border-color:var(--db-accent) !important;
+    color:#fff !important;
+}
+.stButton>button:focus-visible,
+.stDownloadButton>button:focus-visible{
+    outline:2px solid var(--db-accent);
+    outline-offset:2px;
+}
+
+.stProgress > div > div > div > div{
+    background-color:var(--db-accent);
+}
+
 button[data-testid="stSidebarCollapseButton"]{
     width:auto !important;
     min-width:7.4rem !important;
@@ -1101,16 +1192,13 @@ button[data-testid="stSidebarCollapseButton"]::after{
     white-space:nowrap;
     opacity:.84;
 }
+
 @media (max-width:900px){
     .db-card-copy{min-height:auto}
     button[data-testid="stSidebarCollapseButton"]{min-width:6.7rem !important}
 }
-@media(prefers-color-scheme:dark){
-    :root{
-        --db-border:rgba(255,255,255,.13);
-        --db-soft:rgba(255,255,255,.035);
-        --db-soft-strong:rgba(255,255,255,.065);
-    }
+@media (prefers-reduced-motion:reduce){
+    *{transition:none !important;animation:none !important}
 }
 </style>
 """)
@@ -1123,7 +1211,7 @@ render_brand_header()
 with st.sidebar:
     st.subheader("Start or switch workspace")
     st.caption(
-        "Choose a source, then use the main workspace to review, verify, and download your records."
+        "Pick where your records come from. Datablix always works on a temporary copy, never the original."
     )
 
     current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
@@ -1152,7 +1240,7 @@ with st.sidebar:
             uploaded = st.file_uploader(
                 "CSV or Excel file",
                 type=["csv", "xlsx"],
-                help="Use a file where each row represents one building or property record.",
+                help="Each row should be one building or property record, with column names in the first row.",
                 key="db_sidebar_upload",
             )
             selected = None
@@ -1163,7 +1251,7 @@ with st.sidebar:
                         "Worksheet",
                         names,
                         index=preferred_sheet(names),
-                        help="Choose the tab where the first row contains headings and each row below is one record.",
+                        help="Pick the tab where row 1 holds the headings and every row below is one record.",
                         key="db_sidebar_sheet",
                     )
                 load_upload(uploaded, selected)
@@ -1173,14 +1261,14 @@ with st.sidebar:
                 url = st.text_input(
                     "Google Sheets link",
                     placeholder="https://docs.google.com/spreadsheets/d/...",
-                    help="The Sheet must be viewable by anyone with the link. Datablix opens a working copy and does not edit the original.",
+                    help="The Sheet must be viewable by anyone with the link. Datablix reads a copy and never edits the original.",
                 )
                 selector = st.text_input(
                     "Worksheet name or tab ID (optional)",
                     placeholder="Example: Apartment Buildings or 0",
                 )
                 submit = st.form_submit_button(
-                    "Load working copy",
+                    "Open working copy",
                     type="primary",
                     width="stretch",
                 )
@@ -1189,7 +1277,7 @@ with st.sidebar:
 
         elif source == "Scan a website":
             st.caption(
-                "Extracted findings stay in a review queue until you approve them."
+                "Scanned findings wait in a review queue. Nothing joins your records until you approve it."
             )
             if st.button(
                 "Open website scanner",
@@ -1218,7 +1306,7 @@ with st.sidebar:
 
     with st.expander("Blank template"):
         st.caption(
-            "Download a starter file with the main property, contact, and review fields already arranged."
+            "A starter CSV with the property, contact, and review columns already in place."
         )
         st.download_button(
             "Download template",
@@ -1254,13 +1342,14 @@ with st.sidebar:
 
         if st.session_state.get(S_SOURCE_TYPE) == "Google Sheet":
             with st.expander("Reload Google Sheet"):
+                st.caption("Fetch the Sheet again to pick up changes made at the source.")
                 confirm_reload = (
-                    st.checkbox("Replace my current session edits")
+                    st.checkbox("Replace my session edits with the reloaded data")
                     if st.session_state.get(S_EDIT_COUNT, 0)
                     else True
                 )
                 if st.button(
-                    "Reload source",
+                    "Reload from source",
                     disabled=not confirm_reload,
                     width="stretch",
                     key="db_reload_google",
@@ -1273,7 +1362,7 @@ with st.sidebar:
                     st.rerun()
 
         with st.expander("Reset workspace"):
-            st.caption("This returns the workspace to the version first opened in this session.")
+            st.caption("Return every record to the version first opened in this session.")
             confirm_reset = st.checkbox(
                 "Discard my session edits",
                 key="db_confirm_reset",
@@ -1286,7 +1375,7 @@ with st.sidebar:
             ):
                 st.session_state[S_WORKING] = st.session_state[S_ORIGINAL].copy()
                 st.session_state[S_EDIT_COUNT] = 0
-                st.session_state[S_FLASH] = "The workspace was reset."
+                st.session_state[S_FLASH] = "Workspace reset to the original version."
                 st.rerun()
 
 
@@ -1311,7 +1400,8 @@ if S_WORKING not in st.session_state:
     if start_mode == "Website scan":
         st.subheader("Scan a public property website")
         st.write(
-            "Discover candidate property records from permitted pages. Nothing enters your working data until you review and approve it."
+            "Datablix finds candidate property records on permitted pages and holds them in a review queue. "
+            "Nothing enters your working data until you approve it."
         )
         if st.button(
             "Open website scanner",
@@ -1330,7 +1420,7 @@ if S_WORKING not in st.session_state:
         landing_upload = st.file_uploader(
             "Choose your file",
             type=["csv", "xlsx"],
-            help="Each row should represent one building or property record.",
+            help="Each row should be one building or property record, with column names in the first row.",
             key="db_landing_upload",
         )
         landing_sheet = None
@@ -1361,7 +1451,7 @@ if S_WORKING not in st.session_state:
                 placeholder="Example: Apartment Buildings or 0",
             )
             landing_submit = st.form_submit_button(
-                "Load working copy",
+                "Open working copy",
                 type="primary",
                 width="stretch",
             )
@@ -1375,7 +1465,7 @@ if S_WORKING not in st.session_state:
     else:
         st.subheader("Start with an empty workspace")
         st.write(
-            "Add records manually now, then use the same review, quality, and export tools."
+            "Add records by hand now, and use the same review, quality, and export tools as any other workspace."
         )
         if st.button(
             "Create blank workspace",
@@ -1387,13 +1477,13 @@ if S_WORKING not in st.session_state:
             go_to("Review records")
             st.rerun()
 
-    with st.expander("What happens after records are added", expanded=True):
+    with st.expander("How a workspace flows", expanded=True):
         flow_columns = st.columns(4)
         flow_items = [
             ("1. Collect", "Import, scan, or add property candidates."),
             ("2. Review", "Correct fields and record human decisions."),
             ("3. Check", "Resolve quality flags and research gaps."),
-            ("4. Download", "Save a fresh workbook or focused CSV."),
+            ("4. Download", "Save a fresh workbook or a focused CSV."),
         ]
         for column, (heading, copy) in zip(flow_columns, flow_items):
             with column:
@@ -1441,8 +1531,8 @@ st.markdown(
         '<div class="db-workspace-strip">'
         f'<span><strong>Workspace:</strong> {workspace_display}</span>'
         f'<span><strong>Source:</strong> {workspace_source}</span>'
-        f'<span><strong>Records:</strong> {len(working):,}</span>'
-        f'<span><strong>Session edits:</strong> {st.session_state.get(S_EDIT_COUNT, 0):,}</span>'
+        f'<span><strong>Records:</strong> <span class="db-num">{len(working):,}</span></span>'
+        f'<span><strong>Session edits:</strong> <span class="db-num">{st.session_state.get(S_EDIT_COUNT, 0):,}</span></span>'
         '</div>'
     ),
     unsafe_allow_html=True,
@@ -1468,13 +1558,13 @@ section = st.session_state["db_section"]
 
 if not has_records and section in ["Progress & quality", "Downloads"]:
     st.info(
-        "There are no records in this workspace yet. Use **Website scanner** or **Review records** to add the first one."
+        "This workspace has no records yet. Scan a website or add the first property to begin."
     )
     action_a, action_b = st.columns(2)
     if action_a.button("Open website scanner", type="primary", width="stretch"):
         go_to("Website scanner")
         st.rerun()
-    if action_b.button("Add a record manually", width="stretch"):
+    if action_b.button("Add a property by hand", width="stretch"):
         go_to("Review records")
         st.rerun()
     st.stop()
@@ -1487,7 +1577,7 @@ if section == "Overview":
     render_page_heading(
         "WORKSPACE",
         "Overview",
-        "See what is ready, what needs attention, and the most useful next action.",
+        "See what is ready, what needs attention, and the single most useful next step.",
     )
 
     next_title, next_copy, next_section, next_button = recommended_next_action(qa)
@@ -1507,7 +1597,7 @@ if section == "Overview":
 
     if not has_records:
         st.info(
-            "This workspace is empty. Scan a website or add a record manually to begin."
+            "This workspace is empty. Scan a website or add a property by hand to begin."
         )
         quick_scan, quick_manual = st.columns(2)
         if quick_scan.button(
@@ -1519,7 +1609,7 @@ if section == "Overview":
             go_to("Website scanner")
             st.rerun()
         if quick_manual.button(
-            "Add a record manually",
+            "Add a property by hand",
             width="stretch",
             key="overview_manual_empty",
         ):
@@ -1557,7 +1647,7 @@ if section == "Overview":
 
         st.subheader("Building preview")
         st.caption(
-            "A concise listing view of the first 20 records. Use Review records for corrections and decisions."
+            "The first 20 records as they would appear in the directory. Go to Review records to make corrections and decisions."
         )
         st.dataframe(
             listing_export(qa).head(20),
@@ -1575,7 +1665,7 @@ if section == "Overview":
                 f"{int(st.session_state[S_MAPPING]['Mapping Status'].ne('Not found').sum()):,}",
             )
             st.caption(
-                "Original columns remain in the working data. This table shows how imported headings were matched to consistent fields."
+                "Your original columns stay in the working data. This table shows how imported headings were matched to Datablix fields."
             )
             st.dataframe(
                 st.session_state[S_MAPPING],
@@ -1621,7 +1711,7 @@ elif section == "Website scanner":
         st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
         added_count = len(merged) - scanner_start_count
         st.session_state[S_FLASH] = (
-            f"{added_count} approved website-scanned record(s) were added. Review them before marking them as verified."
+            f"Added {added_count} approved record(s) from the website scan. Review them before marking them verified."
         )
         go_to("Review records")
         st.rerun()
@@ -1634,7 +1724,7 @@ elif section == "Review records":
     render_page_heading(
         "HUMAN REVIEW",
         "Review records",
-        "Find the records that need attention, inspect the evidence, and save deliberate corrections or decisions.",
+        "Find the records that need attention, inspect the evidence, and save deliberate corrections and decisions.",
     )
 
     filtered = qa.copy() if has_records else pd.DataFrame()
@@ -1643,7 +1733,7 @@ elif section == "Review records":
         search_col, focus_col = st.columns([2, 1])
         search_text = search_col.text_input(
             "Search records",
-            placeholder="Building, owner, address, city, record ID...",
+            placeholder="Building, owner, address, city, or record ID",
             key="db_review_search",
         )
         focus = focus_col.selectbox(
@@ -1722,7 +1812,9 @@ elif section == "Review records":
 
         with review_tabs[0]:
             if filtered.empty:
-                st.info("No records match the current search and filters.")
+                st.info(
+                    "No records match this search and focus. Clear the search box or switch the focus to All records."
+                )
             else:
                 st.caption(
                     "Read the issue, research gap, and readiness columns before changing a record."
@@ -1748,7 +1840,9 @@ elif section == "Review records":
 
         with review_tabs[1]:
             if filtered.empty:
-                st.info("No records are available to edit under the current filters.")
+                st.info(
+                    "No records match this search and focus, so there is nothing to edit. Widen the filters to continue."
+                )
             else:
                 edit_presets = {
                     "Core listing details": [
@@ -1768,7 +1862,7 @@ elif section == "Review records":
                 preset = st.selectbox(
                     "Editing view",
                     [*edit_presets.keys(), "Custom fields"],
-                    help="Choose a focused set of fields to avoid a very wide editor.",
+                    help="A focused set of fields keeps the editor readable. Choose Custom fields to build your own view.",
                     key="db_edit_preset",
                 )
                 if preset == "Custom fields":
@@ -1835,7 +1929,7 @@ elif section == "Review records":
                     )
                 with save_note:
                     st.caption(
-                        "Saving updates the temporary working copy and immediately re-runs the checks."
+                        "Saving updates the working copy and re-runs the quality checks right away."
                     )
                 if save_changes:
                     save_edits(edited, [c for c in edit_fields if c in edited.columns])
@@ -1844,13 +1938,13 @@ elif section == "Review records":
         with review_tabs[2]:
             if not ai_is_available():
                 st.info(
-                    "AI assistance is currently unavailable. All regular Datablix tools remain available."
+                    "AI assistance is switched off in this deployment. Everything else in Datablix works as usual."
                 )
                 st.caption(
-                    "To enable it later, add `AI_ENABLED = true` and `OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
+                    "To switch it on, add `AI_ENABLED = true` and `OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
                 )
             elif filtered.empty:
-                st.info("No records match the current filters.")
+                st.info("No records match this search and focus. Widen the filters to pick a record.")
             else:
                 st.caption(
                     "Turn detailed notes into a shorter review summary. Nothing is saved until you approve it."
@@ -1895,7 +1989,7 @@ elif section == "Review records":
                     "Notes to summarize",
                     key=notes_key,
                     height=180,
-                    placeholder="Add what was confirmed, which source was checked, and what still needs verification.",
+                    placeholder="Note what was confirmed, which source you checked, and what still needs verification.",
                 )
                 generate_summary = st.button(
                     "Prepare summary",
@@ -1914,7 +2008,7 @@ elif section == "Review records":
                     "Review and edit the summary",
                     key=summary_key,
                     height=160,
-                    placeholder="The prepared summary will appear here.",
+                    placeholder="The prepared summary will appear here. Edit it freely before saving.",
                 )
                 if st.button(
                     "Save to Reviewer Notes",
@@ -1928,14 +2022,14 @@ elif section == "Review records":
                     st.session_state[S_WORKING] = normalize_workflow(prepare_data(working_ai))
                     st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
                     st.session_state[S_FLASH] = (
-                        f"AI summary saved to Reviewer Notes for {selected_ai_id}."
+                        f"Saved the summary to Reviewer Notes for {selected_ai_id}."
                     )
                     st.rerun()
 
     st.divider()
-    with st.expander("Add a property manually", expanded=not has_records):
+    with st.expander("Add a property by hand", expanded=not has_records):
         st.caption(
-            "Enter confirmed details now. Leave unavailable information blank and document it later."
+            "Enter what you have confirmed. Leave unavailable details blank and record them in Missing Information."
         )
         suggested = generate_id(st.session_state[S_WORKING])
         with st.form("add_record", clear_on_submit=True):
@@ -1944,7 +2038,7 @@ elif section == "Review records":
             record_id = p1.text_input(
                 "Record ID",
                 value=suggested,
-                help="A unique reference used to keep similar records separate.",
+                help="A unique reference that keeps similar records separate.",
             )
             building_name = p1.text_input("Apartment Building Name")
             owner = p1.text_input("Management / Owner")
@@ -1972,7 +2066,7 @@ elif section == "Review records":
             source_url = c2.text_input(
                 "Official Source URL",
                 placeholder="https://example.ca/property",
-                help="Use the exact page where the information was checked.",
+                help="Paste the exact page where you checked the information.",
             )
             researcher = c3.text_input(
                 "Researcher",
@@ -2016,7 +2110,9 @@ elif section == "Review records":
             current = st.session_state[S_WORKING].copy()
             final_id = record_id.strip() or suggested
             if final_id in set(resolved(current["Record ID"]).dropna().astype(str).str.strip()):
-                st.error(f"Record ID {final_id} already exists.")
+                st.error(
+                    f"Record ID {final_id} is already in use. Enter a different ID, or clear the field to use the suggested one."
+                )
             else:
                 record = {c: pd.NA for c in current.columns}
                 record.update({
@@ -2046,7 +2142,7 @@ elif section == "Review records":
                     pd.concat([current, pd.DataFrame([record])], ignore_index=True)
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-                st.session_state[S_FLASH] = f"{final_id} was added to the workspace."
+                st.session_state[S_FLASH] = f"Added {final_id} to the workspace."
                 st.rerun()
 
 
@@ -2057,7 +2153,7 @@ elif section == "Progress & quality":
     render_page_heading(
         "MONITOR",
         "Progress and quality",
-        "Track research status, source coverage, quality issues, and the records still needing follow-up.",
+        "Track research status, source coverage, quality issues, and the records still waiting on follow-up.",
     )
 
     top_metrics = st.columns(5)
@@ -2077,7 +2173,7 @@ elif section == "Progress & quality":
 
     with progress_tabs[0]:
         st.caption(
-            "Follow the source, date, workflow status, and next action behind each record."
+            "Every record's source, research date, workflow status, and next action in one table."
         )
         st.dataframe(
             research_log(qa).head(250),
@@ -2091,7 +2187,7 @@ elif section == "Progress & quality":
         if issue_data.empty:
             st.success("No directory data issues are currently flagged.")
         else:
-            st.caption("Start with critical items, then review warnings.")
+            st.caption("Fix critical items first, then work through the warnings.")
             st.dataframe(
                 issue_data,
                 width="stretch",
@@ -2114,7 +2210,7 @@ elif section == "Progress & quality":
 
     with progress_tabs[2]:
         st.caption(
-            "Coverage shows how often each useful field is populated. A blank is an open research gap, not automatically an error."
+            "How often each field is filled in. A blank is an open research gap, not automatically an error."
         )
         st.dataframe(
             field_coverage(qa),
@@ -2124,7 +2220,7 @@ elif section == "Progress & quality":
 
     with progress_tabs[3]:
         st.caption(
-            "Compare records grouped under each recorded management or ownership name."
+            "Records grouped by the management or ownership name on file, so you can research one company at a time."
         )
         st.dataframe(
             owner_summary(qa),
@@ -2135,7 +2231,7 @@ elif section == "Progress & quality":
 
     with progress_tabs[4]:
         st.caption(
-            "These sentences are assembled from current fields. Confirm facts and wording before use."
+            "Sentences assembled from the current fields. Confirm the facts and refine the wording before publishing."
         )
         st.dataframe(
             draft_profiles(qa).head(100),
@@ -2152,10 +2248,10 @@ elif section == "Downloads":
     render_page_heading(
         "SAVE YOUR WORK",
         "Downloads",
-        "Export the complete workbook or choose a focused file for a specific next step.",
+        "Export the complete workbook, or pick a focused file for a specific next step.",
     )
     st.warning(
-        "This workspace is temporary. Download a fresh copy before refreshing the page or closing the app."
+        "This workspace lives only in your browser session. Download a copy before refreshing the page or closing the app."
     )
 
     listings = listing_export(qa)
@@ -2211,7 +2307,7 @@ elif section == "Downloads":
     )
 
     with st.expander("Download a single view"):
-        st.caption("Use these smaller files when you do not need the complete workbook.")
+        st.caption("Smaller files for when you do not need the complete workbook.")
         row1 = st.columns(3)
         row1[0].download_button(
             "Building listings",
