@@ -993,11 +993,12 @@ if S_WORKING not in st.session_state:
     st.info("Choose a starting point from the sidebar. Your records will open here as an editable working copy.")
     with st.expander("What Datablix does", expanded=True):
         st.markdown("""
-        - Opens CSV, Excel, or a viewable Google Sheet as a working copy.
-        - Recognizes similar column names while keeping the original fields available.
-        - Brings the main property and contact details into one consistent view.
-        - Separates likely data problems from details that are simply still unknown.
-        - Keeps sources, checks, decisions, and notes close to the records they support.
+        - Opens CSV, Excel, or Google Sheets as an editable working copy.
+        - Organizes key fields while preserving original columns.
+        - Flags missing information, possible duplicates, and data-quality issues.
+        - Tracks sources, verification, notes, and record status.
+        - Creates review-ready listings and downloadable reports.
+        - [Disabled by Default] Includes optional AI tools to summarize notes, suggest next research actions, and requires human review.
         """)
     st.stop()
 
