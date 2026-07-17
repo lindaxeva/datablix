@@ -922,12 +922,30 @@ div[data-testid="stExpander"],div[data-testid="stDataFrame"],div[data-testid="st
 """)
 render_brand_header()
 
-with st.sidebar:
-    st.markdown("### ➜ Start here")
-    st.caption(
-        "Upload a file, connect a Google Sheet, or begin with a blank workspace."
-    )
+st.html("""
+<style>
+.db-start-here{
+    position: fixed;
+    top: 0.75rem;
+    left: 3.2rem;
+    z-index: 1000000;
+    font-size: 0.9rem;
+    font-weight: 700;
+    opacity: 0.85;
+    pointer-events: none;
+}
+@media (max-width: 768px){
+    .db-start-here{
+        top: 0.7rem;
+        left: 3rem;
+        font-size: 0.82rem;
+    }
+}
+</style>
+<div class="db-start-here">Start here →</div>
+""")
 
+with st.sidebar:
     st.subheader("Workspace")
     st.caption(
         "Bring in your records, work through what needs attention, "
