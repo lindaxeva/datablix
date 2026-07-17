@@ -1,21 +1,100 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
 import re
 import unicodedata
 from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from openpyxl.styles import Alignment, Border, Font, Side
 
-from full_site_scanner import ScanOptions, WebsiteScanError, scan_website
+from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_website
 
 
 # Change this key if your existing Datablix working dataframe uses another
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
+
+SCANNER_BUILD = "Ontario Recovery 2026.07.17-r4"
+CHECKPOINT_DIRECTORY = Path(
+    os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
+)
+
+
+def _normalized_scan_url(value: str) -> str:
+    return str(value or "").strip().lower().rstrip("/")
+
+
+def _checkpoint_path(website_url: str) -> Path | None:
+    normalized = _normalized_scan_url(website_url)
+    if not normalized:
+        return None
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    return CHECKPOINT_DIRECTORY / f"{digest}.json"
+
+
+def _write_durable_checkpoint(
+    report,
+    website_url: str,
+    scope: str,
+    *,
+    is_final: bool = False,
+) -> Path | None:
+    path = _checkpoint_path(website_url)
+    if path is None:
+        return None
+
+    CHECKPOINT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "scanner_build": SCANNER_BUILD,
+        "website_url": website_url,
+        "scope": scope,
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "is_final": bool(is_final),
+        "report": report.as_dict(),
+    }
+
+    temporary_path = path.with_suffix(".tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, path)
+    return path
+
+
+def _read_durable_checkpoint(website_url: str) -> tuple[ScanReport, dict] | None:
+    path = _checkpoint_path(website_url)
+    if path is None or not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        report_data = payload.get("report", {})
+        report = ScanReport.from_dict(report_data)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+    if not report.pages:
+        return None
+    return report, payload
+
+
+def _delete_durable_checkpoint(website_url: str) -> None:
+    path = _checkpoint_path(website_url)
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
 
 DIRECTORY_FIELD_MAP = {
     "building_name": "Building Name",
@@ -253,8 +332,8 @@ def _records_dataframe(report) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(
             columns=[
-                "approved", "ontario_scope_status", "ontario_scope_reason",
-        "building_name", "management_owner", "street_address",
+                "approved", "building_name", "management_owner",
+                "street_address",
                 "address_line_2", "city", "province", "postal_code", "country",
                 "phone", "primary_email", "website", "number_of_apartments",
                 "building_classification", "source_url", "source_page_title",
@@ -456,6 +535,7 @@ def render_website_scanner_panel(
         """,
         unsafe_allow_html=True,
     )
+    st.caption(f"Scanner build: **{SCANNER_BUILD}**")
     st.markdown(
         '<div class="db-guidance"><strong>Ontario-only research scope.</strong>'
         '<span>The scanner may read a broader company website, but only Ontario properties can be approved, added, or exported. Confirmed non-Ontario records remain in the scan log.</span></div>',
@@ -495,7 +575,6 @@ def render_website_scanner_panel(
         scope = st.radio(
             "Coverage",
             options=list(coverage_settings),
-            index=list(coverage_settings).index(st.session_state["full_scan_scope"]),
             help=(
                 "Recommended is suitable for most websites. Quick check is for testing. "
                 "Extended scan is a follow-up option. Custom is for unusual cases."
@@ -645,6 +724,7 @@ def render_website_scanner_panel(
 
     if submitted:
         st.session_state["website_scan_active"] = True
+        st.session_state["website_scan_start_url"] = website_url
         st.session_state["website_scan_last_progress"] = {
             "pages_processed": 0,
             "records_found": 0,
@@ -655,6 +735,8 @@ def render_website_scanner_panel(
         }
         st.session_state.pop("website_scan_report", None)
         st.session_state.pop("website_scan_records", None)
+        st.session_state.pop("website_scan_checkpoint_report", None)
+        st.session_state.pop("website_scan_recovered_partial", None)
 
         render_mode = {
             "Automatic": "auto",
@@ -671,6 +753,7 @@ def render_website_scanner_panel(
             include_subdomains=include_subdomains,
             follow_query_strings=follow_queries,
             obey_robots_txt=True,
+            checkpoint_every_pages=10,
         )
 
         status = st.status("Starting website scan…", expanded=True)
@@ -691,11 +774,30 @@ def render_website_scanner_panel(
                 f"Errors: **{update.get('error_count', 0)}**"
             )
 
+        def save_checkpoint(partial_report) -> None:
+            # Keep an in-session copy for fast recovery and an atomic JSON file
+            # for recovery after a Streamlit rerun or browser reconnection.
+            st.session_state["website_scan_checkpoint_report"] = partial_report
+            st.session_state["website_scan_checkpoint_pages"] = len(
+                partial_report.pages
+            )
+            checkpoint_path = _write_durable_checkpoint(
+                partial_report,
+                website_url,
+                scope,
+                is_final=False,
+            )
+            if checkpoint_path is not None:
+                st.session_state["website_scan_checkpoint_path"] = str(
+                    checkpoint_path
+                )
+
         try:
             report = scan_website(
                 website_url=website_url,
                 options=options,
                 progress_callback=update_progress,
+                checkpoint_callback=save_checkpoint,
             )
         except WebsiteScanError as exc:
             st.session_state["website_scan_active"] = False
@@ -717,6 +819,24 @@ def render_website_scanner_panel(
             )
             with st.expander("Technical details"):
                 st.code(f"{type(exc).__name__}: {exc}")
+
+            recovered = _read_durable_checkpoint(website_url)
+            if recovered is not None:
+                recovered_report, checkpoint_meta = recovered
+                recovered_report.completion_reason = "interrupted_recovered"
+                recovered_records = _records_dataframe(recovered_report)
+                st.session_state["website_scan_report"] = recovered_report
+                st.session_state["website_scan_records"] = recovered_records
+                st.session_state["website_scan_scope"] = checkpoint_meta.get(
+                    "scope", scope
+                )
+                st.session_state["website_scan_page_limit_reached"] = False
+                st.session_state["website_scan_recovered_partial"] = True
+                st.warning(
+                    f"Recovered {len(recovered_report.pages):,} completed pages "
+                    f"and {len(recovered_records):,} candidate(s) from the latest "
+                    "durable checkpoint."
+                )
         else:
             st.session_state["website_scan_active"] = False
             progress.progress(1.0)
@@ -776,30 +896,90 @@ def render_website_scanner_panel(
             st.session_state["website_scan_records"] = _records_dataframe(report)
             st.session_state["website_scan_scope"] = scope
             st.session_state["website_scan_page_limit_reached"] = page_limit_reached
+            final_checkpoint_path = _write_durable_checkpoint(
+                report,
+                website_url,
+                scope,
+                is_final=True,
+            )
+            if final_checkpoint_path is not None:
+                st.session_state["website_scan_checkpoint_path"] = str(
+                    final_checkpoint_path
+                )
+            st.session_state.pop("website_scan_checkpoint_report", None)
+            st.session_state.pop("website_scan_checkpoint_pages", None)
+            st.session_state.pop("website_scan_recovered_partial", None)
 
     report = st.session_state.get("website_scan_report")
     records_df = st.session_state.get("website_scan_records")
+
     if report is None or not isinstance(records_df, pd.DataFrame):
+        checkpoint_report = st.session_state.get(
+            "website_scan_checkpoint_report"
+        )
+        checkpoint_meta = {}
+        recovery_url = (
+            website_url
+            or st.session_state.get("website_scan_start_url", "")
+        )
+
+        if checkpoint_report is None:
+            durable_recovery = _read_durable_checkpoint(recovery_url)
+            if durable_recovery is not None:
+                checkpoint_report, checkpoint_meta = durable_recovery
+
         last_progress = st.session_state.get("website_scan_last_progress", {})
         scan_active = bool(st.session_state.get("website_scan_active", False))
         processed = int(last_progress.get("pages_processed", 0) or 0)
 
-        if scan_active and processed > 0:
-            st.warning(
-                f"The previous scan appears to have been interrupted after "
-                f"{processed:,} pages. No completed report was returned. "
-                "Try the Recommended scan again with Automatic rendering, or use "
-                "HTML only when the website does not require JavaScript."
+        if checkpoint_report is not None and getattr(
+            checkpoint_report, "pages", None
+        ):
+            report = checkpoint_report
+            report.completion_reason = "interrupted_recovered"
+            records_df = _records_dataframe(report)
+
+            st.session_state["website_scan_active"] = False
+            st.session_state["website_scan_report"] = report
+            st.session_state["website_scan_records"] = records_df
+            st.session_state["website_scan_scope"] = checkpoint_meta.get(
+                "scope", scope
             )
+            st.session_state["website_scan_page_limit_reached"] = False
+            st.session_state["website_scan_recovered_partial"] = True
+
+            st.warning(
+                f"Partial scan recovered: {len(report.pages):,} completed pages "
+                f"and {len(records_df):,} candidate(s) are available for review. "
+                "The latest durable checkpoint was restored."
+            )
+        elif scan_active and processed > 0:
+            # This covers sessions started with an older Datablix version that
+            # did not yet save checkpoints. Reset the stale flag so the same
+            # notice does not remain indefinitely.
+            st.session_state["website_scan_active"] = False
+            st.warning(
+                f"The earlier scan ended after approximately {processed:,} pages "
+                "before a durable checkpoint was available. Start the scan once "
+                "more. Future runs now save findings every 10 pages."
+            )
+            return
         else:
             st.caption(
                 "Scan results will appear here for review. Nothing is added to the "
                 "workspace automatically."
             )
-        return
+            return
 
     records_df = _apply_ontario_scope(records_df)
     st.session_state["website_scan_records"] = records_df
+
+    if st.session_state.get("website_scan_recovered_partial", False):
+        st.info(
+            "You are reviewing recovered partial results. They can be approved, "
+            "exported, or cleared normally. Run the website again later only when "
+            "you need to search beyond the recovered pages."
+        )
 
     last_scan_scope = st.session_state.get("website_scan_scope", "")
     last_scan_reached_limit = bool(
@@ -873,6 +1053,9 @@ def render_website_scanner_panel(
             width="stretch",
             key="clear_full_scan",
         ):
+            _delete_durable_checkpoint(
+                st.session_state.get("website_scan_start_url", website_url)
+            )
             keys_to_clear = [
                 key for key in list(st.session_state)
                 if key.startswith("full_scan_record_editor_")
@@ -883,6 +1066,11 @@ def render_website_scanner_panel(
                 "website_scan_active",
                 "website_scan_last_progress",
                 "website_scan_stop_message",
+                "website_scan_checkpoint_report",
+                "website_scan_checkpoint_pages",
+                "website_scan_checkpoint_path",
+                "website_scan_recovered_partial",
+                "website_scan_start_url",
                 "website_scan_scope",
                 "website_scan_page_limit_reached",
                 "full_scan_review_focus",
