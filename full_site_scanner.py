@@ -203,6 +203,9 @@ class ScanReport:
     errors: list[str] = field(default_factory=list)
     started_at_utc: str = ""
     completed_at_utc: str = ""
+    completion_reason: str = ""
+    remaining_queue_urls: int = 0
+    visited_urls: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -214,6 +217,9 @@ class ScanReport:
             "errors": self.errors,
             "started_at_utc": self.started_at_utc,
             "completed_at_utc": self.completed_at_utc,
+            "completion_reason": self.completion_reason,
+            "remaining_queue_urls": self.remaining_queue_urls,
+            "visited_urls": self.visited_urls,
         }
 
 
@@ -298,6 +304,7 @@ class FullSiteScanner:
         # discovered from sitemaps are visited early, while still crawling the whole site.
         queue = deque(sorted(queue, key=lambda item: (item[2], item[1], item[0])))
         consecutive_failures = 0
+        stopped_after_failures = False
 
         self._start_browser_if_needed()
 
@@ -348,6 +355,7 @@ class FullSiteScanner:
                         report.errors.append(
                             "Scan stopped after too many consecutive page failures."
                         )
+                        stopped_after_failures = True
                         break
                     continue
 
@@ -389,6 +397,23 @@ class FullSiteScanner:
 
             report.records = self._deduplicate_records(report.records)
             report.completed_at_utc = self._utc_now()
+            report.remaining_queue_urls = len(queue)
+            report.visited_urls = len(visited)
+
+            if stopped_after_failures:
+                report.completion_reason = "failure_limit"
+            elif len(report.pages) >= self.options.max_pages:
+                report.completion_reason = "page_limit"
+            elif not queue:
+                report.completion_reason = "queue_exhausted"
+            else:
+                report.completion_reason = "completed"
+
+            self._notify(
+                report,
+                report.start_url,
+                f"Complete: {report.completion_reason}",
+            )
             return report
         finally:
             self.close()
@@ -722,60 +747,27 @@ class FullSiteScanner:
             raise WebsiteScanError("Enter a website address.")
         if not value.startswith(("http://", "https://")):
             value = f"https://{value}"
-
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise WebsiteScanError("Enter a valid HTTP or HTTPS website address.")
         if parsed.username or parsed.password:
             raise WebsiteScanError("Website addresses containing credentials are not supported.")
-
-        normalized = FullSiteScanner._canonicalize_url(value)
-        if not normalized:
-            raise WebsiteScanError("Enter a valid HTTP or HTTPS website address.")
-        return normalized
+        return FullSiteScanner._canonicalize_url(value)
 
     @staticmethod
     def _canonicalize_url(url: str, keep_query: bool = False) -> str:
-        """Return a safe, normalized HTTP(S) URL or an empty string.
+        url, _fragment = urldefrag(url.strip())
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            return url
 
-        Public websites sometimes contain malformed links such as a phone number
-        placed where a URL port would normally appear. ``urllib.parse`` raises a
-        ``ValueError`` when ``parsed.port`` is read from those links, so scanner
-        discovery must treat them as unusable links rather than stop the scan.
-        """
-        clean_url = str(url or "").strip()
-        if not clean_url:
-            return ""
-
-        clean_url, _fragment = urldefrag(clean_url)
-
-        try:
-            parsed = urlparse(clean_url)
-            scheme = parsed.scheme.lower()
-            if scheme not in {"http", "https"}:
-                return ""
-
-            hostname = (parsed.hostname or "").lower().rstrip(".")
-            if not hostname:
-                return ""
-
-            # Accessing parsed.port can itself raise ValueError for malformed
-            # links such as https://example.com:1-866-898-9967.
-            try:
-                port = parsed.port
-            except ValueError:
-                return ""
-        except (TypeError, ValueError):
-            return ""
-
-        host_for_netloc = f"[{hostname}]" if ":" in hostname else hostname
-        if port and not (
-            (scheme == "http" and port == 80)
-            or (scheme == "https" and port == 443)
-        ):
-            netloc = f"{host_for_netloc}:{port}"
+        port = parsed.port
+        if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+            netloc = f"{hostname}:{port}"
         else:
-            netloc = host_for_netloc
+            netloc = hostname
 
         path = re.sub(r"/{2,}", "/", parsed.path or "/")
         if path != "/" and path.endswith("/"):
@@ -822,16 +814,7 @@ class FullSiteScanner:
             raise WebsiteScanError("Local network addresses cannot be scanned.")
 
         try:
-            port = parsed.port
-        except ValueError as exc:
-            raise WebsiteScanError("The website address contains an invalid port.") from exc
-
-        try:
-            addresses = socket.getaddrinfo(
-                hostname,
-                port or (443 if parsed.scheme == "https" else 80),
-                type=socket.SOCK_STREAM,
-            )
+            addresses = socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
         except socket.gaierror as exc:
             raise WebsiteScanError("The website hostname could not be resolved.") from exc
 
@@ -869,7 +852,7 @@ class FullSiteScanner:
         if len(queued) >= self.options.maximum_queue_urls:
             return
         normalized = self._canonicalize_url(url)
-        if not normalized or normalized in queued or not self._is_in_scope(normalized):
+        if normalized in queued or not self._is_in_scope(normalized):
             return
         if self._should_skip_url(normalized):
             return
@@ -920,44 +903,13 @@ class FullSiteScanner:
 
     def _extract_internal_links(self, base_url: str, soup: BeautifulSoup) -> list[str]:
         links: set[str] = set()
-        ignored_schemes = {
-            "mailto",
-            "tel",
-            "sms",
-            "fax",
-            "javascript",
-            "data",
-            "blob",
-            "file",
-            "whatsapp",
-        }
-
         for tag in soup.find_all("a", href=True):
             href = self._clean_text(tag.get("href"))
-            if not href or href.startswith("#"):
+            if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
                 continue
-
-            # Skip every non-web scheme before urljoin() can reinterpret it.
-            try:
-                href_scheme = urlparse(href).scheme.lower()
-            except (TypeError, ValueError):
-                continue
-            if href_scheme in ignored_schemes:
-                continue
-            if href_scheme and href_scheme not in {"http", "https"}:
-                continue
-
-            try:
-                candidate = self._canonicalize_url(urljoin(base_url, href))
-            except (TypeError, ValueError):
-                continue
-
-            # A malformed link is ignored; it must not stop the full scan.
-            if not candidate:
-                continue
+            candidate = self._canonicalize_url(urljoin(base_url, href))
             if self._is_in_scope(candidate) and not self._should_skip_url(candidate):
                 links.add(candidate)
-
         return sorted(links, key=lambda value: (self._url_priority(value), value))
 
     def _extract_records(
