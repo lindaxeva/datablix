@@ -33,6 +33,7 @@ except ImportError:  # Playwright is optional unless JavaScript rendering is req
 
 RenderMode = Literal["html", "auto", "javascript"]
 ProgressCallback = Callable[[dict], None]
+CheckpointCallback = Callable[["ScanReport"], None]
 
 USER_AGENT = "DatablixResearchScanner/3.0 (+human-reviewed research tool)"
 DEFAULT_TIMEOUT = 20
@@ -138,6 +139,7 @@ class ScanOptions:
     follow_query_strings: bool = False
     obey_robots_txt: bool = True
     stop_after_consecutive_failures: int = 25
+    checkpoint_every_pages: int = 10
 
     def validate(self) -> None:
         if not 1 <= self.max_pages <= 2_000:
@@ -150,6 +152,10 @@ class ScanOptions:
             raise WebsiteScanError("Request timeout must be between 5 and 120 seconds.")
         if self.render_mode not in {"html", "auto", "javascript"}:
             raise WebsiteScanError("Unknown rendering mode.")
+        if not 1 <= self.checkpoint_every_pages <= 500:
+            raise WebsiteScanError(
+                "Checkpoint interval must be between 1 and 500 pages."
+            )
 
 
 @dataclass(slots=True)
@@ -222,6 +228,31 @@ class ScanReport:
             "visited_urls": self.visited_urls,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "ScanReport":
+        """Rebuild a scan report saved as JSON."""
+        return cls(
+            start_url=str(data.get("start_url", "")),
+            pages=[
+                PageResult(**item)
+                for item in data.get("pages", [])
+                if isinstance(item, dict)
+            ],
+            records=[
+                RecordCandidate(**item)
+                for item in data.get("records", [])
+                if isinstance(item, dict)
+            ],
+            blocked_urls=list(data.get("blocked_urls", [])),
+            skipped_urls=list(data.get("skipped_urls", [])),
+            errors=list(data.get("errors", [])),
+            started_at_utc=str(data.get("started_at_utc", "")),
+            completed_at_utc=str(data.get("completed_at_utc", "")),
+            completion_reason=str(data.get("completion_reason", "")),
+            remaining_queue_urls=int(data.get("remaining_queue_urls", 0) or 0),
+            visited_urls=int(data.get("visited_urls", 0) or 0),
+        )
+
 
 @dataclass(slots=True)
 class FetchResult:
@@ -259,10 +290,12 @@ class FullSiteScanner:
         start_url: str,
         options: ScanOptions | None = None,
         progress_callback: ProgressCallback | None = None,
+        checkpoint_callback: CheckpointCallback | None = None,
     ) -> None:
         self.options = options or ScanOptions()
         self.options.validate()
         self.progress_callback = progress_callback
+        self.checkpoint_callback = checkpoint_callback
         self.start_url = self._normalize_start_url(start_url)
         self._ensure_public_url(self.start_url)
 
@@ -351,6 +384,7 @@ class FullSiteScanner:
                         )
                     )
                     self._notify(report, current_url, "Error")
+                    self._checkpoint(report)
                     if consecutive_failures >= self.options.stop_after_consecutive_failures:
                         report.errors.append(
                             "Scan stopped after too many consecutive page failures."
@@ -394,6 +428,7 @@ class FullSiteScanner:
                     )
                 )
                 self._notify(report, fetch.final_url, "Scanned")
+                self._checkpoint(report)
 
             report.records = self._deduplicate_records(report.records)
             report.completed_at_utc = self._utc_now()
@@ -414,6 +449,7 @@ class FullSiteScanner:
                 report.start_url,
                 f"Complete: {report.completion_reason}",
             )
+            self._checkpoint(report, force=True)
             return report
         finally:
             self.close()
@@ -1381,6 +1417,17 @@ class FullSiteScanner:
     # Progress reporting
     # ------------------------------------------------------------------
 
+    def _checkpoint(self, report: ScanReport, force: bool = False) -> None:
+        """Preserve partial scan results without changing the crawl."""
+        if self.checkpoint_callback is None or not report.pages:
+            return
+        if (
+            not force
+            and len(report.pages) % self.options.checkpoint_every_pages != 0
+        ):
+            return
+        self.checkpoint_callback(report)
+
     def _notify(self, report: ScanReport, current_url: str, outcome: str) -> None:
         if self.progress_callback is None:
             return
@@ -1405,11 +1452,13 @@ def scan_website(
     website_url: str,
     options: ScanOptions | None = None,
     progress_callback: ProgressCallback | None = None,
+    checkpoint_callback: CheckpointCallback | None = None,
 ) -> ScanReport:
     """Convenience entry point used by the Streamlit interface."""
     scanner = FullSiteScanner(
         start_url=website_url,
         options=options,
         progress_callback=progress_callback,
+        checkpoint_callback=checkpoint_callback,
     )
     return scanner.scan()
