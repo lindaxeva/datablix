@@ -268,7 +268,7 @@ def render_brand_header():
         st.html("""
         <div class="db-brand">
             <div class="db-brand-name">Datablix</div>
-            <div class="db-tag">Turn rental property research into structured, review-ready listings.</div>
+            <div class="db-tag">Turn your rental property research into structured, review-ready listings.</div>
             <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
         </div>
         """)
