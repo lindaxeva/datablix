@@ -9,8 +9,29 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
+from openai import OpenAI
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
+
+def create_ai_summary(notes: str) -> str:
+    """Create a short summary without changing the original notes."""
+
+    client = OpenAI(
+        api_key=st.secrets["OPENAI_API_KEY"]
+    )
+
+    response = client.responses.create(
+        model="gpt-5-mini",
+        instructions=(
+            "Summarize the research notes clearly and concisely. "
+            "Use only the information provided. "
+            "Do not invent facts. "
+            "Clearly mention information that still needs verification."
+        ),
+        input=notes,
+    )
+
+    return response.output_text.strip()
 
 # =========================================================
 # Configuration
