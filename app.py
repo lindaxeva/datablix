@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 import pandas as pd
 import streamlit as st
 from openai import OpenAI
+from openpyxl.styles import Alignment, Border, Font, Side
 from datablix_scanner_panel import render_website_scanner_panel
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
@@ -85,6 +86,33 @@ LISTING_COLUMNS = [
     "Phone Number",
     "Email Contact",
     "WebSite",
+]
+
+# Required listing fields are kept in the exact order shown in the sample.
+# Other useful findings are placed below the main listing instead of widening it.
+LISTING_FIELD_MAP = [
+    ("Apartment Building Name", "Building Name"),
+    ("Street Address", "Street Address"),
+    ("City and Postal Code", None),
+    ("Building Classification", "Building Classification"),
+    ("Number of Apartments", "Number of Apartments"),
+    ("Apartment Building Management/Owner", "Management/Owner"),
+    ("Phone Number", "Phone"),
+    ("Email Contact", "Primary Email"),
+    ("WebSite", "Website"),
+]
+
+LISTING_ADDITIONAL_FIELD_MAP = [
+    ("Address Line 2", "Address Line 2"),
+    ("Secondary Email", "Secondary Email"),
+    ("Rental Rate Range", "Rental Rate Range"),
+    ("Country", "Country"),
+    ("Official Source URL", "Source URL"),
+    ("Date Researched", "Date Researched"),
+    ("Researcher", "Researcher"),
+    ("Verification Status", "Verification Status"),
+    ("Missing Information", "Missing Information"),
+    ("Reviewer Notes", "Reviewer Notes"),
 ]
 
 TEMPLATE_COLUMNS = LISTING_COLUMNS + [
@@ -287,6 +315,94 @@ def safe_filename(name):
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in stem) or "datablix"
 
 
+def _excel_display_value(value):
+    return "" if is_unresolved(value) else str(value).strip()
+
+
+def _write_listing_blocks_sheet(ws, listings):
+    """Write one apartment building at a time in the supplied two-column layout."""
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.merge_cells("A1:B1")
+    ws["A1"] = "Create a listing for each Apartment Building as per sample below"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[1].height = 30
+
+    row_number = 3
+    required = LISTING_COLUMNS
+    additional = [label for label, _ in LISTING_ADDITIONAL_FIELD_MAP]
+
+    for listing_number, (_, record) in enumerate(listings.iterrows(), start=1):
+        name = _excel_display_value(record.get("Apartment Building Name")) or f"Listing {listing_number}"
+        ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=2)
+        title_cell = ws.cell(
+            row=row_number,
+            column=1,
+            value=f"Apartment Building {listing_number}: {name}",
+        )
+        title_cell.font = Font(bold=True, size=12)
+        title_cell.alignment = Alignment(wrap_text=True, vertical="top")
+        row_number += 1
+
+        for field_name in required:
+            value = _excel_display_value(record.get(field_name))
+            field_cell = ws.cell(row=row_number, column=1, value=field_name)
+            value_cell = ws.cell(row=row_number, column=2, value=value)
+            field_cell.font = Font(bold=True)
+            field_cell.border = border
+            value_cell.border = border
+            field_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            value_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            if field_name == "Email Contact" and value:
+                value_cell.hyperlink = f"mailto:{value}"
+                value_cell.style = "Hyperlink"
+            elif field_name == "WebSite" and value.startswith(("http://", "https://")):
+                value_cell.hyperlink = value
+                value_cell.style = "Hyperlink"
+            row_number += 1
+
+        populated_additional = [
+            field_name
+            for field_name in additional
+            if _excel_display_value(record.get(field_name))
+        ]
+        if populated_additional:
+            ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=2)
+            section_cell = ws.cell(
+                row=row_number,
+                column=1,
+                value="Additional information and research reference",
+            )
+            section_cell.font = Font(bold=True)
+            section_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            row_number += 1
+            for field_name in populated_additional:
+                value = _excel_display_value(record.get(field_name))
+                field_cell = ws.cell(row=row_number, column=1, value=field_name)
+                value_cell = ws.cell(row=row_number, column=2, value=value)
+                field_cell.font = Font(bold=True)
+                field_cell.border = border
+                value_cell.border = border
+                field_cell.alignment = Alignment(wrap_text=True, vertical="top")
+                value_cell.alignment = Alignment(wrap_text=True, vertical="top")
+                if field_name == "Official Source URL" and value.startswith(("http://", "https://")):
+                    value_cell.hyperlink = value
+                    value_cell.style = "Hyperlink"
+                elif field_name == "Secondary Email" and value:
+                    value_cell.hyperlink = f"mailto:{value}"
+                    value_cell.style = "Hyperlink"
+                row_number += 1
+
+        row_number += 2
+
+    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 75
+    ws.freeze_panes = "A3"
+    ws.sheet_view.showGridLines = False
+
+
 def excel_bytes(sheets):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -300,13 +416,22 @@ def excel_bytes(sheets):
                 name = f"{base[:31-len(suffix)]}{suffix}"
                 n += 1
             used.add(name)
+
+            if requested == "Building Listings":
+                ws = writer.book.create_sheet(title=name)
+                _write_listing_blocks_sheet(ws, df)
+                continue
+
             df.to_excel(writer, sheet_name=name, index=False)
             ws = writer.book[name]
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions
             for cells in ws.columns:
                 lengths = [len(str(c.value)) for c in cells[:101] if c.value is not None]
-                ws.column_dimensions[cells[0].column_letter].width = min(max(lengths + [12]) + 2, 42)
+                ws.column_dimensions[cells[0].column_letter].width = min(
+                    max(lengths + [12]) + 2,
+                    42,
+                )
     output.seek(0)
     return output.getvalue()
 
@@ -716,17 +841,82 @@ def qa_checks(df):
 
 
 def listing_export(df):
+    """Return a flat export with the required sample fields first."""
     listing = pd.DataFrame(index=df.index)
-    listing["Apartment Building Name"] = df["Building Name"]
-    listing["Street Address"] = df["Street Address"]
-    listing["City and Postal Code"] = df.apply(formatted_location, axis=1)
-    listing["Building Classification"] = df["Building Classification"]
-    listing["Number of Apartments"] = df["Number of Apartments"]
-    listing["Apartment Building Management/Owner"] = df["Management/Owner"]
-    listing["Phone Number"] = df["Phone"]
-    listing["Email Contact"] = df["Primary Email"]
-    listing["WebSite"] = df["Website"]
-    return listing[LISTING_COLUMNS]
+    for label, source_field in LISTING_FIELD_MAP:
+        listing[label] = (
+            df.apply(formatted_location, axis=1)
+            if source_field is None
+            else df[source_field]
+        )
+    for label, source_field in LISTING_ADDITIONAL_FIELD_MAP:
+        listing[label] = df[source_field] if source_field in df.columns else pd.NA
+    columns = LISTING_COLUMNS + [label for label, _ in LISTING_ADDITIONAL_FIELD_MAP]
+    return listing[columns]
+
+
+def listing_block_dataframe(row, include_additional=True):
+    """Turn one record into the same vertical field/value order as the sample."""
+    rows = []
+    for label, source_field in LISTING_FIELD_MAP:
+        value = formatted_location(row) if source_field is None else row.get(source_field)
+        rows.append({
+            "Listing Field": label,
+            "Listing Value": _excel_display_value(value),
+        })
+
+    if include_additional:
+        additional_rows = []
+        for label, source_field in LISTING_ADDITIONAL_FIELD_MAP:
+            value = row.get(source_field)
+            if not is_unresolved(value):
+                additional_rows.append({
+                    "Listing Field": label,
+                    "Listing Value": _excel_display_value(value),
+                })
+        if additional_rows:
+            rows.append({
+                "Listing Field": "Additional information and research reference",
+                "Listing Value": "",
+            })
+            rows.extend(additional_rows)
+    return pd.DataFrame(rows)
+
+
+def render_listing_preview(df, limit=5):
+    """Show sample-style listing blocks without turning the page into a wide table."""
+    if df.empty:
+        st.info("No apartment building records are available to preview yet.")
+        return
+
+    visible = df.head(limit)
+    for listing_number, (_, row) in enumerate(visible.iterrows(), start=1):
+        name = _excel_display_value(row.get("Building Name")) or "Unnamed apartment building"
+        with st.expander(
+            f"Apartment Building {listing_number}: {name}",
+            expanded=listing_number == 1,
+        ):
+            st.dataframe(
+                listing_block_dataframe(row),
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Listing Field": st.column_config.TextColumn(
+                        "Listing Field",
+                        width="medium",
+                    ),
+                    "Listing Value": st.column_config.TextColumn(
+                        "Listing Value",
+                        width="large",
+                    ),
+                },
+            )
+
+    if len(df) > limit:
+        st.caption(
+            f"Showing {limit:,} of {len(df):,} listings. "
+            "The workbook download includes every building."
+        )
 
 
 def ready_mask(df):
@@ -1652,16 +1842,11 @@ if section == "Overview":
             go_to("Downloads")
             st.rerun()
 
-        st.subheader("Building preview")
+        st.subheader("Building listing preview")
         st.caption(
-            "The first 20 records as they would appear in the directory. Go to Review records to make corrections and decisions."
+            "Each apartment building is shown as its own field-and-value listing, following the supplied sample. Additional findings appear below the nine required fields."
         )
-        st.dataframe(
-            listing_export(qa).head(20),
-            width="stretch",
-            hide_index=True,
-            height=420,
-        )
+        render_listing_preview(qa, limit=5)
 
         with st.expander("Workspace details and column matching"):
             detail_columns = st.columns(3)
@@ -2314,46 +2499,56 @@ elif section == "Downloads":
     )
 
     with st.expander("Download a single view"):
-        st.caption("Smaller files for when you do not need the complete workbook.")
+        st.caption(
+            "Use the Excel version when the listing must match the supplied vertical sample. The flat CSV keeps one building per row for sorting, filtering, or re-importing."
+        )
         row1 = st.columns(3)
         row1[0].download_button(
-            "Building listings",
-            csv_bytes(listings),
-            f"{filename}_building_listings.csv",
-            "text/csv",
+            "Building listings — sample layout",
+            excel_bytes({"Building Listings": listings}),
+            f"{filename}_building_listings.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
         )
         row1[1].download_button(
+            "Building listings — flat CSV",
+            csv_bytes(listings),
+            f"{filename}_building_listings_flat.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row1[2].download_button(
             "Owner research list",
             csv_bytes(owner_summary(qa)),
             f"{filename}_owner_research_list.csv",
             "text/csv",
             width="stretch",
         )
-        row1[2].download_button(
+        row2 = st.columns(3)
+        row2[0].download_button(
             "Draft profiles",
             csv_bytes(draft_profiles(qa)),
             f"{filename}_draft_profiles.csv",
             "text/csv",
             width="stretch",
         )
-        row2 = st.columns(3)
-        row2[0].download_button(
+        row2[1].download_button(
             "Source verification tracker",
             csv_bytes(research_log(qa)),
             f"{filename}_source_verification.csv",
             "text/csv",
             width="stretch",
         )
-        row2[1].download_button(
-            "Directory-ready listings",
-            csv_bytes(listing_export(ready)),
-            f"{filename}_directory_ready.csv",
-            "text/csv",
+        row2[2].download_button(
+            "Directory-ready listings — sample layout",
+            excel_bytes({"Building Listings": listing_export(ready)}),
+            f"{filename}_directory_ready.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             disabled=ready.empty,
             width="stretch",
         )
-        row2[2].download_button(
+        row3 = st.columns(3)
+        row3[0].download_button(
             "Quality review queue",
             csv_bytes(quality),
             f"{filename}_quality_review_queue.csv",
