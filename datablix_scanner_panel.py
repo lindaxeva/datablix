@@ -236,7 +236,7 @@ def render_website_scanner_panel(
         unsafe_allow_html=True,
     )
 
-    st.markdown("### Choose website and coverage")
+    st.markdown("### Choose website")
     website_url = st.text_input(
         "Website address",
         placeholder="https://examplepropertycompany.ca",
@@ -244,39 +244,67 @@ def render_website_scanner_panel(
         key="full_scan_website_url",
     )
 
-    scope_settings = {
-        "Quick": (25, 3),
-        "Standard": (100, 5),
-        "Full site": (500, 12),
-        "Maximum": (2_000, 20),
+    coverage_settings = {
+        "Quick check": (25, 3),
+        "Recommended": (500, 12),
+        "Extended scan": (2_000, 20),
         "Custom": (100, 5),
     }
-    scope = st.radio(
-        "Scan coverage",
-        options=list(scope_settings),
-        index=1,
-        horizontal=True,
-        help=(
-            "Quick checks likely listing pages. Standard suits most websites. "
-            "Full site provides broad coverage. Maximum searches up to 2,000 "
-            "permitted pages across 20 link levels."
-        ),
-        key="full_scan_scope",
-    )
 
-    default_pages, default_depth = scope_settings[scope]
+    # Reset older preset names safely after an app update.
+    if st.session_state.get("full_scan_scope") not in coverage_settings:
+        st.session_state["full_scan_scope"] = "Recommended"
 
-    if scope == "Maximum":
-        st.info(
-            "**Maximum coverage is active.** Start from the main website homepage. "
-            "XML sitemaps and related subdomains are included automatically. "
-            "Query-string pages remain optional to avoid duplicate or endless URLs."
+    def _select_extended_scan() -> None:
+        st.session_state["full_scan_scope"] = "Extended scan"
+
+    scope = st.session_state["full_scan_scope"]
+
+    with st.expander("Change coverage", expanded=False):
+        scope = st.radio(
+            "Coverage",
+            options=list(coverage_settings),
+            index=list(coverage_settings).index(st.session_state["full_scan_scope"]),
+            help=(
+                "Recommended is suitable for most websites. Quick check is for testing. "
+                "Extended scan is a follow-up option. Custom is for unusual cases."
+            ),
+            key="full_scan_scope",
         )
 
-    with st.expander(
-        "Advanced scan settings",
-        expanded=scope in {"Custom", "Maximum"},
-    ):
+    max_pages, max_depth = coverage_settings[scope]
+
+    if scope == "Recommended":
+        st.markdown(
+            "**Recommended scan**  \n"
+            "Up to **500 pages** · **12 link levels** · Sitemaps and related "
+            "subdomains included"
+        )
+        st.caption(
+            "Start here for broad, efficient coverage. Datablix will tell you when "
+            "an extended scan may be useful."
+        )
+    elif scope == "Extended scan":
+        st.markdown(
+            "**Extended scan selected**  \n"
+            "Up to **2,000 pages** · **20 link levels** · Sitemaps and related "
+            "subdomains included"
+        )
+        st.caption(
+            "Use this after the recommended scan reaches its limit or when known "
+            "listings still appear to be missing."
+        )
+    elif scope == "Quick check":
+        st.markdown(
+            "**Quick check selected**  \n"
+            "Up to **25 pages** · **3 link levels**"
+        )
+        st.caption("Use this only to confirm that a website can be scanned.")
+    else:
+        st.markdown("**Custom coverage selected**")
+        st.caption("Set manual limits for unusual websites or troubleshooting.")
+
+    with st.expander("Advanced scan settings", expanded=scope == "Custom"):
         if scope == "Custom":
             custom_col1, custom_col2 = st.columns(2)
             max_pages = custom_col1.number_input(
@@ -298,11 +326,9 @@ def render_website_scanner_panel(
                 key="full_scan_max_depth_custom",
             )
         else:
-            max_pages = default_pages
-            max_depth = default_depth
             st.caption(
-                f"Current preset: up to **{max_pages:,} pages** and "
-                f"**{max_depth} link levels**. Choose Custom to set different limits."
+                f"Current coverage: up to **{max_pages:,} pages** and "
+                f"**{max_depth} link levels**."
             )
 
         advanced_col1, advanced_col2 = st.columns(2)
@@ -334,33 +360,27 @@ def render_website_scanner_panel(
             )
 
         with advanced_col2:
-            if scope == "Maximum":
+            if scope == "Custom":
                 use_sitemaps = st.checkbox(
                     "Use XML sitemaps",
                     value=True,
-                    disabled=True,
-                    help="Required for Maximum coverage.",
-                    key="full_scan_sitemaps_maximum",
+                    key="full_scan_sitemaps_custom",
                 )
                 include_subdomains = st.checkbox(
                     "Include subdomains",
-                    value=True,
-                    disabled=True,
-                    help="Required for Maximum coverage when listings use related subdomains.",
-                    key="full_scan_subdomains_maximum",
+                    value=False,
+                    help="Turn this on when listings live on a related subdomain.",
+                    key="full_scan_subdomains_custom",
                 )
             else:
-                use_sitemaps = st.checkbox(
-                    "Use XML sitemaps",
-                    value=True,
-                    key="full_scan_sitemaps",
+                use_sitemaps = True
+                include_subdomains = scope in {"Recommended", "Extended scan"}
+                discovery_note = (
+                    "XML sitemaps and related subdomains are included automatically."
+                    if include_subdomains
+                    else "XML sitemaps are included; related subdomains are not followed."
                 )
-                include_subdomains = st.checkbox(
-                    "Include subdomains",
-                    value=scope == "Full site",
-                    help="Turn this on when listings live on a related subdomain.",
-                    key="full_scan_subdomains",
-                )
+                st.caption(discovery_note)
 
             follow_queries = st.checkbox(
                 "Follow query-string pages",
@@ -468,6 +488,8 @@ def render_website_scanner_panel(
 
             st.session_state["website_scan_report"] = report
             st.session_state["website_scan_records"] = _records_dataframe(report)
+            st.session_state["website_scan_scope"] = scope
+            st.session_state["website_scan_page_limit_reached"] = page_limit_reached
 
     report = st.session_state.get("website_scan_report")
     records_df = st.session_state.get("website_scan_records")
@@ -476,6 +498,28 @@ def render_website_scanner_panel(
             "Scan results will appear here for review. Nothing is added to the workspace automatically."
         )
         return
+
+    last_scan_scope = st.session_state.get("website_scan_scope", "")
+    last_scan_reached_limit = bool(
+        st.session_state.get("website_scan_page_limit_reached", False)
+    )
+
+    if last_scan_scope == "Recommended" and last_scan_reached_limit:
+        st.warning(
+            "The recommended scan reached its 500-page limit. Some permitted pages "
+            "may remain, so an extended scan is the appropriate next step."
+        )
+        st.button(
+            "Select extended scan",
+            type="primary",
+            on_click=_select_extended_scan,
+            key="select_extended_scan_after_limit",
+        )
+    elif last_scan_scope == "Recommended":
+        st.success(
+            "Recommended coverage completed without reaching its page limit. "
+            "An extended scan is not needed unless a known listing is missing."
+        )
 
     pages_df = _pages_dataframe(report)
     successful_pages = (
