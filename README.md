@@ -163,22 +163,6 @@ The visible product workflow is summarized as **Collect → Review → Verify �
 
 ---
 
-## UX/UI and Microcopy Principles
-
-The interface uses a clear, professional tone suited to rental property research.
-
-- Page titles explain the full task; navigation labels remain short.
-- Each page uses a consistent eyebrow, title, and supporting-description hierarchy.
-- The Collect, Review, Verify, and Download stages remain visible without relying on numbered instructions.
-- One primary action is emphasized in each task area.
-- Advanced scan settings, filters, evidence, logs, and focused downloads use progressive disclosure.
-- Required listing information is separated from additional findings and technical evidence.
-- Approval and verification are explained as separate decisions.
-- Blank values are described as unconfirmed rather than automatically unavailable.
-- Responsive layouts, focus indicators, readable spacing, dark-mode variables, and reduced-motion support improve accessibility.
-
----
-
 ## Testing and Acceptance
 
 Testing uses fictional or synthetic records and controlled website content covering:
