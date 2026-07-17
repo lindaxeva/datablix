@@ -72,24 +72,7 @@ Datablix helps users:
 - Preserve original imported columns.
 - Produce organized listings, research logs, follow-up queues, and handoff files.
 - Recommend fields, categories, and filters that may support an online rental property directory.
-- Use optional AI assistance without allowing automatic approval or record changes.
-
----
-
-## What Datablix Does
-
-- Scans permitted public rental property websites using bounded same-site crawling.
-- Uses `robots.txt`, XML sitemaps, page links, and optional JavaScript rendering when available.
-- Detects candidate listing details and keeps them in a review queue.
-- Opens CSV, Excel, and viewable Google Sheets as editable working copies.
-- Matches similar imported headings to consistent rental property fields.
-- Preserves additional imported columns instead of discarding them.
-- Flags missing information, possible duplicates, and formatting issues.
-- Tracks sources, research dates, researchers, verification, notes, and record decisions.
-- Displays progress, quality, field coverage, owner summaries, and record readiness.
-- Creates sample-formatted building listings and focused downloads.
-- Provides structured recommendations for directory display, search, filtering, and internal administration.
-- Includes optional AI note summaries, disabled by default.
+- Use optional AI assistance without allowing automatic/unsupervised approval or record changes.
 
 ---
 
