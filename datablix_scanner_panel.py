@@ -66,13 +66,13 @@ def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> by
     return output.getvalue()
 
 
-def _merge_into_working_data(approved: pd.DataFrame) -> tuple[int, int]:
+def _merge_into_working_data(approved: pd.DataFrame, working_data_key: str) -> tuple[int, int]:
     mapped = approved.rename(columns=DIRECTORY_FIELD_MAP)
     mapped = mapped[list(DIRECTORY_FIELD_MAP.values())].copy()
 
-    existing = st.session_state.get(WORKING_DATA_KEY)
+    existing = st.session_state.get(working_data_key)
     if existing is None or not isinstance(existing, pd.DataFrame):
-        st.session_state[WORKING_DATA_KEY] = mapped.reset_index(drop=True)
+        st.session_state[working_data_key] = mapped.reset_index(drop=True)
         return len(mapped), 0
 
     existing = existing.copy()
@@ -97,43 +97,85 @@ def _merge_into_working_data(approved: pd.DataFrame) -> tuple[int, int]:
     mapped_keys = key_frame(mapped)
     new_rows = mapped.loc[~mapped_keys.isin(existing_keys)].copy()
     duplicates = len(mapped) - len(new_rows)
-    st.session_state[WORKING_DATA_KEY] = pd.concat(
+    st.session_state[working_data_key] = pd.concat(
         [existing, new_rows], ignore_index=True
     )
     return len(new_rows), duplicates
 
 
-def render_website_scanner_panel() -> None:
-    st.header("Website scanner")
+def render_website_scanner_panel(
+    working_data_key: str = WORKING_DATA_KEY,
+) -> None:
+    st.header("Scan a property website")
     st.caption(
-        "Crawl permitted public pages, discover listings through links and sitemaps, "
-        "render JavaScript when needed, and place extracted records in a review queue."
+        "Paste a public website, scan its permitted pages, review the extracted "
+        "records, and add only the findings you approve."
     )
 
-    with st.form("full_site_scanner_form", clear_on_submit=False):
-        website_url = st.text_input(
-            "Website address",
-            placeholder="https://examplepropertycompany.ca",
-        )
+    st.info(
+        "**Workflow:** 1) Choose the scan coverage  →  2) Start the scan  →  "
+        "3) Review the candidates  →  4) Add approved records to your workspace."
+    )
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            max_pages = st.number_input(
+    st.markdown("#### 1. Choose a website")
+    website_url = st.text_input(
+        "Website address",
+        placeholder="https://examplepropertycompany.ca",
+        help="Use the main public website for the property owner or management company.",
+        key="full_scan_website_url",
+    )
+
+    scope_settings = {
+        "Quick": (25, 3),
+        "Standard": (100, 5),
+        "Full site": (500, 12),
+        "Custom": (100, 5),
+    }
+    scope = st.radio(
+        "Scan coverage",
+        options=list(scope_settings),
+        index=1,
+        horizontal=True,
+        help=(
+            "Quick checks a small site section. Standard suits most company websites. "
+            "Full site explores more permitted pages."
+        ),
+        key="full_scan_scope",
+    )
+
+    default_pages, default_depth = scope_settings[scope]
+
+    with st.expander("Advanced scan options", expanded=scope == "Custom"):
+        if scope == "Custom":
+            custom_col1, custom_col2 = st.columns(2)
+            max_pages = custom_col1.number_input(
                 "Maximum pages",
                 min_value=1,
                 max_value=2_000,
                 value=100,
                 step=25,
-                help="The scanner stops at this limit even when more pages exist.",
+                help="The scan stops at this limit even when the site contains more pages.",
+                key="full_scan_max_pages_custom",
             )
-            max_depth = st.number_input(
+            max_depth = custom_col2.number_input(
                 "Maximum link depth",
                 min_value=0,
                 max_value=20,
                 value=5,
                 step=1,
+                help="Controls how many link levels the scanner follows from the starting page.",
+                key="full_scan_max_depth_custom",
             )
-        with col2:
+        else:
+            max_pages = default_pages
+            max_depth = default_depth
+            st.caption(
+                f"Current preset: up to **{max_pages:,} pages** and "
+                f"**{max_depth} link levels**. Choose Custom to change these limits."
+            )
+
+        advanced_col1, advanced_col2 = st.columns(2)
+        with advanced_col1:
             render_label = st.selectbox(
                 "Page rendering",
                 options=[
@@ -142,9 +184,10 @@ def render_website_scanner_panel() -> None:
                     "Always render JavaScript",
                 ],
                 help=(
-                    "Automatic uses ordinary HTML first and opens a browser only when "
-                    "the page appears to depend on JavaScript."
+                    "Automatic reads ordinary HTML first and uses a browser only when "
+                    "the page appears to require JavaScript."
                 ),
+                key="full_scan_render_mode",
             )
             delay = st.number_input(
                 "Delay between requests (seconds)",
@@ -152,28 +195,46 @@ def render_website_scanner_panel() -> None:
                 max_value=30.0,
                 value=0.75,
                 step=0.25,
+                help="A slower rate reduces load on the website.",
+                key="full_scan_delay",
             )
-        with col3:
-            use_sitemaps = st.checkbox("Use XML sitemaps", value=True)
-            include_subdomains = st.checkbox("Include subdomains", value=True)
+        with advanced_col2:
+            use_sitemaps = st.checkbox(
+                "Use XML sitemaps",
+                value=True,
+                key="full_scan_sitemaps",
+            )
+            include_subdomains = st.checkbox(
+                "Include subdomains",
+                value=scope == "Full site",
+                help="Use this when listings are hosted on a related subdomain.",
+                key="full_scan_subdomains",
+            )
             follow_queries = st.checkbox(
                 "Follow query-string pages",
                 value=False,
-                help="Leave off unless the site uses query parameters for unique listings.",
+                help="Leave this off unless query parameters identify unique listings.",
+                key="full_scan_queries",
             )
-            obey_robots = st.checkbox(
+            st.checkbox(
                 "Respect robots.txt",
                 value=True,
                 disabled=True,
+                key="full_scan_robots",
             )
 
-        acknowledgement = st.checkbox(
-            "I am scanning public pages that I am permitted to access."
-        )
-        submitted = st.form_submit_button(
-            "Scan website",
-            type="primary",
-        )
+    acknowledgement = st.checkbox(
+        "I am scanning permitted public pages and will review the findings before use.",
+        key="full_scan_acknowledgement",
+    )
+
+    submitted = st.button(
+        "Start website scan",
+        type="primary",
+        width="stretch",
+        disabled=not website_url.strip(),
+        key="full_scan_submit",
+    )
 
     if submitted and not acknowledgement:
         st.error("Confirm that the scan is limited to permitted public pages.")
@@ -242,36 +303,87 @@ def render_website_scanner_panel() -> None:
     report = st.session_state.get("website_scan_report")
     records_df = st.session_state.get("website_scan_records")
     if report is None or not isinstance(records_df, pd.DataFrame):
+        st.caption(
+            "The scanner will show a review table here after the first completed scan."
+        )
         return
 
     pages_df = _pages_dataframe(report)
-    successful_pages = int((pages_df.get("outcome") == "Scanned").sum()) if not pages_df.empty else 0
-    rendered_pages = int(pages_df.get("rendered_with_javascript", pd.Series(dtype=bool)).fillna(False).sum())
+    successful_pages = (
+        int((pages_df.get("outcome") == "Scanned").sum())
+        if not pages_df.empty
+        else 0
+    )
+    rendered_pages = int(
+        pages_df.get(
+            "rendered_with_javascript",
+            pd.Series(dtype=bool),
+        ).fillna(False).sum()
+    )
 
+    st.divider()
+    st.markdown("#### 2. Review the scan")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Pages scanned", successful_pages)
-    m2.metric("Unique candidates", len(records_df))
+    m2.metric("Candidate records", len(records_df))
     m3.metric("JavaScript pages", rendered_pages)
     m4.metric("Blocked or failed", len(report.blocked_urls) + len(report.errors))
 
-    st.subheader("Review extracted records")
-    st.caption(
-        "Edit incorrect values and approve only records that you have checked against the source page."
-    )
+    clear_col, help_col = st.columns([1, 3])
+    with clear_col:
+        if st.button("Clear scan results", width="stretch", key="clear_full_scan"):
+            for key in [
+                "website_scan_report",
+                "website_scan_records",
+                "full_scan_record_editor_v2",
+            ]:
+                st.session_state.pop(key, None)
+            st.rerun()
+    with help_col:
+        st.caption(
+            "Check each candidate against its source page. Confidence supports review; "
+            "it does not replace verification."
+        )
 
-    edited = st.data_editor(
-        records_df,
-        key="full_scan_record_editor",
-        use_container_width=True,
+    review_columns = [
+        "approved",
+        "building_name",
+        "management_owner",
+        "street_address",
+        "address_line_2",
+        "city",
+        "province",
+        "postal_code",
+        "country",
+        "phone",
+        "primary_email",
+        "website",
+        "number_of_apartments",
+        "source_url",
+        "confidence",
+    ]
+    for column in review_columns:
+        if column not in records_df.columns:
+            records_df[column] = False if column == "approved" else ""
+
+    edited_review = st.data_editor(
+        records_df[review_columns].copy(),
+        key="full_scan_record_editor_v2",
+        width="stretch",
         hide_index=True,
-        num_rows="dynamic",
-        disabled=[
-            "source_page_title", "extraction_method", "confidence", "evidence"
-        ],
+        num_rows="fixed",
+        disabled=["confidence"],
         column_config={
-            "approved": st.column_config.CheckboxColumn("Approve", default=False),
+            "approved": st.column_config.CheckboxColumn(
+                "Approve",
+                default=False,
+                help="Approve only after checking the source page.",
+            ),
             "building_name": st.column_config.TextColumn("Building Name"),
-            "management_owner": st.column_config.TextColumn("Management/Owner"),
+            "management_owner": st.column_config.TextColumn(
+                "Management/Owner",
+                width="large",
+            ),
             "street_address": st.column_config.TextColumn("Street Address"),
             "address_line_2": st.column_config.TextColumn("Address Line 2"),
             "city": st.column_config.TextColumn("City"),
@@ -281,37 +393,70 @@ def render_website_scanner_panel() -> None:
             "phone": st.column_config.TextColumn("Phone"),
             "primary_email": st.column_config.TextColumn("Primary Email"),
             "website": st.column_config.LinkColumn("Website"),
-            "number_of_apartments": st.column_config.TextColumn("Number of Apartments"),
-            "source_url": st.column_config.LinkColumn("Source URL"),
-            "source_page_title": st.column_config.TextColumn("Source Page"),
-            "extraction_method": st.column_config.TextColumn("Extraction Method"),
-            "confidence": st.column_config.ProgressColumn(
-                "Confidence", min_value=0.0, max_value=1.0, format="percent"
+            "number_of_apartments": st.column_config.TextColumn(
+                "Number of Apartments"
             ),
-            "review_status": st.column_config.TextColumn("Review Status"),
-            "evidence": st.column_config.TextColumn("Evidence", width="large"),
+            "source_url": st.column_config.LinkColumn("Source Page"),
+            "confidence": st.column_config.ProgressColumn(
+                "Confidence",
+                min_value=0.0,
+                max_value=1.0,
+                format="percent",
+            ),
         },
     )
-    st.session_state["website_scan_records"] = edited
 
-    approved = edited.loc[edited["approved"].fillna(False)].copy()
+    updated_records = records_df.copy()
+    for column in review_columns:
+        updated_records.loc[edited_review.index, column] = edited_review[column]
+    st.session_state["website_scan_records"] = updated_records
+
+    approved = updated_records.loc[
+        updated_records["approved"].fillna(False)
+    ].copy()
     approved["review_status"] = "Human reviewed"
 
-    action_col, download_col = st.columns([1, 2])
-    with action_col:
-        if st.button(
-            "Add approved records to working data",
-            type="primary",
-            disabled=approved.empty,
-        ):
-            added, duplicates = _merge_into_working_data(approved)
-            st.success(
-                f"Added {added} record(s). Skipped {duplicates} possible duplicate(s)."
+    st.markdown("#### 3. Add approved records")
+    st.caption(
+        f"Selected for addition: **{len(approved):,}** of "
+        f"**{len(updated_records):,}** candidate records."
+    )
+    if st.button(
+        f"Add {len(approved):,} approved record(s) to the workspace",
+        type="primary",
+        disabled=approved.empty,
+        width="stretch",
+        key="add_approved_scan_records",
+    ):
+        added, duplicates = _merge_into_working_data(
+            approved,
+            working_data_key=working_data_key,
+        )
+        st.success(
+            f"Added {added} record(s). Skipped {duplicates} possible duplicate(s)."
+        )
+
+    with st.expander("Evidence, downloads, and technical log"):
+        evidence_columns = [
+            "building_name",
+            "source_url",
+            "source_page_title",
+            "extraction_method",
+            "confidence",
+            "evidence",
+        ]
+        available_evidence = [
+            column for column in evidence_columns if column in updated_records.columns
+        ]
+        if available_evidence:
+            st.dataframe(
+                updated_records[available_evidence],
+                width="stretch",
+                hide_index=True,
             )
 
-    with download_col:
         csv_data = approved.to_csv(index=False).encode("utf-8-sig")
-        excel_data = _excel_bytes(edited, pages_df, report)
+        excel_data = _excel_bytes(updated_records, pages_df, report)
         d1, d2, d3 = st.columns(3)
         d1.download_button(
             "Approved CSV",
@@ -319,25 +464,36 @@ def render_website_scanner_panel() -> None:
             file_name="approved_website_records.csv",
             mime="text/csv",
             disabled=approved.empty,
+            width="stretch",
         )
         d2.download_button(
             "Full scan workbook",
             data=excel_data,
             file_name="website_scan_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
         )
         d3.download_button(
             "Raw scan JSON",
             data=json.dumps(report.as_dict(), indent=2, ensure_ascii=False),
             file_name="website_scan_report.json",
             mime="application/json",
+            width="stretch",
         )
 
-    with st.expander("Pages scanned and technical log"):
-        st.dataframe(pages_df, use_container_width=True, hide_index=True)
+        st.write("**Pages scanned**")
+        st.dataframe(pages_df, width="stretch", hide_index=True)
         if report.blocked_urls:
             st.write("**Blocked by robots.txt or scan policy**")
-            st.dataframe(pd.DataFrame({"URL": report.blocked_urls}), hide_index=True)
+            st.dataframe(
+                pd.DataFrame({"URL": report.blocked_urls}),
+                width="stretch",
+                hide_index=True,
+            )
         if report.errors:
             st.write("**Errors**")
-            st.dataframe(pd.DataFrame({"Error": report.errors}), hide_index=True)
+            st.dataframe(
+                pd.DataFrame({"Error": report.errors}),
+                width="stretch",
+                hide_index=True,
+            )
