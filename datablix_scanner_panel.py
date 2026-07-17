@@ -249,6 +249,7 @@ def render_website_scanner_panel(
         "Standard": (100, 5),
         "Full site": (500, 12),
         "Custom": (100, 5),
+        "Maximum": (2_000, 20),
     }
     scope = st.radio(
         "Scan coverage",
