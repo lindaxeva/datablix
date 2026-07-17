@@ -21,6 +21,16 @@ def get_openai_api_key() -> str:
         return ""
 
 
+def ai_is_available() -> bool:
+    """Enable AI only when it has been deliberately switched on and configured."""
+    try:
+        enabled = bool(st.secrets.get("AI_ENABLED", False))
+    except (FileNotFoundError, KeyError):
+        enabled = False
+
+    return enabled and bool(get_openai_api_key())
+
+
 def create_ai_summary(notes: str) -> str:
     """Create a reviewable summary without changing the original notes."""
     clean_notes = str(notes or "").strip()
@@ -1112,106 +1122,115 @@ elif section == "Review & edit":
                 save_edits(edited, [c for c in edit_fields if c in edited.columns]); st.rerun()
 
         with tabs[2]:
-            st.caption(
-                "Turn detailed notes into a shorter review summary. "
-                "Nothing is added to the record until you choose to save it."
-            )
-
-            if filtered.empty:
-                st.info("No records match the current filters.")
+            if not ai_is_available():
+                st.info(
+                    "AI assistance is currently unavailable. "
+                    "All regular Datablix tools remain available."
+                )
+                st.caption(
+                    "To enable it later, add `AI_ENABLED = true` and "
+                    "`OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
+                )
             else:
-                ai_options = filtered["Record ID"].astype(str).tolist()
-                selected_ai_id = st.selectbox(
-                    "Choose a record",
-                    ai_options,
-                    format_func=lambda rid: (
-                        f"{rid} · "
-                        f"{filtered.loc[filtered['Record ID'].astype(str).eq(rid), 'Working Record Label'].iloc[0]}"
-                    ),
-                    key="db_ai_record_id",
+                st.caption(
+                    "Turn detailed notes into a shorter review summary. "
+                    "Nothing is added to the record until you choose to save it."
                 )
 
-                ai_row = filtered.loc[
-                    filtered["Record ID"].astype(str).eq(selected_ai_id)
-                ].iloc[0]
-                source_parts = []
-                if not is_unresolved(ai_row.get("Reviewer Notes")):
-                    source_parts.append(f"Reviewer notes: {ai_row['Reviewer Notes']}")
-                if not is_unresolved(ai_row.get("Missing Information")):
-                    source_parts.append(f"Missing information: {ai_row['Missing Information']}")
-                if not is_unresolved(ai_row.get("Research Gaps")) and str(ai_row.get("Research Gaps")) != "None":
-                    source_parts.append(f"Open research gaps: {ai_row['Research Gaps']}")
-                if not is_unresolved(ai_row.get("Source URL")):
-                    source_parts.append(f"Source recorded: {ai_row['Source URL']}")
-
-                source_text = "\n".join(source_parts)
-                notes_key = f"db_ai_notes_{selected_ai_id}"
-                summary_key = f"db_ai_summary_{selected_ai_id}"
-                loaded_key = f"db_ai_loaded_{selected_ai_id}"
-
-                if not st.session_state.get(loaded_key):
-                    st.session_state[notes_key] = source_text
-                    st.session_state.setdefault(summary_key, "")
-                    st.session_state[loaded_key] = True
-
-                ai_notes = st.text_area(
-                    "Notes to summarize",
-                    key=notes_key,
-                    height=180,
-                    placeholder=(
-                        "Add what was confirmed, what source was checked, "
-                        "and what still needs verification."
-                    ),
-                    help="You can edit this working text. The original record is not changed.",
-                )
-
-                ai_col1, ai_col2 = st.columns([1, 2])
-                with ai_col1:
-                    generate_summary = st.button(
-                        "Create AI summary",
-                        type="primary",
-                        disabled=not ai_notes.strip(),
-                        width="stretch",
-                        key=f"db_generate_ai_{selected_ai_id}",
+                if filtered.empty:
+                    st.info("No records match the current filters.")
+                else:
+                    ai_options = filtered["Record ID"].astype(str).tolist()
+                    selected_ai_id = st.selectbox(
+                        "Choose a record",
+                        ai_options,
+                        format_func=lambda rid: (
+                            f"{rid} · "
+                            f"{filtered.loc[filtered['Record ID'].astype(str).eq(rid), 'Working Record Label'].iloc[0]}"
+                        ),
+                        key="db_ai_record_id",
                     )
-                with ai_col2:
-                    if get_openai_api_key():
-                        st.caption("AI is configured. Review every result before saving it.")
-                    else:
-                        st.warning(
-                            "Add `OPENAI_API_KEY` in Streamlit Cloud → App settings → Secrets to enable this button."
+
+                    ai_row = filtered.loc[
+                        filtered["Record ID"].astype(str).eq(selected_ai_id)
+                    ].iloc[0]
+                    source_parts = []
+                    if not is_unresolved(ai_row.get("Reviewer Notes")):
+                        source_parts.append(f"Reviewer notes: {ai_row['Reviewer Notes']}")
+                    if not is_unresolved(ai_row.get("Missing Information")):
+                        source_parts.append(f"Missing information: {ai_row['Missing Information']}")
+                    if not is_unresolved(ai_row.get("Research Gaps")) and str(ai_row.get("Research Gaps")) != "None":
+                        source_parts.append(f"Open research gaps: {ai_row['Research Gaps']}")
+                    if not is_unresolved(ai_row.get("Source URL")):
+                        source_parts.append(f"Source recorded: {ai_row['Source URL']}")
+
+                    source_text = "\n".join(source_parts)
+                    notes_key = f"db_ai_notes_{selected_ai_id}"
+                    summary_key = f"db_ai_summary_{selected_ai_id}"
+                    loaded_key = f"db_ai_loaded_{selected_ai_id}"
+
+                    if not st.session_state.get(loaded_key):
+                        st.session_state[notes_key] = source_text
+                        st.session_state.setdefault(summary_key, "")
+                        st.session_state[loaded_key] = True
+
+                    ai_notes = st.text_area(
+                        "Notes to summarize",
+                        key=notes_key,
+                        height=180,
+                        placeholder=(
+                            "Add what was confirmed, what source was checked, "
+                            "and what still needs verification."
+                        ),
+                        help="You can edit this working text. The original record is not changed.",
+                    )
+
+                    ai_col1, ai_col2 = st.columns([1, 2])
+                    with ai_col1:
+                        generate_summary = st.button(
+                            "Create AI summary",
+                            type="primary",
+                            disabled=not ai_notes.strip(),
+                            width="stretch",
+                            key=f"db_generate_ai_{selected_ai_id}",
                         )
+                    with ai_col2:
+                        if get_openai_api_key():
+                            st.caption("AI is configured. Review every result before saving it.")
+                        else:
+                            st.warning(
+                                "Add `OPENAI_API_KEY` in Streamlit Cloud → App settings → Secrets to enable this button."
+                            )
 
-                if generate_summary:
-                    try:
-                        with st.spinner("Preparing a concise review summary..."):
-                            st.session_state[summary_key] = create_ai_summary(ai_notes)
-                    except Exception as error:
-                        st.error(str(error))
+                    if generate_summary:
+                        try:
+                            with st.spinner("Preparing a concise review summary..."):
+                                st.session_state[summary_key] = create_ai_summary(ai_notes)
+                        except Exception as error:
+                            st.error(str(error))
 
-                ai_summary = st.text_area(
-                    "AI-prepared summary",
-                    key=summary_key,
-                    height=160,
-                    placeholder="The generated summary will appear here for review and editing.",
-                    help="Edit the wording before saving it to Reviewer Notes.",
-                )
+                    ai_summary = st.text_area(
+                        "AI-prepared summary",
+                        key=summary_key,
+                        height=160,
+                        placeholder="The generated summary will appear here for review and editing.",
+                        help="Edit the wording before saving it to Reviewer Notes.",
+                    )
 
-                save_ai = st.button(
-                    "Save summary to Reviewer Notes",
-                    disabled=not ai_summary.strip(),
-                    width="stretch",
-                    key=f"db_save_ai_{selected_ai_id}",
-                )
-                if save_ai:
-                    working_ai = st.session_state[S_WORKING].copy()
-                    target_mask = working_ai["Record ID"].astype(str).eq(selected_ai_id)
-                    working_ai.loc[target_mask, "Reviewer Notes"] = ai_summary.strip()
-                    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working_ai))
-                    st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-                    st.session_state[S_FLASH] = f"AI summary saved to Reviewer Notes for {selected_ai_id}."
-                    st.rerun()
-
+                    save_ai = st.button(
+                        "Save summary to Reviewer Notes",
+                        disabled=not ai_summary.strip(),
+                        width="stretch",
+                        key=f"db_save_ai_{selected_ai_id}",
+                    )
+                    if save_ai:
+                        working_ai = st.session_state[S_WORKING].copy()
+                        target_mask = working_ai["Record ID"].astype(str).eq(selected_ai_id)
+                        working_ai.loc[target_mask, "Reviewer Notes"] = ai_summary.strip()
+                        st.session_state[S_WORKING] = normalize_workflow(prepare_data(working_ai))
+                        st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+                        st.session_state[S_FLASH] = f"AI summary saved to Reviewer Notes for {selected_ai_id}."
+                        st.rerun()
     st.divider()
     with st.expander("Add a building not in the file", expanded=not has_records):
         st.caption("Add what you can confirm now. Unavailable details can stay blank and be followed up later.")
