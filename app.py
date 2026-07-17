@@ -942,7 +942,7 @@ st.html("""
     }
 }
 </style>
-<div class="db-start-here">Start here →</div>
+<div class="db-start-here">&gt;&gt; Start Here</div>
 """)
 
 with st.sidebar:
