@@ -217,24 +217,33 @@ def _merge_into_working_data(approved: pd.DataFrame, working_data_key: str) -> t
 def render_website_scanner_panel(
     working_data_key: str = WORKING_DATA_KEY,
 ) -> None:
-    st.markdown('<div class="db-eyebrow">COLLECT</div>', unsafe_allow_html=True)
-    st.header("Scan a rental property website")
-    st.caption(
-        "Search permitted public pages for rental property listings, contact details, "
-        "building classifications, apartment counts, and supporting source evidence. "
-        "Only the candidates you approve are added to your workspace."
-    )
-
     st.markdown(
-        '<div class="db-step-line">Choose coverage → Scan → Review → Add approved records</div>',
+        """
+        <section class="db-page-head" aria-label="Scan a rental property website">
+            <div class="db-eyebrow">COLLECT</div>
+            <h2>Scan a rental property website</h2>
+            <p>Search permitted public pages for listing details, contacts, building classifications, apartment counts, and supporting evidence. Only approved candidates move into the workspace.</p>
+        </section>
+        <div class="db-process" aria-label="Rental property research workflow">
+            <div class="db-process-item active" aria-current="step"><span class="db-process-dot" aria-hidden="true"></span><span>Collect</span></div>
+            <div class="db-process-item upcoming"><span class="db-process-dot" aria-hidden="true"></span><span>Review</span></div>
+            <div class="db-process-item upcoming"><span class="db-process-dot" aria-hidden="true"></span><span>Verify</span></div>
+            <div class="db-process-item upcoming"><span class="db-process-dot" aria-hidden="true"></span><span>Download</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="db-guidance"><strong>Approval and verification are separate.</strong>'
+        '<span>Approve a candidate to add it to the workspace; complete human verification in Review records.</span></div>',
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### Choose a rental property website")
+    st.markdown("### Choose website and coverage")
     website_url = st.text_input(
         "Website address",
         placeholder="https://examplepropertycompany.ca",
-        help="Use the main public website of the rental property owner or management company.",
+        help="Use the main public website of the property owner or management company.",
         key="full_scan_website_url",
     )
 
@@ -245,20 +254,20 @@ def render_website_scanner_panel(
         "Custom": (100, 5),
     }
     scope = st.radio(
-        "How much of the website should be checked?",
+        "Scan coverage",
         options=list(scope_settings),
         index=1,
         horizontal=True,
         help=(
-            "Quick checks the pages most likely to contain rental property listings. "
-            "Standard suits most management websites. Full site searches more permitted pages."
+            "Quick checks likely listing pages. Standard suits most management websites. "
+            "Full site searches more permitted pages."
         ),
         key="full_scan_scope",
     )
 
     default_pages, default_depth = scope_settings[scope]
 
-    with st.expander("Fine-tune the website scan", expanded=scope == "Custom"):
+    with st.expander("Advanced scan settings", expanded=scope == "Custom"):
         if scope == "Custom":
             custom_col1, custom_col2 = st.columns(2)
             max_pages = custom_col1.number_input(
@@ -338,24 +347,17 @@ def render_website_scanner_panel(
             )
 
     acknowledgement = st.checkbox(
-        "I am scanning permitted public pages and will review every rental property finding before use.",
+        "I am scanning permitted public pages and will review every finding before use.",
         key="full_scan_acknowledgement",
     )
 
     submitted = st.button(
-        "Start rental property scan",
+        "Start scan",
         type="primary",
         width="stretch",
-        disabled=not website_url.strip(),
+        disabled=not website_url.strip() or not acknowledgement,
         key="full_scan_submit",
     )
-
-    if submitted and not acknowledgement:
-        st.error(
-            "Tick the confirmation above to start the scan. It confirms the scan "
-            "is limited to permitted public pages."
-        )
-        return
 
     if submitted:
         render_mode = {
@@ -375,7 +377,7 @@ def render_website_scanner_panel(
             obey_robots_txt=True,
         )
 
-        status = st.status("Starting rental property website scan…", expanded=True)
+        status = st.status("Starting website scan…", expanded=True)
         progress = st.progress(0.0)
         current_page = st.empty()
         counters = st.empty()
@@ -387,7 +389,7 @@ def render_website_scanner_panel(
             current_page.caption(update.get("current_url", ""))
             counters.write(
                 f"Pages processed: **{processed}** · "
-                f"Rental property candidates: **{update.get('records_found', 0)}** · "
+                f"Candidates: **{update.get('records_found', 0)}** · "
                 f"Blocked: **{update.get('blocked_count', 0)}** · "
                 f"Errors: **{update.get('error_count', 0)}**"
             )
@@ -409,7 +411,7 @@ def render_website_scanner_panel(
             status.update(
                 label=(
                     f"Scan complete: {len(report.pages)} pages read, "
-                    f"{len(report.records)} unique rental property candidates found"
+                    f"{len(report.records)} unique listing candidates found"
                 ),
                 state="complete",
                 expanded=False,
@@ -421,7 +423,7 @@ def render_website_scanner_panel(
     records_df = st.session_state.get("website_scan_records")
     if report is None or not isinstance(records_df, pd.DataFrame):
         st.caption(
-            "After the first scan finishes, detected rental property candidates will appear here for review."
+            "Scan results will appear here for review. Nothing is added to the workspace automatically."
         )
         return
 
@@ -439,127 +441,190 @@ def render_website_scanner_panel(
     )
 
     st.divider()
-    st.markdown("#### Review detected rental property listings")
+    st.markdown("### Review detected listings")
+    st.caption(
+        "Confirm the required listing fields first, then inspect additional findings and source evidence. "
+        "A blank value means the page did not provide enough information to confirm it."
+    )
+
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Pages scanned", successful_pages)
-    m2.metric("Rental property candidates", len(records_df))
+    m2.metric("Candidates", len(records_df))
     m3.metric("JavaScript pages", rendered_pages)
     m4.metric("Blocked or failed", len(report.blocked_urls) + len(report.errors))
 
-    clear_col, help_col = st.columns([1, 3])
-    with clear_col:
-        if st.button("Clear scan results", width="stretch", key="clear_full_scan"):
-            for key in [
+    with st.expander("Manage current scan results"):
+        st.caption("Clearing removes this scan report and its review edits from the current session.")
+        confirm_clear = st.checkbox(
+            "Clear the current scan results",
+            key="confirm_clear_full_scan",
+        )
+        if st.button(
+            "Clear results",
+            disabled=not confirm_clear,
+            width="stretch",
+            key="clear_full_scan",
+        ):
+            keys_to_clear = [
+                key for key in list(st.session_state)
+                if key.startswith("full_scan_record_editor_")
+            ]
+            keys_to_clear.extend([
                 "website_scan_report",
                 "website_scan_records",
-                "full_scan_record_editor_v2",
-            ]:
+                "full_scan_review_focus",
+                "confirm_clear_full_scan",
+            ])
+            for key in keys_to_clear:
                 st.session_state.pop(key, None)
             st.rerun()
-    with help_col:
-        st.caption(
-            "Open each source page before approving a rental property record. The confidence score helps prioritize review but never replaces human verification."
-        )
 
-    review_columns = [
+    required_review_columns = [
         "approved",
         "building_name",
-        "management_owner",
         "street_address",
-        "address_line_2",
         "city",
         "province",
         "postal_code",
-        "country",
+        "building_classification",
+        "number_of_apartments",
+        "management_owner",
         "phone",
         "primary_email",
         "website",
-        "number_of_apartments",
-        "building_classification",
         "source_url",
         "confidence",
     ]
-    for column in review_columns:
+    additional_review_columns = [
+        "approved",
+        "address_line_2",
+        "country",
+        "source_page_title",
+        "extraction_method",
+        "review_status",
+        "evidence",
+        "source_url",
+        "confidence",
+    ]
+    preferred_all_order = [
+        "approved", "building_name", "management_owner", "street_address",
+        "address_line_2", "city", "province", "postal_code", "country",
+        "phone", "primary_email", "website", "number_of_apartments",
+        "building_classification", "source_url", "source_page_title",
+        "extraction_method", "confidence", "review_status", "evidence",
+    ]
+    all_review_columns = [column for column in preferred_all_order if column in records_df.columns]
+    all_review_columns.extend(
+        column for column in records_df.columns if column not in all_review_columns
+    )
+
+    for column in set(required_review_columns + additional_review_columns + all_review_columns):
         if column not in records_df.columns:
             records_df[column] = False if column == "approved" else ""
 
+    review_views = {
+        "Required listing information": required_review_columns,
+        "Additional findings and evidence": additional_review_columns,
+        "All detected fields": all_review_columns,
+    }
+    review_focus = st.selectbox(
+        "Review focus",
+        list(review_views),
+        help="Use a focused view to reduce horizontal scrolling. Every detected field remains available in All detected fields.",
+        key="full_scan_review_focus",
+    )
+    visible_review_columns = [
+        column for column in review_views[review_focus] if column in records_df.columns
+    ]
+
+    editor_key = "full_scan_record_editor_" + review_focus.lower().replace(" ", "_").replace("/", "_")
     edited_review = st.data_editor(
-        records_df[review_columns].copy(),
-        key="full_scan_record_editor_v2",
+        records_df[visible_review_columns].copy(),
+        key=editor_key,
         width="stretch",
         hide_index=True,
         num_rows="fixed",
-        disabled=["confidence"],
+        disabled=[
+            column for column in [
+                "confidence", "source_page_title", "extraction_method", "review_status"
+            ] if column in visible_review_columns
+        ],
         column_config={
             "approved": st.column_config.CheckboxColumn(
-                "Add this record",
+                "Approve candidate",
                 default=False,
-                help="Select this record only after checking the supporting source page.",
+                help="Approve only after checking the supporting source page.",
             ),
-            "building_name": st.column_config.TextColumn("Apartment Building Name"),
-            "management_owner": st.column_config.TextColumn(
-                "Management/Owner",
-                width="large",
-            ),
+            "building_name": st.column_config.TextColumn("Apartment Building Name", width="large"),
+            "management_owner": st.column_config.TextColumn("Management / Owner", width="large"),
             "street_address": st.column_config.TextColumn("Street Address"),
             "address_line_2": st.column_config.TextColumn("Address Line 2"),
             "city": st.column_config.TextColumn("City"),
             "province": st.column_config.TextColumn("Province"),
             "postal_code": st.column_config.TextColumn("Postal Code"),
             "country": st.column_config.TextColumn("Country"),
-            "phone": st.column_config.TextColumn("Phone"),
-            "primary_email": st.column_config.TextColumn("Primary Email"),
-            "website": st.column_config.LinkColumn("Website"),
-            "number_of_apartments": st.column_config.TextColumn(
-                "Number of Apartments"
-            ),
+            "phone": st.column_config.TextColumn("Phone Number"),
+            "primary_email": st.column_config.TextColumn("Email Contact", width="large"),
+            "website": st.column_config.LinkColumn("Website", width="large"),
+            "number_of_apartments": st.column_config.TextColumn("Number of Apartments"),
             "building_classification": st.column_config.TextColumn(
                 "Building Classification",
-                help="For example: High Rise - 28, Low Rise, Townhome, or Duplex.",
+                help="For example: High Rise, Low Rise, Townhome, or Duplex.",
             ),
-            "source_url": st.column_config.LinkColumn("Source Page"),
+            "source_url": st.column_config.LinkColumn("Official Source URL", width="large"),
+            "source_page_title": st.column_config.TextColumn("Source Page Title", width="large"),
+            "extraction_method": st.column_config.TextColumn("Extraction Method"),
             "confidence": st.column_config.ProgressColumn(
-                "Confidence",
+                "Detection Confidence",
                 min_value=0.0,
                 max_value=1.0,
                 format="percent",
+                help="Use confidence to prioritize review; it is not proof that a value is correct.",
             ),
+            "review_status": st.column_config.TextColumn("Review Status"),
+            "evidence": st.column_config.TextColumn("Supporting Evidence", width="large"),
         },
     )
 
     updated_records = records_df.copy()
-    for column in review_columns:
+    for column in visible_review_columns:
         updated_records.loc[edited_review.index, column] = edited_review[column]
     st.session_state["website_scan_records"] = updated_records
 
     approved = updated_records.loc[
         updated_records["approved"].fillna(False)
     ].copy()
-    approved["review_status"] = "Verified"
+    approved["review_status"] = "Needs Review"
 
-    st.markdown("#### Add approved rental property records")
-    st.caption(
-        f"Approved rental property records: **{len(approved):,}** of "
-        f"**{len(updated_records):,}** candidates."
-    )
-    if st.button(
-        f"Add {len(approved):,} approved rental property record(s)",
-        type="primary",
-        disabled=approved.empty,
-        width="stretch",
-        key="add_approved_scan_records",
-    ):
+    with st.container(border=True):
+        action_left, action_right = st.columns([2, 1], vertical_alignment="center")
+        with action_left:
+            st.subheader("Add approved records")
+            st.write(
+                f"{len(approved):,} of {len(updated_records):,} candidates are approved. "
+                "They will enter the workspace as Needs Review, not as verified records."
+            )
+        with action_right:
+            add_approved = st.button(
+                "Add approved records",
+                type="primary",
+                disabled=approved.empty,
+                width="stretch",
+                key="add_approved_scan_records",
+            )
+    if add_approved:
         added, duplicates = _merge_into_working_data(
             approved,
             working_data_key=working_data_key,
         )
         st.success(
-            f"Added {added} rental property record(s) to the workspace. Skipped {duplicates} that matched an existing building name and address."
+            f"Added {added} record(s) to the workspace. "
+            f"Skipped {duplicates} possible duplicate(s) with the same building name and address."
         )
 
-    with st.expander("Source evidence, downloads, and scan log"):
+    with st.expander("Evidence, scan log, and downloads"):
         st.caption(
-            "The evidence table shows where each rental property candidate came from and how the value was detected. Keep it with the research trail."
+            "Keep the source page, extraction details, confidence, and supporting text with the research trail."
         )
         evidence_columns = [
             "building_name",
@@ -585,7 +650,7 @@ def render_website_scanner_panel(
         excel_data = _excel_bytes(updated_records, pages_df, report)
         d1, d2, d3 = st.columns(3)
         d1.download_button(
-            "Download approved rental property CSV",
+            "Download approved listings — CSV",
             data=csv_data,
             file_name="approved_website_records.csv",
             mime="text/csv",
@@ -593,14 +658,14 @@ def render_website_scanner_panel(
             width="stretch",
         )
         d2.download_button(
-            "Download rental property scan workbook",
+            "Download complete scan workbook",
             data=excel_data,
             file_name="website_scan_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
         )
         d3.download_button(
-            "Download raw rental property scan JSON",
+            "Download raw scan data — JSON",
             data=json.dumps(report.as_dict(), indent=2, ensure_ascii=False),
             file_name="website_scan_report.json",
             mime="application/json",
