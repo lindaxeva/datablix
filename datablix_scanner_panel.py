@@ -248,8 +248,8 @@ def render_website_scanner_panel(
         "Quick": (25, 3),
         "Standard": (100, 5),
         "Full site": (500, 12),
-        "Custom": (100, 5),
         "Maximum": (2_000, 20),
+        "Custom": (100, 5),
     }
     scope = st.radio(
         "Scan coverage",
@@ -257,15 +257,26 @@ def render_website_scanner_panel(
         index=1,
         horizontal=True,
         help=(
-            "Quick checks likely listing pages. Standard suits most management websites. "
-            "Full site searches more permitted pages."
+            "Quick checks likely listing pages. Standard suits most websites. "
+            "Full site provides broad coverage. Maximum searches up to 2,000 "
+            "permitted pages across 20 link levels."
         ),
         key="full_scan_scope",
     )
 
     default_pages, default_depth = scope_settings[scope]
 
-    with st.expander("Advanced scan settings", expanded=scope == "Custom"):
+    if scope == "Maximum":
+        st.info(
+            "**Maximum coverage is active.** Start from the main website homepage. "
+            "XML sitemaps and related subdomains are included automatically. "
+            "Query-string pages remain optional to avoid duplicate or endless URLs."
+        )
+
+    with st.expander(
+        "Advanced scan settings",
+        expanded=scope in {"Custom", "Maximum"},
+    ):
         if scope == "Custom":
             custom_col1, custom_col2 = st.columns(2)
             max_pages = custom_col1.number_input(
@@ -291,7 +302,7 @@ def render_website_scanner_panel(
             max_depth = default_depth
             st.caption(
                 f"Current preset: up to **{max_pages:,} pages** and "
-                f"**{max_depth} link levels**. Choose Custom to change these limits."
+                f"**{max_depth} link levels**. Choose Custom to set different limits."
             )
 
         advanced_col1, advanced_col2 = st.columns(2)
@@ -315,25 +326,49 @@ def render_website_scanner_panel(
                 max_value=30.0,
                 value=0.75,
                 step=0.25,
-                help="A longer delay is gentler on the website being scanned.",
+                help=(
+                    "A longer delay is gentler on the website and can reduce "
+                    "temporary blocking during large scans."
+                ),
                 key="full_scan_delay",
             )
+
         with advanced_col2:
-            use_sitemaps = st.checkbox(
-                "Use XML sitemaps",
-                value=True,
-                key="full_scan_sitemaps",
-            )
-            include_subdomains = st.checkbox(
-                "Include subdomains",
-                value=scope == "Full site",
-                help="Turn this on when listings live on a related subdomain.",
-                key="full_scan_subdomains",
-            )
+            if scope == "Maximum":
+                use_sitemaps = st.checkbox(
+                    "Use XML sitemaps",
+                    value=True,
+                    disabled=True,
+                    help="Required for Maximum coverage.",
+                    key="full_scan_sitemaps_maximum",
+                )
+                include_subdomains = st.checkbox(
+                    "Include subdomains",
+                    value=True,
+                    disabled=True,
+                    help="Required for Maximum coverage when listings use related subdomains.",
+                    key="full_scan_subdomains_maximum",
+                )
+            else:
+                use_sitemaps = st.checkbox(
+                    "Use XML sitemaps",
+                    value=True,
+                    key="full_scan_sitemaps",
+                )
+                include_subdomains = st.checkbox(
+                    "Include subdomains",
+                    value=scope == "Full site",
+                    help="Turn this on when listings live on a related subdomain.",
+                    key="full_scan_subdomains",
+                )
+
             follow_queries = st.checkbox(
                 "Follow query-string pages",
                 value=False,
-                help="Leave this off unless query parameters identify unique listings.",
+                help=(
+                    "Enable only when parameters such as ?page=2 or ?property=123 "
+                    "lead to unique listing pages."
+                ),
                 key="full_scan_queries",
             )
             st.checkbox(
@@ -406,14 +441,31 @@ def render_website_scanner_panel(
             st.exception(exc)
         else:
             progress.progress(1.0)
-            status.update(
-                label=(
-                    f"Scan complete: {len(report.pages)} pages read, "
-                    f"{len(report.records)} unique listing candidates found"
-                ),
-                state="complete",
-                expanded=False,
-            )
+            page_limit_reached = len(report.pages) >= int(max_pages)
+
+            if page_limit_reached:
+                status.update(
+                    label=(
+                        f"Page limit reached: {len(report.pages)} pages processed, "
+                        f"{len(report.records)} unique listing candidates found"
+                    ),
+                    state="complete",
+                    expanded=True,
+                )
+                st.warning(
+                    "The scanner reached the selected page limit. The collected results "
+                    "are available for review, but additional permitted pages may remain."
+                )
+            else:
+                status.update(
+                    label=(
+                        f"Scan complete: {len(report.pages)} pages processed, "
+                        f"{len(report.records)} unique listing candidates found"
+                    ),
+                    state="complete",
+                    expanded=False,
+                )
+
             st.session_state["website_scan_report"] = report
             st.session_state["website_scan_records"] = _records_dataframe(report)
 
