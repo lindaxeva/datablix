@@ -1,56 +1,58 @@
 # Datablix
 
-**Datablix turns rental property research data into a structured, trackable, and review-ready directory.**
+**Datablix turns rental property research into structured, trackable, and review-ready listings.**
 
-Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly sourced directory information is collected, organized, reviewed, verified, and prepared for use.
+Datablix was developed to support the **Ontario Senior Living Directory Development Stage 3** project by improving how publicly available rental property information is collected, organized, reviewed, verified, and prepared for directory use.
 
-It combines data intake, column matching, source tracking, data-quality checks, research monitoring, human verification, optional AI assistance, and task-specific exports in one workflow.
+The application combines file and Google Sheets intake, a human-reviewed website scanner, column matching, source tracking, data-quality checks, research monitoring, record correction, optional AI note assistance, and task-specific exports in one workflow.
 
-Users can upload CSV or Excel files, connect a viewable Google Sheet, or begin with a blank workspace. Datablix creates an editable working copy without changing the original source.
+Users can scan permitted public webpages, upload CSV or Excel files, connect a viewable Google Sheet, or begin with a blank workspace. Imported sources are opened as editable working copies; the original file or Sheet is not changed.
 
 ## Live Demos
 
 Each demo represents a stage in the development of Datablix.
 
-| Demo         | Main Capabilities                                                                                                                                                                           | Live Application                                        |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Datablix 1.0 | Spreadsheet upload, automated quality checks, review queue, reviewer notes, and basic exports                                                                                               | [Open Datablix 1.0](https://datablix.streamlit.app/)    |
-| Datablix 2.0 | Direct record correction, QA re-runs, filters, verification KPIs, workspace reset, and status-based exports                                                                                 | [Open Datablix 2.0](https://datablix-v2.streamlit.app/) |
-| Datablix 3.0 | CSV, Excel, and Google Sheets intake; source and researcher tracking; freshness monitoring; integrated QA; editable records; research logs; draft profiles; and optional AI-assisted review | [Open Datablix 3.0](https://datablix-v3.streamlit.app/) |
+| Demo | Main capabilities | Live application |
+|---|---|---|
+| Datablix 1.0 | Spreadsheet upload, automated quality checks, review queue, reviewer notes, and basic exports | [Open Datablix 1.0](https://datablix.streamlit.app/) |
+| Datablix 2.0 | Direct record correction, QA re-runs, filters, verification KPIs, workspace reset, and status-based exports | [Open Datablix 2.0](https://datablix-v2.streamlit.app/) |
+| Datablix 3.0 | CSV, Excel, Google Sheets, and public-website intake; human-reviewed scanner candidates; source evidence; editable records; integrated QA; freshness monitoring; research logs; formatted listings; platform field recommendations; and optional AI note summaries | [Open Datablix 3.0](https://datablix-v3.streamlit.app/) |
 
 ---
 
 ## Project Snapshot
 
-| Area                        | Summary                                                                                                                                                                                                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Business Need               | Prepare publicly sourced rental property information for consistent review, verification, follow-up, and directory use                                                                                                                                                                      |
-| Primary Challenge           | Repetitive spreadsheet-based research, inconsistent headings, limited progress visibility, and dependence on manual checks                                                                                                                                                                  |
-| Users                       | Researchers, reviewers, project coordinators, directory administrators, and the project sponsor                                                                                                                                                                                             |
-| Organization                | Coyle Media Group × Riipen Level Up                                                                                                                                                                                                                                                         |
-| Solution                    | Human-in-the-loop research, data-quality, source-tracking, and verification assistant                                                                                                                                                                                                       |
-| Solution Lead and Developer | Linda Eva Seuna                                                                                                                                                                                                                                                                             |
-| Inputs                      | Manual entries, CSV files, Excel files, and viewable Google Sheets                                                                                                                                                                                                                          |
-| Outputs                     | Building listings, working directory, research log, review queue, issue summaries, draft profiles, readiness reports, and task-specific exports                                                                                                                                             |
-| In Scope                    | Data intake; CSV, Excel, and Google Sheets support; column matching; researcher and source tracking; freshness and data-quality checks; record correction; human verification; reviewer notes; filters; metrics; optional AI-assisted summaries and research guidance; downloadable outputs |
-| Out of Scope                | Automated website scraping; automatic factual verification; autonomous record approval; user authentication; permanent database storage; full multi-user collaboration; formal approval routing; confidential production data; full audit history                                           |
+| Area | Summary |
+|---|---|
+| Business need | Prepare publicly sourced rental property information for consistent review, verification, follow-up, directory use, and possible online-platform integration |
+| Primary challenge | Repetitive website and spreadsheet research, inconsistent headings, scattered source evidence, limited progress visibility, and dependence on manual checks |
+| Users | Researchers, reviewers, project coordinators, directory administrators, and the project sponsor |
+| Organization | Coyle Media Group × Riipen Level Up |
+| Solution | Human-in-the-loop rental property research, data-quality, source-tracking, website-scanning, and verification assistant |
+| Solution lead and developer | Linda Eva Seuna |
+| Inputs | Permitted public webpages, manual entries, CSV files, Excel files, and viewable Google Sheets |
+| Outputs | Formatted building listings, working directory, approved scanner records, scanner evidence, research log, review queue, issue summaries, draft profiles, readiness reports, platform field recommendations, and task-specific exports |
+| In scope | Website scanning of permitted public pages; CSV, Excel, and Google Sheets intake; column matching; preservation of imported fields; source and researcher tracking; freshness and data-quality checks; direct record correction; human verification; filters; progress metrics; formatted listing exports; optional AI note summaries; and downloadable outputs |
+| Out of scope | Automatic factual verification; autonomous approval; unrestricted cross-domain crawling; bypassing access controls or `robots.txt`; user authentication; permanent database storage; full multi-user collaboration; formal approval routing; confidential production data; and a complete audit-history system |
 
 ---
 
 ## Current State and Future State
 
-| Current-State Challenge                                   | Future State with Datablix                                                 |
-| --------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Research and review managed across spreadsheets           | Manage research, data quality, verification, and follow-up in one workflow |
-| Similar information appears under different headings      | Match imported columns to a consistent directory structure                 |
-| Every row must be inspected manually                      | Focus first on records requiring attention                                 |
-| Reviewer decisions depend on memory                       | Apply documented rules and statuses consistently                           |
-| Source details and progress are tracked separately        | Keep sources, dates, researchers, notes, and decisions connected           |
-| Outdated research must be checked manually                | Calculate source freshness automatically                                   |
-| Corrections require returning to the original spreadsheet | Edit records and re-run checks within the application                      |
-| Reports and work queues are prepared manually             | Generate task-specific downloads automatically                             |
-| Long notes are difficult to review                        | Optionally summarize notes and suggest next research actions with AI       |
-| AI tools may create uncontrolled usage                    | Keep AI disabled by default and require deliberate configuration           |
+| Current-state challenge | Future state with Datablix |
+|---|---|
+| Rental property portfolios must be checked page by page | Scan bounded, permitted public pages and place detected candidates in a review queue |
+| Research and review are managed across spreadsheets | Manage collection, data quality, verification, and follow-up in one workspace |
+| Similar information appears under different headings | Match imported columns to a consistent rental property structure |
+| Main listing details and supporting evidence are disconnected | Keep the source page, extraction method, confidence, and supporting text with each scanner candidate |
+| Every row must be inspected manually | Focus first on records requiring attention |
+| Reviewer decisions depend on memory | Apply documented rules, statuses, and review decisions consistently |
+| Source details and progress are tracked separately | Keep sources, dates, researchers, notes, and decisions connected |
+| Outdated research must be checked manually | Calculate source freshness automatically |
+| Corrections require returning to the original spreadsheet | Edit records and re-run checks within the application |
+| Reports and work queues are prepared manually | Generate task-specific downloads automatically |
+| Potential website categories and filters are not documented | Produce structured field recommendations for search, filtering, display, and administration |
+| Long notes are difficult to review | Optionally create a shorter AI-assisted summary for human review |
 
 ---
 
@@ -58,199 +60,395 @@ Each demo represents a stage in the development of Datablix.
 
 Datablix helps users:
 
-* Standardize directory research and review
-* Reduce repetitive spreadsheet inspection
-* Improve source and decision traceability
-* Track research ownership and progress
-* Identify missing, duplicate, invalid, inconsistent, or outdated information
-* Preserve original imported columns
-* Distinguish data-quality issues from information that is simply unavailable
-* Support human verification without replacing judgment
-* Produce organized outputs for review, follow-up, and handoff
-* Use optional AI assistance without allowing automatic approval or record changes
+- Collect rental property candidates from files, Google Sheets, manual entry, or permitted public websites.
+- Standardize listing research and review.
+- Prioritize the required listing fields while preserving additional findings.
+- Reduce repetitive website and spreadsheet inspection.
+- Improve source, evidence, and decision traceability.
+- Track research ownership, freshness, and progress.
+- Identify missing, duplicate, invalid, inconsistent, or outdated information.
+- Distinguish data-quality problems from information that is simply unavailable or unconfirmed.
+- Keep scanner approval separate from final human verification.
+- Preserve original imported columns.
+- Produce organized listings, research logs, follow-up queues, and handoff files.
+- Recommend fields, categories, and filters that may support an online rental property directory.
+- Use optional AI assistance without allowing automatic approval or record changes.
 
 ---
 
 ## What Datablix Does
 
-* Opens CSV, Excel, or Google Sheets as an editable working copy.
-* Organizes key fields while preserving original columns.
-* Flags missing information, possible duplicates, and data-quality issues.
-* Tracks sources, verification, notes, and record status.
-* Creates review-ready listings and downloadable reports.
-* Includes optional AI tools *(disabled by default)* to summarize notes and suggest next research actions.
-* Requires human review before any AI-generated content is saved.
+- Scans permitted public rental property websites using bounded same-site crawling.
+- Uses `robots.txt`, XML sitemaps, page links, and optional JavaScript rendering when available.
+- Detects candidate listing details and keeps them in a review queue.
+- Opens CSV, Excel, and viewable Google Sheets as editable working copies.
+- Matches similar imported headings to consistent rental property fields.
+- Preserves additional imported columns instead of discarding them.
+- Flags missing information, possible duplicates, and formatting issues.
+- Tracks sources, research dates, researchers, verification, notes, and record decisions.
+- Displays progress, quality, field coverage, owner summaries, and record readiness.
+- Creates sample-formatted building listings and focused downloads.
+- Provides structured recommendations for directory display, search, filtering, and internal administration.
+- Includes optional AI note summaries, disabled by default.
+
+---
+
+## Website Scanner
+
+### Scanner purpose
+
+The scanner helps a researcher examine a rental property owner or management website without treating automated extraction as verified fact.
+
+It prioritizes the main listing fields:
+
+1. Apartment Building Name
+2. Street Address
+3. City and Postal Code
+4. Building Classification
+5. Number of Apartments
+6. Apartment Building Management/Owner
+7. Phone Number
+8. Email Contact
+9. Website
+
+It can also retain supporting details such as:
+
+- Address Line 2
+- Country
+- Official Source URL
+- Source Page Title
+- Extraction Method
+- Detection Confidence
+- Supporting Evidence
+
+### Scanner controls
+
+- **Quick scan:** checks a smaller set of likely pages.
+- **Standard scan:** provides balanced coverage for most websites.
+- **Full-site scan:** checks more permitted pages within configured limits.
+- **Custom scan:** allows page, depth, rendering, sitemap, subdomain, query-string, and delay settings.
+- **Automatic rendering:** reads normal HTML first and uses browser rendering only when a page appears JavaScript-dependent and Playwright is available.
+
+### Scanner safeguards
+
+- Only public HTTP or HTTPS pages are accepted.
+- Private, local, or internal-network targets are blocked.
+- Crawling is limited by maximum pages and link depth.
+- `robots.txt` rules remain enabled.
+- Requests use delays and bounded response sizes.
+- Unsupported files and low-value paths are skipped.
+- Scanner candidates are deduplicated before review.
+- Nothing joins the working directory until a user approves the candidate.
+- Approved candidates enter the workspace as **Needs Review**, not as verified records.
+
+### Review semantics
+
+- **Approved** means the candidate may be added to the working directory.
+- **Verified** means a person has reviewed the record and its supporting source.
+- **Blank** means the value was not confirmed; it does not automatically mean “No.”
+- **Confidence** helps prioritize review; it is not proof that a value is correct.
+
+---
+
+## Listing and Data Structure
+
+### Required listing view
+
+The formatted listing keeps the nine required fields in the prescribed order. Each rental property is presented as its own vertical field-and-value block rather than as an excessively wide row.
+
+### Additional research fields
+
+Useful details can remain available below the main listing or in the working dataset, including:
+
+- Address Line 2
+- Province and Country
+- Secondary Email
+- Rental Rate Range
+- Official Source URL
+- Date Researched
+- Researcher
+- Research Status
+- Source Status
+- Verification Status
+- Missing Information
+- Reviewer Notes
+- Record Decision
+
+Additional imported columns remain available in the working data and complete workbook.
+
+---
+
+## Amenities and Building Features
+
+Amenities and building features are useful for future online search and filtering, but their meaning must remain evidence-based.
+
+A recommended three-state model is:
+
+| Stored value | Meaning |
+|---|---|
+| `Yes` | The source explicitly confirms the feature |
+| `No` | The source explicitly states that the feature is unavailable |
+| Blank | The source does not mention the feature, or the value is not yet confirmed |
+
+A missing website reference should not be converted automatically to `No`.
+
+Potential amenity categories include:
+
+- Fitness and wellness
+- Social and activity spaces
+- Outdoor recreation
+- Parking and transportation
+- Pet-related features
+- Building services
+- Suite types
+- Accessibility and security
+
+Imported amenity columns can be preserved in Datablix. Automated amenity-by-amenity extraction should remain a human-reviewed extension because website wording, context, and availability can vary by building.
+
+---
+
+## Online Platform Integration Recommendations
+
+Datablix can help document fields that may support integration into the Fifty-Five Plus Magazine online platform.
+
+| Field group | Example fields | Suggested online use |
+|---|---|---|
+| Identity | Apartment Building Name | Display and search |
+| Location | Street Address, City, Province, Postal Code | Search, map, and location filters |
+| Classification | Adult-oriented, High Rise, Townhome, Duplex, Luxury, Low Rental | Category and filter |
+| Property size | Number of Apartments | Sort or filter |
+| Rental information | Rental Rate Range | Display and price filter |
+| Ownership | Management/Owner | Filter and organization pages |
+| Contact | Phone, Email, Website | Public contact and outbound links |
+| Amenities | Confirmed building features | Multi-select filters and icons |
+| Source governance | Source URL, Date Researched, Verification Status | Internal administration and freshness control |
+| Editorial workflow | Missing Information, Reviewer Notes, Record Decision | Internal review only |
+
+Recommended design principles for platform fields:
+
+- Use controlled values for categories and statuses.
+- Store location components separately even when they are displayed together.
+- Keep public listing fields separate from internal research metadata.
+- Use three-state amenity logic instead of assuming an unmentioned feature is unavailable.
+- Keep the source URL and verification date for internal governance.
+- Allow multiple classifications or amenities where appropriate.
+- Review privacy, editorial, and accessibility requirements before publication.
 
 ---
 
 ## Key Requirements
 
-| Requirement Type           | Requirement                                                                                                               |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Business Requirement       | Improve the consistency, visibility, efficiency, and traceability of directory research                                   |
-| Stakeholder Requirement    | Help users collect records, identify issues, document decisions, monitor progress, and prepare outputs                    |
-| Functional Requirement     | Support intake, mapping, validation, correction, filtering, verification, monitoring, optional AI assistance, and exports |
-| Non-Functional Requirement | Provide a clear, reliable, privacy-aware, human-controlled, and easy-to-use experience                                    |
-| Transition Requirement     | Provide templates, fictional test data, deployment guidance, configuration instructions, and downloadable outputs         |
+| Requirement type | Requirement |
+|---|---|
+| Business requirement | Improve the consistency, visibility, efficiency, traceability, and reuse of rental property research |
+| Stakeholder requirement | Help users collect records, review scanner findings, identify issues, document decisions, monitor progress, and prepare outputs |
+| Functional requirement | Support public-website scanning, data intake, column matching, validation, correction, filtering, verification, monitoring, platform field recommendations, optional AI note summaries, and exports |
+| Non-functional requirement | Provide a clear, reliable, accessible, privacy-aware, bounded, human-controlled, and easy-to-use experience |
+| Transition requirement | Provide templates, fictional test data, deployment guidance, configuration instructions, dependency files, and downloadable outputs |
 
 ### Core Functional Requirements
 
-| ID    | Requirement              | Expected Behaviour                                                                                                  |
-| ----- | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| FR-01 | Workspace Setup          | Upload a file, connect a Google Sheet, or start a blank workspace                                                   |
-| FR-02 | Data Intake              | Accept row-based rental property records from supported sources                                                     |
-| FR-03 | Column Matching          | Recognize similar imported headings and map them to consistent fields                                               |
-| FR-04 | Data Preservation        | Keep original imported columns available in the working data                                                        |
-| FR-05 | Source Tracking          | Store source URL, research date, researcher, and source status                                                      |
-| FR-06 | Data Validation          | Flag missing fields, possible duplicates, invalid URLs, email formats, phone numbers, postal codes, and date issues |
-| FR-07 | Freshness Monitoring     | Identify stale, missing, invalid, or future research dates                                                          |
-| FR-08 | Record Correction        | Edit records and re-run checks                                                                                      |
-| FR-09 | Workflow Filtering       | Filter by owner, research status, QA result, verification status, and readiness                                     |
-| FR-10 | Progress Monitoring      | Display research, source-health, quality, verification, and readiness metrics                                       |
-| FR-11 | Research Documentation   | Preserve reviewer notes, missing information, decisions, and follow-up status                                       |
-| FR-12 | AI Note Summary          | Optionally summarize research notes without changing the original notes                                             |
-| FR-13 | AI Research Guidance     | Optionally suggest the next research action using record gaps and workflow information                              |
-| FR-14 | Human Review             | Require review before AI-generated content is saved                                                                 |
-| FR-15 | AI Configuration Control | Keep AI unavailable unless deliberately enabled and configured                                                      |
-| FR-16 | Export                   | Download listings, research logs, summaries, review queues, and other task-specific files                           |
+| ID | Requirement | Expected behaviour |
+|---|---|---|
+| FR-01 | Workspace setup | Scan a permitted public website, upload a file, connect a Google Sheet, or start a blank workspace |
+| FR-02 | Website scope | Limit crawling to configured public pages, domains, page counts, depths, and delays |
+| FR-03 | Robots and sitemap support | Respect `robots.txt` and optionally use XML sitemaps to discover permitted pages |
+| FR-04 | Scanner extraction | Detect rental property candidates, main listing fields, source details, confidence, and evidence |
+| FR-05 | Scanner review | Allow users to edit findings and approve selected candidates before import |
+| FR-06 | Approval separation | Add approved candidates as Needs Review rather than Verified |
+| FR-07 | Data intake | Accept row-based rental property records from CSV, Excel, Google Sheets, and manual entry |
+| FR-08 | Column matching | Recognize similar imported headings and map them to consistent fields |
+| FR-09 | Data preservation | Keep original and additional imported columns available in the working data |
+| FR-10 | Source tracking | Store source URL, research date, researcher, source status, and supporting notes |
+| FR-11 | Data validation | Flag missing fields, possible duplicates, invalid URLs, email formats, phone numbers, postal codes, apartment counts, and date issues |
+| FR-12 | Freshness monitoring | Identify stale, missing, invalid, or future research dates |
+| FR-13 | Record correction | Edit records and re-run checks |
+| FR-14 | Workflow filtering | Filter by management/owner, research status, QA result, verification status, and readiness |
+| FR-15 | Progress monitoring | Display research, source health, field coverage, quality, verification, and readiness metrics |
+| FR-16 | Research documentation | Preserve reviewer notes, missing information, decisions, and follow-up status |
+| FR-17 | Listing presentation | Present the required fields in the prescribed listing order and vertical layout |
+| FR-18 | Platform recommendations | Recommend field groups, data types, categories, and potential directory uses |
+| FR-19 | AI note summary | Optionally summarize research notes without changing the original notes |
+| FR-20 | Human review | Require review before AI-generated text is saved or scanner candidates are treated as verified |
+| FR-21 | AI configuration control | Keep AI unavailable unless deliberately enabled and configured |
+| FR-22 | Export | Download formatted listings, working data, research logs, scanner reports, summaries, review queues, and other focused files |
 
 ---
 
 ## Business Rules
 
-| Rule                                            | System Response                                                                     |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Core information is missing                     | Flag the record as requiring attention                                              |
-| A useful research field is blank                | Record it as an open research gap rather than automatically treating it as an error |
-| Similar addresses appear more than once         | Flag the records as possible duplicates                                             |
-| A source URL lacks `http://` or `https://`      | Flag the URL format                                                                 |
-| An email address has an invalid format          | Flag the email                                                                      |
-| A phone number does not contain 10 or 11 digits | Flag the phone number                                                               |
-| A Canadian postal code has an invalid format    | Flag the postal code                                                                |
-| A research date is invalid or in the future     | Flag the date                                                                       |
-| A research date is older than 180 days          | Mark the source as stale                                                            |
-| A correction resolves all issues                | Recalculate the QA result                                                           |
-| A reviewer verifies a record                    | Preserve the status, decision, notes, and supporting source information             |
-| Additional imported columns are present         | Preserve them in the working data and outputs                                       |
-| AI is not enabled                               | Prevent all AI requests while keeping regular Datablix features available           |
-| AI generates a summary or suggestion            | Require human review before saving                                                  |
-| Information cannot be confirmed                 | Document it as unavailable or unresolved rather than estimating it                  |
+| Rule | System response |
+|---|---|
+| A website target is private, local, unsupported, or outside the permitted scope | Block or skip the target |
+| `robots.txt` disallows a page | Do not scan the page |
+| A scanner candidate has not been approved | Keep it outside the working directory |
+| A scanner candidate is approved | Add it as Needs Review rather than Verified |
+| Scanner confidence is high | Prioritize review, but do not treat the value as proven |
+| Core information is missing | Flag the record as requiring attention |
+| A useful research field is blank | Record it as an open research gap rather than automatically treating it as an error |
+| An amenity is not mentioned | Leave it blank rather than assuming `No` |
+| Similar names and addresses appear more than once | Flag or skip the records as possible duplicates |
+| A source URL lacks `http://` or `https://` | Flag the URL format |
+| An email address has an invalid format | Flag the email |
+| A phone number does not contain 10 or 11 digits | Flag the phone number |
+| A Canadian postal code has an invalid format | Flag the postal code |
+| A research date is invalid or in the future | Flag the date |
+| A research date is older than 180 days | Mark the source as stale |
+| A correction resolves an issue | Recalculate the QA result |
+| A reviewer verifies a record | Preserve the status, decision, notes, and supporting source information |
+| Additional imported columns are present | Preserve them in the working data and complete outputs |
+| AI is not enabled | Keep regular Datablix features available and prevent AI requests |
+| AI generates a note summary | Require human review before saving |
+| Information cannot be confirmed | Document it as unavailable or unresolved rather than estimating it |
 
-Automated findings and AI-generated suggestions support human review. They do not determine whether a record is factually correct.
+Automated findings and AI-generated summaries support human review. They do not determine whether a rental property record is factually correct.
 
 ---
 
 ## Solution Workflow
 
-| Stage    | User Action                                                                | System Response                                                              |
-| -------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Start    | Upload a file, connect a Google Sheet, or begin with a blank workspace     | Creates an editable working copy                                             |
-| Organize | Review how imported headings were matched                                  | Builds a consistent working structure while preserving original columns      |
-| Research | Add or update property, ownership, contact, source, and researcher details | Stores the research record and supporting trail                              |
-| Assess   | Review data-quality, freshness, coverage, and workflow metrics             | Highlights records that need attention                                       |
-| Filter   | Narrow the records by owner, status, quality, verification, or readiness   | Displays the relevant working group                                          |
-| Correct  | Edit selected fields                                                       | Holds the updated values for confirmation                                    |
-| Re-run   | Save updates                                                               | Recalculates flags, gaps, freshness, readiness, and metrics                  |
-| Verify   | Record the human decision and reviewer notes                               | Preserves the review outcome                                                 |
-| Assist   | Optionally summarize notes or request a suggested next research action     | Produces reviewable AI-generated text without changing records automatically |
-| Export   | Select the required output                                                 | Generates task-specific files for review, follow-up, or handoff              |
+| Stage | User action | System response |
+|---|---|---|
+| Collect | Scan a permitted website, upload a file, connect a Google Sheet, or begin with a blank workspace | Creates scanner candidates or an editable working copy |
+| Review | Check required listing fields, additional findings, evidence, and quality flags | Keeps uncertain values visible and editable |
+| Approve | Select scanner candidates supported by the source | Adds approved candidates as Needs Review |
+| Correct | Edit property, ownership, contact, source, status, or notes | Holds the updated values for confirmation |
+| Verify | Save changes, document the source, and record the human decision | Re-runs checks and preserves the review outcome |
+| Monitor | Review progress, quality, field coverage, ownership, freshness, and readiness | Highlights records requiring attention |
+| Recommend | Review proposed field types, categories, and filters | Supports future platform integration planning |
+| Assist | Optionally summarize long research notes | Produces editable AI-generated text without changing records automatically |
+| Download | Select a complete or focused output | Generates files for review, follow-up, platform planning, or handoff |
+
+The visible product workflow is summarized as **Collect → Review → Verify → Download**.
 
 ---
 
-## AI-Assisted Features
+## UX/UI and Microcopy Principles
 
-Datablix includes two optional AI-assisted features:
+The interface uses a clear, professional tone suited to rental property research.
 
-### Research-Note Summary
+- Page titles explain the full task; navigation labels remain short.
+- Each page uses a consistent eyebrow, title, and supporting-description hierarchy.
+- The Collect, Review, Verify, and Download stages remain visible without relying on numbered instructions.
+- One primary action is emphasized in each task area.
+- Advanced scan settings, filters, evidence, logs, and focused downloads use progressive disclosure.
+- Required listing information is separated from additional findings and technical evidence.
+- Approval and verification are explained as separate decisions.
+- Blank values are described as unconfirmed rather than automatically unavailable.
+- Responsive layouts, focus indicators, readable spacing, dark-mode variables, and reduced-motion support improve accessibility.
 
-The AI can turn long research notes into a shorter review summary that:
+---
 
-* uses only the information provided;
-* separates confirmed findings from unresolved details;
-* identifies information requiring verification;
-* remains editable before saving.
+## Optional AI-Assisted Feature
 
-### Suggested Next Research Action
+### Research-note summary
 
-The AI can review the current record context and suggest what should be checked next based on:
+When AI is deliberately enabled, Datablix can turn long research notes into a shorter review summary that:
 
-* missing fields;
-* research gaps;
-* source status;
-* verification status;
-* record readiness;
-* existing notes.
+- uses only the information provided;
+- separates confirmed findings from unresolved or conflicting details;
+- identifies information requiring human verification;
+- remains editable before saving.
 
-The AI does not browse websites, verify facts, approve records, or change data automatically.
+The AI does not browse websites, run the website scanner, verify facts, approve candidates, or change data automatically.
 
-### AI Safeguards
+### AI safeguards
 
-* AI is disabled by default.
-* AI runs only when `AI_ENABLED = true`.
-* A valid API key must be configured separately.
-* No AI request runs automatically.
-* Users must click a button to generate content.
-* AI output remains editable.
-* Human review is required before saving.
-* Regular Datablix features continue working when AI is disabled.
+- AI is disabled by default.
+- AI runs only when `AI_ENABLED = true`.
+- A valid API key must be configured separately in Streamlit Secrets.
+- No AI request runs automatically.
+- Users must deliberately generate a summary.
+- The original notes remain unchanged.
+- AI output remains editable.
+- Human review is required before saving.
+- Regular Datablix features continue working when AI is disabled.
 
 ---
 
 ## Testing and Acceptance
 
-Testing used fictional records covering:
+Testing uses fictional or synthetic records and controlled website content covering:
 
-* Complete and incomplete records
-* Similar and inconsistent column headings
-* Possible duplicate addresses
-* Invalid URLs
-* Invalid email addresses
-* Invalid phone numbers
-* Invalid postal codes
-* Missing, invalid, stale, and future research dates
-* Research and source workflow statuses
-* Direct record corrections and re-validation
-* Combined filters
-* Workspace reset
-* CSV, Excel, and Google Sheets intake
-* Directory, research-log, review, summary, and readiness exports
-* AI disabled by default
-* AI summary generation
-* AI next-action suggestions
-* Human review before saving AI-generated content
+- Complete and incomplete rental property records
+- Similar and inconsistent imported headings
+- Required listing-field order and vertical listing exports
+- Preservation of additional imported columns
+- Public URL validation and private-network blocking
+- Bounded page and depth settings
+- `robots.txt` and sitemap handling
+- HTML and optional JavaScript rendering modes
+- Candidate extraction, evidence, source titles, and confidence values
+- Scanner approval and Needs Review status
+- Possible duplicate names and addresses
+- Invalid URLs, email addresses, phone numbers, postal codes, and apartment counts
+- Missing, invalid, stale, and future research dates
+- Research, source, verification, and decision statuses
+- Direct record corrections and re-validation
+- Combined filters and workspace reset
+- CSV, Excel, and Google Sheets intake
+- Formatted listings, research logs, review queues, scanner reports, and workbook exports
+- AI disabled by default
+- AI note-summary generation and human review before saving
 
-The solution was accepted when validation results, workflow metrics, reviewer updates, AI safeguards, and downloaded outputs matched the expected outcomes.
+Python syntax compilation and synthetic extraction checks can confirm that the code loads and the extraction rules behave as expected. Live website results still require human review because page structure, wording, access rules, and current content vary by source.
 
 ---
 
 ## Value Delivered
 
-| Value               | Outcome                                                                                 |
-| ------------------- | --------------------------------------------------------------------------------------- |
-| Efficiency          | Users focus on records requiring attention                                              |
-| Consistency         | Standard rules are applied across the directory                                         |
-| Visibility          | Metrics show research, review, and readiness progress                                   |
-| Traceability        | Sources, dates, ownership, decisions, and notes remain connected                        |
-| Freshness Awareness | Outdated research is identified automatically                                           |
-| Data Preservation   | Original columns and working records are retained                                       |
-| Human Control       | Records are not automatically approved, removed, or overwritten                         |
-| Reduced Manual Work | Research logs, summaries, profiles, and task-specific files are generated automatically |
-| Research Guidance   | Optional AI helps organize notes and identify next actions                              |
-| Cost Control        | AI remains disabled unless deliberately enabled                                         |
-| Reusability         | The workflow can support similar directory-research projects                            |
+| Value | Outcome |
+|---|---|
+| Efficiency | Researchers can scan likely pages and focus on records requiring attention |
+| Consistency | Standard listing fields and review rules are applied across the workspace |
+| Visibility | Metrics show research, quality, verification, freshness, and readiness progress |
+| Traceability | Source pages, evidence, dates, ownership, decisions, and notes remain connected |
+| Data preservation | Original and additional imported columns are retained |
+| Human control | Records are not automatically verified, approved for publication, removed, or overwritten |
+| Reduced manual work | Listing blocks, scanner reports, research logs, summaries, profiles, and focused files are generated automatically |
+| Platform readiness | Field, category, data-type, and filter recommendations support future integration planning |
+| Research guidance | Optional AI helps shorten long notes without changing the source material |
+| Cost control | AI remains disabled unless deliberately enabled |
+| Reusability | The workflow can support similar rental property and directory-research projects |
 
 ---
 
-## Tools
+## Technology
 
-Python · pandas · Streamlit · OpenAI API *(optional)* · CSV · Excel · Google Sheets · GitHub · Streamlit Community Cloud
+Python · pandas · Streamlit · requests · Beautiful Soup · lxml · tldextract · Playwright *(optional browser rendering)* · OpenAI API *(optional)* · CSV · Excel · Google Sheets · GitHub · Streamlit Community Cloud
 
 ---
 
-## Privacy
+## Installation
+
+Install the Python dependencies from the repository root:
+
+```bash
+pip install -r requirements.txt
+```
+
+To enable browser rendering for JavaScript-dependent pages, install the Playwright Chromium browser:
+
+```bash
+python -m playwright install chromium
+```
+
+Run the application locally:
+
+```bash
+streamlit run datablix_app.py
+```
+
+The scanner can still read standard HTML pages when browser rendering is unavailable. Selecting **Always render JavaScript** requires a working Playwright browser installation.
+
+---
+
+## Privacy and Responsible Use
 
 Use only fictional, approved, publicly available, or non-confidential information.
 
-Do not upload confidential user information, private communications, employer-provided files, restricted records, API keys, or unapproved research data to the public application or repository.
+Do not upload confidential user information, private communications, employer-restricted files, protected records, API keys, or unapproved research data to a public application or repository.
 
-Public information may still be outdated, incomplete, inconsistent, or incorrect. Datablix supports structured review, but final verification remains a human responsibility.
+Only scan websites that the user is permitted to access. Respect `robots.txt`, website terms, applicable laws, reasonable request delays, and the configured crawl limits.
+
+Public information may still be outdated, incomplete, duplicated, inconsistent, or incorrect. Scanner results, quality checks, and optional AI summaries support structured review, but final verification and publication decisions remain human responsibilities.
