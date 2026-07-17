@@ -474,8 +474,18 @@ def render_website_scanner_panel(
         except Exception as exc:
             st.session_state["website_scan_active"] = False
             st.session_state["website_scan_stop_message"] = str(exc)
-            status.update(label="The scan stopped unexpectedly", state="error", expanded=True)
-            st.exception(exc)
+            status.update(
+                label="The scan stopped unexpectedly",
+                state="error",
+                expanded=True,
+            )
+            st.error(
+                "The scan stopped because one page contained an unsupported or "
+                "malformed link. The corrected scanner now skips that link and "
+                "continues. Review the technical details only if the issue repeats."
+            )
+            with st.expander("Technical details"):
+                st.code(f"{type(exc).__name__}: {exc}")
         else:
             st.session_state["website_scan_active"] = False
             progress.progress(1.0)
