@@ -96,6 +96,20 @@ UNIT_COUNT_RE = re.compile(
     r"\b(\d{1,5})\s+(?:rental\s+)?(?:apartments?|residential\s+units?|units?|suites?)\b",
     re.IGNORECASE,
 )
+STOREY_RE = re.compile(
+    r"\b(\d{1,3})\s*(?:[-–]\s*)?(?:storey|storeys|story|stories|floor|floors)\b",
+    re.IGNORECASE,
+)
+CLASSIFICATION_PATTERNS = [
+    ("High Rise", re.compile(r"\b(?:high[-\s]?rise|apartment\s+tower)\b", re.IGNORECASE)),
+    ("Mid Rise", re.compile(r"\bmid[-\s]?rise\b", re.IGNORECASE)),
+    ("Low Rise", re.compile(r"\blow[-\s]?rise\b", re.IGNORECASE)),
+    ("Townhome", re.compile(r"\b(?:townhome|townhouse)s?\b", re.IGNORECASE)),
+    ("Duplex", re.compile(r"\bduplex(?:es)?\b", re.IGNORECASE)),
+    ("Garden Home", re.compile(r"\bgarden\s+(?:home|apartment)s?\b", re.IGNORECASE)),
+    ("Luxury", re.compile(r"\bluxury\b", re.IGNORECASE)),
+    ("Adult-oriented", re.compile(r"\badult[-\s]?oriented\b", re.IGNORECASE)),
+]
 
 SCHEMA_PROPERTY_TYPES = {
     "Accommodation", "Apartment", "ApartmentComplex", "House", "Place",
@@ -170,6 +184,7 @@ class RecordCandidate:
     primary_email: str = ""
     website: str = ""
     number_of_apartments: str = ""
+    building_classification: str = ""
     source_url: str = ""
     source_page_title: str = ""
     extraction_method: str = ""
@@ -948,6 +963,12 @@ class FullSiteScanner:
                 primary_email=self._clean_text(node.get("email")),
                 website=self._clean_text(node.get("url") or page_url),
                 number_of_apartments=self._unit_count_from_node(node),
+                building_classification=self._classification_from_text(
+                    " ".join(
+                        self._clean_text(str(node.get(key, "")))
+                        for key in ("@type", "additionalType", "description", "keywords")
+                    )
+                ),
                 source_url=page_url,
                 source_page_title=page_title,
                 extraction_method="JSON-LD structured data",
@@ -989,6 +1010,30 @@ class FullSiteScanner:
         description = self._clean_text(node.get("description"))
         match = UNIT_COUNT_RE.search(description)
         return match.group(1) if match else ""
+
+    def _classification_from_text(self, text: str) -> str:
+        """Extract classification wording that is actually present on the page."""
+        clean_text = self._clean_text(text)
+        if not clean_text:
+            return ""
+
+        labels = [
+            label
+            for label, pattern in CLASSIFICATION_PATTERNS
+            if pattern.search(clean_text)
+        ]
+        labels = list(dict.fromkeys(labels))
+        storey_match = STOREY_RE.search(clean_text)
+        storeys = storey_match.group(1) if storey_match else ""
+
+        if labels:
+            classification = " | ".join(labels)
+            if storeys and len(labels) == 1:
+                classification = f"{classification} - {storeys}"
+            return classification
+        if storeys:
+            return f"{storeys} Storeys"
+        return ""
 
     def _evidence_text(self, node: dict) -> str:
         evidence_parts = []
@@ -1032,6 +1077,9 @@ class FullSiteScanner:
                     phone=prop("telephone"),
                     primary_email=prop("email").replace("mailto:", ""),
                     website=prop("url") or page_url,
+                    building_classification=self._classification_from_text(
+                        block.get_text(" ", strip=True)
+                    ),
                     source_url=page_url,
                     source_page_title=page_title,
                     extraction_method="HTML microdata",
@@ -1055,6 +1103,9 @@ class FullSiteScanner:
                 continue
             heading = self._nearest_heading(address_tag) or self._page_heading(soup)
             street, city, province, postal = self._split_address(text)
+            local_context = self._clean_text(
+                (address_tag.parent or address_tag).get_text(" ", strip=True)
+            )[:2500]
             output.append(
                 RecordCandidate(
                     building_name=heading,
@@ -1067,7 +1118,8 @@ class FullSiteScanner:
                     phone=self._first_match(PHONE_RE, text),
                     primary_email=self._first_match(EMAIL_RE, text),
                     website=page_url,
-                    number_of_apartments=self._first_group(UNIT_COUNT_RE, text),
+                    number_of_apartments=self._first_group(UNIT_COUNT_RE, local_context),
+                    building_classification=self._classification_from_text(local_context),
                     source_url=page_url,
                     source_page_title=page_title,
                     extraction_method="HTML address element",
@@ -1099,6 +1151,8 @@ class FullSiteScanner:
                 continue
             seen_addresses.add(key)
             street, city, province, postal = self._split_address(raw_address)
+            local_context = page_text[max(0, match.start() - 600):match.end() + 600]
+            local_unit_count = self._first_group(UNIT_COUNT_RE, local_context) or unit_count
             output.append(
                 RecordCandidate(
                     building_name=page_heading,
@@ -1111,7 +1165,8 @@ class FullSiteScanner:
                     phone=phones[0] if phones else "",
                     primary_email=emails[0] if emails else "",
                     website=page_url,
-                    number_of_apartments=unit_count,
+                    number_of_apartments=local_unit_count,
+                    building_classification=self._classification_from_text(local_context),
                     source_url=page_url,
                     source_page_title=page_title,
                     extraction_method="Visible-text pattern",
@@ -1215,7 +1270,8 @@ class FullSiteScanner:
         for field_name in (
             "building_name", "management_owner", "street_address", "address_line_2",
             "city", "province", "postal_code", "country", "phone", "primary_email",
-            "website", "number_of_apartments", "source_url", "source_page_title",
+            "website", "number_of_apartments", "building_classification",
+            "source_url", "source_page_title",
             "extraction_method", "evidence",
         ):
             if not getattr(preferred, field_name) and getattr(other, field_name):
