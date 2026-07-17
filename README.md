@@ -274,10 +274,10 @@ This log documents unexpected application behaviours observed during testing, ho
 
 ## Status labels
 
-Fixed: The correction has been implemented and confirmed.
-Retesting: A correction has been implemented but still requires live testing.
-Open: The behaviour is still occurring or its cause has not been resolved.
-Monitoring: The issue has not reappeared but remains under observation.
+- Fixed: The correction has been implemented and confirmed.
+- Retesting: A correction has been implemented but still requires live testing.
+- Open: The behaviour is still occurring or its cause has not been resolved.
+- Monitoring: The issue has not reappeared but remains under observation.
 
 
 
