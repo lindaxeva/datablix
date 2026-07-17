@@ -252,7 +252,7 @@ Public information may still be outdated, incomplete, duplicated, inconsistent, 
 
 ---
 
-#3 Datablix Known Issues and Fixes
+## Datablix Known Issues and Fixes
 
 This log documents unexpected application behaviours observed during testing, how they affected the workflow, and the changes made to address them.
 
