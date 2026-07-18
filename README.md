@@ -233,7 +233,7 @@ python -m playwright install chromium
 Run the application locally:
 
 ```bash
-streamlit run datablix_app.py
+streamlit run app.py
 ```
 
 The scanner can still read standard HTML pages when browser rendering is unavailable. Selecting **Always render JavaScript** requires a working Playwright browser installation.
