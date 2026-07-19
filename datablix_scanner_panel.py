@@ -7,7 +7,7 @@ import os
 import re
 import unicodedata
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -97,6 +97,8 @@ def _delete_durable_checkpoint(website_url: str) -> None:
 
 
 DIRECTORY_FIELD_MAP = {
+    "company_id": "Company ID",
+    "scan_id": "Scan ID",
     "building_name": "Building Name",
     "management_owner": "Management/Owner",
     "street_address": "Street Address",
@@ -111,9 +113,14 @@ DIRECTORY_FIELD_MAP = {
     "number_of_apartments": "Number of Apartments",
     "building_classification": "Building Classification",
     "source_url": "Source URL",
+    "source_page_title": "Source Page Title",
+    "extraction_method": "Extraction Method",
+    "confidence": "Detection Confidence",
+    "evidence": "Supporting Evidence",
     "review_status": "Verification Status",
     "ontario_scope_status": "Ontario Scope Status",
     "ontario_scope_reason": "Ontario Scope Reason",
+    "scan_start_url": "Scan Start URL",
 }
 
 
@@ -482,9 +489,230 @@ def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> by
     return output.getvalue()
 
 
-def _merge_into_working_data(approved: pd.DataFrame, working_data_key: str) -> tuple[int, int]:
+
+SCAN_HISTORY_COLUMNS = [
+    "Scan ID", "Company ID", "Management/Owner", "Start URL", "Coverage",
+    "Started At UTC", "Completed At UTC", "Completion Reason",
+    "Pages Scanned", "Candidates Detected", "Candidates Approved",
+    "Records Added", "Duplicates Skipped", "Blocked URLs", "Scan Errors",
+    "Recovered Partial", "Last Updated UTC",
+]
+
+
+def _scan_id_for_report(report, company_id: str, website_url: str) -> str:
+    existing = str(st.session_state.get("website_scan_id", "")).strip()
+    if existing:
+        return existing
+
+    started = str(getattr(report, "started_at_utc", "") or "").strip()
+    source = "|".join([
+        str(company_id or "").strip(),
+        _normalized_scan_url(website_url),
+        started,
+    ])
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:8].upper()
+    compact_time = re.sub(r"[^0-9]", "", started)[:14]
+    if not compact_time:
+        compact_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    scan_id = f"SCAN-{compact_time}-{digest}"
+    st.session_state["website_scan_id"] = scan_id
+    return scan_id
+
+
+def _attach_scan_context(
+    frame: pd.DataFrame,
+    *,
+    scan_id: str,
+    company_id: str,
+    company_name: str,
+    website_url: str,
+) -> pd.DataFrame:
+    contextual = frame.copy()
+    contextual["scan_id"] = scan_id
+    contextual["company_id"] = str(company_id or "").strip()
+    contextual["assigned_company"] = str(company_name or "").strip()
+    contextual["scan_start_url"] = str(website_url or "").strip()
+
+    if "management_owner" not in contextual.columns:
+        contextual["management_owner"] = ""
+    owner_blank = contextual["management_owner"].apply(_clean_value).eq("")
+    contextual.loc[owner_blank, "management_owner"] = str(company_name or "").strip()
+    return contextual
+
+
+def _history_frame(key: str, columns: list[str] | None = None) -> pd.DataFrame:
+    value = st.session_state.get(key)
+    if not isinstance(value, pd.DataFrame):
+        value = pd.DataFrame(columns=columns or [])
+    value = value.copy()
+    if columns:
+        for column in columns:
+            if column not in value.columns:
+                value[column] = pd.NA
+    return value
+
+
+def _replace_scan_rows(existing: pd.DataFrame, new_rows: pd.DataFrame, scan_id: str) -> pd.DataFrame:
+    if "Scan ID" in existing.columns:
+        existing = existing.loc[
+            ~existing["Scan ID"].fillna("").astype(str).eq(str(scan_id))
+        ].copy()
+    if new_rows is None or new_rows.empty:
+        return existing.reset_index(drop=True)
+
+    all_columns = list(existing.columns)
+    all_columns.extend(
+        column for column in new_rows.columns
+        if column not in all_columns
+    )
+    return pd.concat(
+        [
+            existing.reindex(columns=all_columns),
+            new_rows.reindex(columns=all_columns),
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+
+
+def _persist_scan_evidence(
+    *,
+    report,
+    records_df: pd.DataFrame,
+    pages_df: pd.DataFrame,
+    scan_id: str,
+    company_id: str,
+    company_name: str,
+    website_url: str,
+    scope: str,
+    history_key: str,
+    candidates_key: str,
+    pages_key: str,
+    added_count: int | None = None,
+    duplicate_count: int | None = None,
+) -> None:
+    approval_mask = records_df.get(
+        "approved",
+        pd.Series(False, index=records_df.index),
+    ).fillna(False)
+    eligible_mask = _ontario_eligible_mask(records_df)
+    approved_count = int((approval_mask & eligible_mask).sum())
+
+    history = _history_frame(history_key, SCAN_HISTORY_COLUMNS)
+    prior_added = 0
+    prior_duplicates = 0
+    if not history.empty and "Scan ID" in history.columns:
+        prior = history.loc[history["Scan ID"].astype(str).eq(scan_id)]
+        if not prior.empty:
+            prior_added_value = pd.to_numeric(
+                prior.iloc[-1].get("Records Added", 0),
+                errors="coerce",
+            )
+            prior_duplicate_value = pd.to_numeric(
+                prior.iloc[-1].get("Duplicates Skipped", 0),
+                errors="coerce",
+            )
+            prior_added = (
+                0 if pd.isna(prior_added_value) else int(prior_added_value)
+            )
+            prior_duplicates = (
+                0
+                if pd.isna(prior_duplicate_value)
+                else int(prior_duplicate_value)
+            )
+
+    summary = pd.DataFrame([{
+        "Scan ID": scan_id,
+        "Company ID": str(company_id or "").strip(),
+        "Management/Owner": str(company_name or "").strip(),
+        "Start URL": str(website_url or "").strip(),
+        "Coverage": str(scope or "").strip(),
+        "Started At UTC": str(getattr(report, "started_at_utc", "") or ""),
+        "Completed At UTC": str(getattr(report, "completed_at_utc", "") or ""),
+        "Completion Reason": str(getattr(report, "completion_reason", "") or ""),
+        "Pages Scanned": len(getattr(report, "pages", []) or []),
+        "Candidates Detected": len(records_df),
+        "Candidates Approved": approved_count,
+        "Records Added": prior_added if added_count is None else int(added_count),
+        "Duplicates Skipped": (
+            prior_duplicates if duplicate_count is None else int(duplicate_count)
+        ),
+        "Blocked URLs": len(getattr(report, "blocked_urls", []) or []),
+        "Scan Errors": len(getattr(report, "errors", []) or []),
+        "Recovered Partial": bool(
+            st.session_state.get("website_scan_recovered_partial", False)
+        ),
+        "Last Updated UTC": datetime.now(timezone.utc).isoformat(),
+    }])
+    st.session_state[history_key] = _replace_scan_rows(history, summary, scan_id)
+
+    candidates = records_df.copy().rename(columns={
+        "scan_id": "Scan ID",
+        "company_id": "Company ID",
+        "assigned_company": "Assigned Company",
+        "scan_start_url": "Scan Start URL",
+    })
+    candidates.columns = [
+        column
+        if column in {
+            "Scan ID", "Company ID", "Assigned Company", "Scan Start URL"
+        }
+        else str(column).replace("_", " ").title()
+        for column in candidates.columns
+    ]
+    candidates["Scan ID"] = scan_id
+    candidates["Company ID"] = str(company_id or "").strip()
+    candidates["Management/Owner"] = str(company_name or "").strip()
+    candidates["Candidate Outcome"] = "Not selected"
+    if "Approved" in candidates.columns:
+        candidates.loc[candidates["Approved"].fillna(False), "Candidate Outcome"] = (
+            "Selected for approval"
+        )
+    candidate_history = _history_frame(candidates_key)
+    st.session_state[candidates_key] = _replace_scan_rows(
+        candidate_history,
+        candidates,
+        scan_id,
+    )
+
+    pages = pages_df.copy()
+    pages.columns = [
+        str(column).replace("_", " ").title()
+        for column in pages.columns
+    ]
+    pages["Scan ID"] = scan_id
+    pages["Company ID"] = str(company_id or "").strip()
+    pages["Management/Owner"] = str(company_name or "").strip()
+    page_history = _history_frame(pages_key)
+    st.session_state[pages_key] = _replace_scan_rows(
+        page_history,
+        pages,
+        scan_id,
+    )
+
+
+
+def _merge_into_working_data(
+    approved: pd.DataFrame,
+    working_data_key: str,
+) -> tuple[int, int]:
     mapped = approved.rename(columns=DIRECTORY_FIELD_MAP)
-    mapped = mapped[list(DIRECTORY_FIELD_MAP.values())].copy()
+    available_mapped_columns = [
+        destination
+        for source, destination in DIRECTORY_FIELD_MAP.items()
+        if source in approved.columns
+    ]
+    mapped = mapped[available_mapped_columns].copy()
+
+    mapped["Date Researched"] = date.today().isoformat()
+    mapped["Research Status"] = "Ready for Review"
+    mapped["Source Status"] = "Active"
+    mapped["Verification Status"] = "Needs Review"
+    mapped["Record Decision"] = "Undecided"
+    mapped["Missing Information"] = (
+        "Website-scanned rental property candidate. Confirm every extracted "
+        "detail and supporting source before final use."
+    )
 
     existing = st.session_state.get(working_data_key)
     if existing is None or not isinstance(existing, pd.DataFrame):
@@ -501,12 +729,38 @@ def _merge_into_working_data(approved: pd.DataFrame, working_data_key: str) -> t
     mapped = mapped[existing.columns]
 
     def key_frame(frame: pd.DataFrame) -> pd.Series:
-        address = frame.get("Street Address", pd.Series("", index=frame.index)).fillna("")
-        name = frame.get("Building Name", pd.Series("", index=frame.index)).fillna("")
+        company = frame.get(
+            "Company ID",
+            pd.Series("", index=frame.index),
+        ).fillna("")
+        address = frame.get(
+            "Street Address",
+            pd.Series("", index=frame.index),
+        ).fillna("")
+        name = frame.get(
+            "Building Name",
+            pd.Series("", index=frame.index),
+        ).fillna("")
+        source = frame.get(
+            "Source URL",
+            pd.Series("", index=frame.index),
+        ).fillna("")
         return (
-            name.astype(str).str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+            company.astype(str).str.lower().str.replace(
+                r"[^a-z0-9]", "", regex=True
+            )
             + "|"
-            + address.astype(str).str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+            + name.astype(str).str.lower().str.replace(
+                r"[^a-z0-9]", "", regex=True
+            )
+            + "|"
+            + address.astype(str).str.lower().str.replace(
+                r"[^a-z0-9]", "", regex=True
+            )
+            + "|"
+            + source.astype(str).str.lower().str.replace(
+                r"[^a-z0-9]", "", regex=True
+            )
         )
 
     existing_keys = set(key_frame(existing))
@@ -514,14 +768,42 @@ def _merge_into_working_data(approved: pd.DataFrame, working_data_key: str) -> t
     new_rows = mapped.loc[~mapped_keys.isin(existing_keys)].copy()
     duplicates = len(mapped) - len(new_rows)
     st.session_state[working_data_key] = pd.concat(
-        [existing, new_rows], ignore_index=True
+        [existing, new_rows],
+        ignore_index=True,
     )
     return len(new_rows), duplicates
 
 
+
 def render_website_scanner_panel(
     working_data_key: str = WORKING_DATA_KEY,
-) -> None:
+    *,
+    active_company_id: str = "",
+    active_company_name: str = "",
+    active_company_website: str = "",
+    scan_history_key: str = "db_scan_history",
+    scan_candidates_key: str = "db_scan_candidates_history",
+    scan_pages_key: str = "db_scan_pages_history",
+) -> dict | None:
+    result: dict | None = None
+    active_company_id = str(active_company_id or "").strip()
+    active_company_name = str(active_company_name or "").strip()
+    active_company_website = str(active_company_website or "").strip()
+    company_context_ready = bool(active_company_id and active_company_name)
+    saved_scan_company_id = str(
+        st.session_state.get("website_scan_company_id", "")
+    ).strip()
+    has_current_scan = (
+        st.session_state.get("website_scan_report") is not None
+        or st.session_state.get("website_scan_records") is not None
+    )
+    company_context_mismatch = bool(
+        has_current_scan
+        and saved_scan_company_id
+        and active_company_id
+        and saved_scan_company_id != active_company_id
+    )
+
     # The app shell already renders the shared Collect → Review → Verify →
     # Download process bar. Keep only the scanner page heading here so the
     # workflow controls do not appear twice.
@@ -546,6 +828,37 @@ def render_website_scanner_panel(
         '<span>Approve a candidate to add it to the workspace; complete human verification in Review records.</span></div>',
         unsafe_allow_html=True,
     )
+
+    if company_context_ready:
+        st.success(
+            f"Current company: **{active_company_name}** "
+            f"({active_company_id}). Approved records and scan evidence will "
+            "remain attached to this company."
+        )
+    else:
+        st.warning(
+            "Select or add the company in the Master project area before "
+            "starting a scan. This prevents findings from being attached to "
+            "the wrong organization."
+        )
+
+    if company_context_mismatch:
+        st.warning(
+            "The current scan belongs to a different company. Review, export, "
+            "or clear those results before starting a scan for the newly "
+            "selected company."
+        )
+
+    context_signature = (
+        f"{active_company_id}|{active_company_name}|{active_company_website}"
+    )
+    if (
+        st.session_state.get("full_scan_company_context") != context_signature
+        and st.session_state.get("website_scan_report") is None
+    ):
+        st.session_state["full_scan_company_context"] = context_signature
+        if active_company_website:
+            st.session_state["full_scan_website_url"] = active_company_website
 
     st.markdown("### Choose website")
     website_url = st.text_input(
@@ -718,12 +1031,21 @@ def render_website_scanner_panel(
         "Start scan",
         type="primary",
         width="stretch",
-        disabled=not website_url.strip() or not acknowledgement,
+        disabled=(
+            not website_url.strip()
+            or not acknowledgement
+            or not company_context_ready
+            or company_context_mismatch
+        ),
         key="full_scan_submit",
     )
 
     if submitted:
         st.session_state["website_scan_active"] = True
+        st.session_state["website_scan_company_id"] = active_company_id
+        st.session_state["website_scan_company_name"] = active_company_name
+        st.session_state["website_scan_company_website"] = active_company_website
+        st.session_state.pop("website_scan_id", None)
         st.session_state["website_scan_start_url"] = website_url
         st.session_state["website_scan_last_progress"] = {
             "pages_processed": 0,
@@ -971,8 +1293,45 @@ def render_website_scanner_panel(
             )
             return
 
+    scan_company_id = str(
+        st.session_state.get("website_scan_company_id", active_company_id)
+        or active_company_id
+    ).strip()
+    scan_company_name = str(
+        st.session_state.get("website_scan_company_name", active_company_name)
+        or active_company_name
+    ).strip()
+    scan_start_url = str(
+        getattr(report, "start_url", "")
+        or st.session_state.get("website_scan_start_url", website_url)
+        or website_url
+    ).strip()
+    scan_id = _scan_id_for_report(
+        report,
+        scan_company_id,
+        scan_start_url,
+    )
+
     records_df = _apply_ontario_scope(records_df)
+    records_df = _attach_scan_context(
+        records_df,
+        scan_id=scan_id,
+        company_id=scan_company_id,
+        company_name=scan_company_name,
+        website_url=scan_start_url,
+    )
     st.session_state["website_scan_records"] = records_df
+
+    if (
+        active_company_id
+        and scan_company_id
+        and active_company_id != scan_company_id
+    ):
+        st.warning(
+            f"These results belong to **{scan_company_name}** "
+            f"({scan_company_id}), not the newly selected company. Clear the "
+            "current scan before starting work for another company."
+        )
 
     if st.session_state.get("website_scan_recovered_partial", False):
         st.info(
@@ -1073,6 +1432,10 @@ def render_website_scanner_panel(
                 "website_scan_start_url",
                 "website_scan_scope",
                 "website_scan_page_limit_reached",
+                "website_scan_id",
+                "website_scan_company_id",
+                "website_scan_company_name",
+                "website_scan_company_website",
                 "full_scan_review_focus",
                 "confirm_clear_full_scan",
             ])
@@ -1112,7 +1475,8 @@ def render_website_scanner_panel(
         "confidence",
     ]
     preferred_all_order = [
-        "approved", "building_name", "management_owner", "street_address",
+        "approved", "scan_id", "company_id", "assigned_company",
+        "building_name", "management_owner", "street_address",
         "address_line_2", "city", "province", "postal_code", "country",
         "phone", "primary_email", "website", "number_of_apartments",
         "building_classification", "source_url", "source_page_title",
@@ -1223,6 +1587,20 @@ def render_website_scanner_panel(
     ].copy()
     approved["review_status"] = "Needs Review"
 
+    _persist_scan_evidence(
+        report=report,
+        records_df=updated_records,
+        pages_df=pages_df,
+        scan_id=scan_id,
+        company_id=scan_company_id,
+        company_name=scan_company_name,
+        website_url=scan_start_url,
+        scope=st.session_state.get("website_scan_scope", scope),
+        history_key=scan_history_key,
+        candidates_key=scan_candidates_key,
+        pages_key=scan_pages_key,
+    )
+
     if blocked_approval_count:
         st.warning(
             f"{blocked_approval_count} selected candidate(s) were not approved because "
@@ -1233,16 +1611,16 @@ def render_website_scanner_panel(
     with st.container(border=True):
         action_left, action_right = st.columns([2, 1], vertical_alignment="center")
         with action_left:
-            st.subheader("Add approved records")
+            st.subheader("Add approved records to project")
             st.write(
                 f"{len(approved):,} Ontario-eligible candidate(s) are approved. "
                 "They will enter the workspace as Needs Review, not as verified records."
             )
         with action_right:
             add_approved = st.button(
-                "Add approved records",
+                "Add approved records to project",
                 type="primary",
-                disabled=approved.empty,
+                disabled=approved.empty or not scan_company_id,
                 width="stretch",
                 key="add_approved_scan_records",
             )
@@ -1251,9 +1629,33 @@ def render_website_scanner_panel(
             approved,
             working_data_key=working_data_key,
         )
+        _persist_scan_evidence(
+            report=report,
+            records_df=updated_records,
+            pages_df=pages_df,
+            scan_id=scan_id,
+            company_id=scan_company_id,
+            company_name=scan_company_name,
+            website_url=scan_start_url,
+            scope=st.session_state.get("website_scan_scope", scope),
+            history_key=scan_history_key,
+            candidates_key=scan_candidates_key,
+            pages_key=scan_pages_key,
+            added_count=added,
+            duplicate_count=duplicates,
+        )
+        result = {
+            "scan_id": scan_id,
+            "company_id": scan_company_id,
+            "company_name": scan_company_name,
+            "start_url": scan_start_url,
+            "added": added,
+            "duplicates": duplicates,
+        }
         st.success(
-            f"Added {added} record(s) to the workspace. "
-            f"Skipped {duplicates} possible duplicate(s) with the same building name and address."
+            f"Added {added} record(s) to the master project for "
+            f"{scan_company_name}. Skipped {duplicates} record(s) already "
+            "saved for the same company, source, building name, and address."
         )
 
     with st.expander("Evidence, scan log, and downloads"):
@@ -1335,3 +1737,5 @@ def render_website_scanner_panel(
                 width="stretch",
                 hide_index=True,
             )
+
+    return result
