@@ -3,7 +3,7 @@ import hashlib
 import io
 import re
 from html import escape
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -68,7 +68,7 @@ def create_ai_summary(notes: str) -> str:
 # =========================================================
 
 INTERNAL_COLUMNS = [
-    "Record ID", "Building Name", "Management/Owner", "Street Address",
+    "Record ID", "Company ID", "Building Name", "Management/Owner", "Street Address",
     "Address Line 2", "City", "Province", "Postal Code", "Country",
     "Phone", "Primary Email", "Secondary Email", "Website",
     "Number of Apartments", "Rental Rate Range", "Building Classification",
@@ -124,6 +124,7 @@ TEMPLATE_COLUMNS = LISTING_COLUMNS + [
 
 ALIASES = {
     "Record ID": ["Record ID", "ID", "Directory ID"],
+    "Company ID": ["Company ID", "Organization ID", "Owner ID", "Management ID"],
     "Building Name": [
         "Building Name", "Apartment Building Name",
         "Apartment Building Name (Draft - Check)", "Property Name",
@@ -186,6 +187,16 @@ SOURCE_STATUSES = ["Not Checked", "Active", "Needs Follow-up", "Unavailable"]
 VERIFICATION_STATUSES = ["Not Reviewed", "Needs Review", "Verified"]
 RECORD_DECISIONS = ["Undecided", "Keep", "Update", "Possible Duplicate", "Remove"]
 
+COMPANY_STATUSES = [
+    "Not started", "Researching", "Needs follow-up", "Ready for QA",
+    "Complete", "Complete with limitations",
+]
+COMPANY_SCOPE_TYPES = ["Initial assignment", "Added later", "Imported"]
+COMPANY_COLUMNS = [
+    "Company ID", "Management/Owner", "Main Website", "Scope Type",
+    "Date Assigned", "Company Status", "Notes",
+]
+
 UNRESOLVED = {
     "", "n/a", "na", "n.a.", "unknown", "not known", "not available",
     "not found", "not provided", "not researched", "tbd", "-", "--",
@@ -243,6 +254,11 @@ S_SOURCE_TYPE = "db_source_type"
 S_SOURCE_REF = "db_source_ref"
 S_SELECTOR = "db_selector"
 S_EDIT_COUNT = "db_edit_count"
+S_PROJECT_NAME = "db_project_name"
+S_COMPANIES = "db_company_registry"
+S_ACTIVE_COMPANY = "db_active_company_id"
+S_QA_BASELINE = "db_quality_baseline"
+S_PROJECT_LOADED = "db_project_loaded"
 
 
 # =========================================================
@@ -503,6 +519,166 @@ def normalize_workflow(df):
     for c in ["Researcher", "Missing Information", "Reviewer Notes"]:
         out[c] = out[c].fillna("").astype(str)
     return out
+
+
+def empty_company_registry():
+    return pd.DataFrame(columns=COMPANY_COLUMNS)
+
+
+def normalize_company_registry(registry):
+    if not isinstance(registry, pd.DataFrame):
+        registry = empty_company_registry()
+    out = registry.copy()
+    for column in COMPANY_COLUMNS:
+        if column not in out.columns:
+            out[column] = pd.NA
+    out = out[COMPANY_COLUMNS].copy()
+    out["Management/Owner"] = out["Management/Owner"].fillna("").astype(str).str.strip()
+    out["Company ID"] = out["Company ID"].fillna("").astype(str).str.strip()
+    out["Main Website"] = out["Main Website"].fillna("").astype(str).str.strip()
+    out["Scope Type"] = normalize_choice(
+        out["Scope Type"], COMPANY_SCOPE_TYPES, "Imported"
+    )
+    out["Company Status"] = normalize_choice(
+        out["Company Status"], COMPANY_STATUSES, "Not started"
+    )
+    out["Date Assigned"] = out["Date Assigned"].fillna("").astype(str).str.strip()
+    out["Notes"] = out["Notes"].fillna("").astype(str)
+    out = out.loc[out["Management/Owner"].ne("") | out["Company ID"].ne("")].copy()
+
+    used_ids = set(out.loc[out["Company ID"].ne(""), "Company ID"].astype(str))
+    next_number = 1
+    for index in out.index[out["Company ID"].eq("")]:
+        while f"CMP-{next_number:03d}" in used_ids:
+            next_number += 1
+        company_id = f"CMP-{next_number:03d}"
+        out.at[index, "Company ID"] = company_id
+        used_ids.add(company_id)
+        next_number += 1
+
+    return out.drop_duplicates(subset=["Company ID"], keep="last").reset_index(drop=True)
+
+
+def next_company_id(registry):
+    existing = set(
+        normalize_company_registry(registry)["Company ID"].astype(str).str.strip()
+    )
+    number = 1
+    while f"CMP-{number:03d}" in existing:
+        number += 1
+    return f"CMP-{number:03d}"
+
+
+def company_name_key(value):
+    return norm_header(value)
+
+
+def synchronize_company_registry(records, registry=None):
+    data = normalize_workflow(prepare_data(records.copy()))
+    registry = normalize_company_registry(registry)
+
+    by_name = {
+        company_name_key(row["Management/Owner"]): row["Company ID"]
+        for _, row in registry.iterrows()
+        if row["Management/Owner"] and row["Company ID"]
+    }
+    used_ids = set(registry["Company ID"].astype(str))
+
+    for owner in resolved(data["Management/Owner"]).dropna().astype(str).str.strip().unique():
+        key = company_name_key(owner)
+        if not key or key in by_name:
+            continue
+        candidate_id = next_company_id(registry)
+        while candidate_id in used_ids:
+            suffix = len(used_ids) + 1
+            candidate_id = f"CMP-{suffix:03d}"
+        owner_rows = data.loc[data["Management/Owner"].astype(str).str.strip().eq(owner)]
+        website = ""
+        if not owner_rows.empty:
+            available_websites = resolved(owner_rows["Website"]).dropna().astype(str).str.strip()
+            if not available_websites.empty:
+                website = available_websites.iloc[0]
+        registry = pd.concat([
+            registry,
+            pd.DataFrame([{
+                "Company ID": candidate_id,
+                "Management/Owner": owner,
+                "Main Website": website,
+                "Scope Type": "Imported",
+                "Date Assigned": "",
+                "Company Status": "Researching" if len(owner_rows) else "Not started",
+                "Notes": "",
+            }]),
+        ], ignore_index=True)
+        by_name[key] = candidate_id
+        used_ids.add(candidate_id)
+
+    registry = normalize_company_registry(registry)
+    by_name = {
+        company_name_key(row["Management/Owner"]): row["Company ID"]
+        for _, row in registry.iterrows()
+        if row["Management/Owner"] and row["Company ID"]
+    }
+    missing_company_id = unresolved_mask(data["Company ID"])
+    mapped_ids = data["Management/Owner"].apply(
+        lambda value: by_name.get(company_name_key(value), pd.NA)
+    )
+    data.loc[missing_company_id, "Company ID"] = mapped_ids.loc[missing_company_id]
+    return data, registry
+
+
+def active_company_row():
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+    match = registry.loc[registry["Company ID"].eq(active_id)]
+    return None if match.empty else match.iloc[0]
+
+
+def company_label(row):
+    name = str(row.get("Management/Owner", "")).strip() or "Unnamed company"
+    company_id = str(row.get("Company ID", "")).strip()
+    return f"{name} · {company_id}" if company_id else name
+
+
+def assign_active_company(records, row_mask):
+    out = records.copy()
+    active = active_company_row()
+    if active is None:
+        return out
+    out.loc[row_mask, "Company ID"] = active["Company ID"]
+    blank_owner = row_mask & unresolved_mask(out["Management/Owner"])
+    out.loc[blank_owner, "Management/Owner"] = active["Management/Owner"]
+    return out
+
+
+def add_company_to_project(name, website="", scope_type="Added later", notes=""):
+    clean_name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not clean_name:
+        raise ValueError("Enter the management company or owner name.")
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    key = company_name_key(clean_name)
+    existing = registry.loc[
+        registry["Management/Owner"].apply(company_name_key).eq(key)
+    ]
+    if not existing.empty:
+        company_id = existing.iloc[0]["Company ID"]
+        st.session_state[S_ACTIVE_COMPANY] = company_id
+        return company_id, False
+    company_id = next_company_id(registry)
+    new_row = {
+        "Company ID": company_id,
+        "Management/Owner": clean_name,
+        "Main Website": str(website or "").strip(),
+        "Scope Type": scope_type if scope_type in COMPANY_SCOPE_TYPES else "Added later",
+        "Date Assigned": date.today().isoformat(),
+        "Company Status": "Not started",
+        "Notes": str(notes or "").strip(),
+    }
+    st.session_state[S_COMPANIES] = normalize_company_registry(
+        pd.concat([registry, pd.DataFrame([new_row])], ignore_index=True)
+    )
+    st.session_state[S_ACTIVE_COMPANY] = company_id
+    return company_id, True
 
 
 # =========================================================
@@ -1050,12 +1226,274 @@ def methodology(df, name, sheet):
     ])
 
 
+def qa_issue_rows(qa_frame):
+    columns = [
+        "Issue Key", "Company ID", "Management/Owner", "Record ID",
+        "Severity", "Issue", "Captured At",
+    ]
+    if qa_frame is None or qa_frame.empty:
+        return pd.DataFrame(columns=columns)
+    rows = []
+    captured_at = datetime.now().isoformat(timespec="seconds")
+    for _, record in qa_frame.iterrows():
+        record_id = str(record.get("Record ID", "")).strip()
+        company_id = str(record.get("Company ID", "")).strip()
+        owner = str(record.get("Management/Owner", "")).strip()
+        for item in str(record.get("QA Flags", "")).split("; "):
+            if not item or item == "No rental property data issues found":
+                continue
+            severity, separator, issue = item.partition(": ")
+            if not separator:
+                severity, issue = "Review", item
+            key = f"{record_id}|{severity}|{issue}"
+            rows.append({
+                "Issue Key": key,
+                "Company ID": company_id,
+                "Management/Owner": owner,
+                "Record ID": record_id,
+                "Severity": severity,
+                "Issue": issue,
+                "Captured At": captured_at,
+            })
+    return pd.DataFrame(rows, columns=columns).drop_duplicates(
+        subset=["Issue Key"], keep="last"
+    )
+
+
+def quality_impact_summary(qa_frame, baseline=None):
+    current = qa_issue_rows(qa_frame)
+    baseline = baseline.copy() if isinstance(baseline, pd.DataFrame) else pd.DataFrame()
+    if baseline.empty or "Issue Key" not in baseline.columns:
+        baseline = pd.DataFrame(columns=current.columns)
+    baseline_keys = set(baseline["Issue Key"].astype(str))
+    current_keys = set(current["Issue Key"].astype(str))
+    initial = len(baseline_keys)
+    remaining = len(baseline_keys & current_keys)
+    resolved_count = len(baseline_keys - current_keys)
+    new_count = len(current_keys - baseline_keys)
+    resolution_rate = (resolved_count / initial * 100) if initial else 0.0
+    return pd.DataFrame([
+        {"Metric": "Baseline issues", "Value": initial, "Interpretation": "Rule-based issues captured before correction."},
+        {"Metric": "Baseline issues resolved", "Value": resolved_count, "Interpretation": "Captured issues that no longer appear after revalidation."},
+        {"Metric": "Baseline issues remaining", "Value": remaining, "Interpretation": "Captured issues still present."},
+        {"Metric": "New issues currently detected", "Value": new_count, "Interpretation": "Current issues that were not part of the saved baseline."},
+        {"Metric": "Issue-resolution rate", "Value": round(resolution_rate, 1), "Interpretation": "Resolved baseline issues divided by baseline issues."},
+    ])
+
+
+def capture_quality_baseline(company_id=None, replace=False):
+    working = st.session_state.get(S_WORKING)
+    if not isinstance(working, pd.DataFrame) or working.empty:
+        return 0
+    current_qa = qa_checks(working)
+    if company_id:
+        current_qa = current_qa.loc[current_qa["Company ID"].astype(str).eq(str(company_id))]
+    captured = qa_issue_rows(current_qa)
+    existing = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(existing, pd.DataFrame) or existing.empty:
+        existing = pd.DataFrame(columns=captured.columns)
+    if company_id and not replace and not existing.empty:
+        existing_company = existing["Company ID"].astype(str).eq(str(company_id))
+        if existing_company.any():
+            return -1
+    if company_id:
+        existing = existing.loc[~existing["Company ID"].astype(str).eq(str(company_id))]
+    elif replace:
+        existing = existing.iloc[0:0]
+    st.session_state[S_QA_BASELINE] = pd.concat(
+        [existing, captured], ignore_index=True
+    ).drop_duplicates(subset=["Issue Key"], keep="last")
+    return len(captured)
+
+
+def company_progress_summary(qa_frame, registry=None):
+    registry = normalize_company_registry(registry)
+    rows = []
+    represented_ids = set()
+    for _, company in registry.iterrows():
+        company_id = str(company["Company ID"]).strip()
+        represented_ids.add(company_id)
+        group = qa_frame.loc[qa_frame["Company ID"].astype(str).eq(company_id)]
+        rows.append({
+            "Company ID": company_id,
+            "Management/Owner": company["Management/Owner"],
+            "Scope Type": company["Scope Type"],
+            "Company Status": company["Company Status"],
+            "Building Records": len(group),
+            "Completed Records": int(group["Research Status"].eq("Completed").sum()) if not group.empty else 0,
+            "Verified Records": int(group["Verification Status"].eq("Verified").sum()) if not group.empty else 0,
+            "Records Passing QA": int(group["QA Status"].eq("Pass").sum()) if not group.empty else 0,
+            "Ready Records": int(ready_mask(group).sum()) if not group.empty else 0,
+            "Open QA Issues": int(group["QA Flag Count"].sum()) if not group.empty else 0,
+            "Open Field Gaps": int(group["Research Gap Count"].sum()) if not group.empty else 0,
+            "Follow-up Records": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()) if not group.empty else 0,
+        })
+    unregistered = qa_frame.loc[
+        ~qa_frame["Company ID"].astype(str).isin(represented_ids)
+    ]
+    for owner, group in unregistered.assign(
+        _owner=display_values(unregistered["Management/Owner"], "Unassigned")
+    ).groupby("_owner"):
+        rows.append({
+            "Company ID": "",
+            "Management/Owner": owner,
+            "Scope Type": "Imported",
+            "Company Status": "Researching",
+            "Building Records": len(group),
+            "Completed Records": int(group["Research Status"].eq("Completed").sum()),
+            "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
+            "Records Passing QA": int(group["QA Status"].eq("Pass").sum()),
+            "Ready Records": int(ready_mask(group).sum()),
+            "Open QA Issues": int(group["QA Flag Count"].sum()),
+            "Open Field Gaps": int(group["Research Gap Count"].sum()),
+            "Follow-up Records": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()),
+        })
+    return pd.DataFrame(rows)
+
+
+def report_summary(qa_frame, registry=None, scope_label="All companies", baseline=None):
+    registry = normalize_company_registry(registry)
+    company_count = int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
+    if scope_label == "All companies" and not registry.empty:
+        company_count = len(registry)
+    ready_count = int(ready_mask(qa_frame).sum())
+    issue_count = int(qa_frame["QA Flag Count"].sum())
+    unresolved_count = int((~ready_mask(qa_frame) & ~qa_frame["Record Readiness"].eq("Excluded from Listings")).sum())
+    cities = sorted(set(resolved(qa_frame["City"]).dropna().astype(str).str.strip()))
+    impact = quality_impact_summary(qa_frame, baseline)
+    impact_map = dict(zip(impact["Metric"], impact["Value"]))
+    rows = [
+        {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Building records analysed: {len(qa_frame):,}."},
+        {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {ready_count:,} records are currently ready to use or ready with documented gaps."},
+        {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {unresolved_count:,} records still require correction, verification, a decision, or documented follow-up."},
+        {"Section": "Quality impact", "Report Text": f"The saved baseline contains {int(impact_map.get('Baseline issues', 0)):,} issues. {int(impact_map.get('Baseline issues resolved', 0)):,} no longer appear after revalidation, producing an issue-resolution rate of {float(impact_map.get('Issue-resolution rate', 0)):.1f}%."},
+        {"Section": "Method", "Report Text": "Companies were researched separately, scanner findings were reviewed by a person, approved records were consolidated into one master project, and quality checks were run at company and project levels."},
+        {"Section": "Assumptions", "Report Text": "Scanner findings are candidates rather than verified facts; public websites may be incomplete or change over time; unavailable information is documented rather than invented; and the project scope may expand when additional companies are assigned."},
+        {"Section": "Limitations", "Report Text": "Automated checks identify structural and formatting concerns but do not independently confirm ownership, management relationships, addresses, unit counts, or the completeness of a company portfolio."},
+        {"Section": "Recommended next actions", "Report Text": "Resolve high-priority follow-ups, confirm source evidence, review cross-company duplicate warnings, document unavailable information, and preserve the final master project as the reporting source of truth."},
+    ]
+    return pd.DataFrame(rows)
+
+
+def project_info_dataframe(qa_frame, registry):
+    registry = normalize_company_registry(registry)
+    return pd.DataFrame([
+        {"Setting": "Project Name", "Value": st.session_state.get(S_PROJECT_NAME, "Datablix master project")},
+        {"Setting": "Saved At", "Value": datetime.now().isoformat(timespec="seconds")},
+        {"Setting": "Companies in Scope", "Value": len(registry)},
+        {"Setting": "Building Records", "Value": len(qa_frame)},
+        {"Setting": "Listings Ready", "Value": int(ready_mask(qa_frame).sum())},
+        {"Setting": "Source", "Value": st.session_state.get(S_SOURCE_TYPE, "Workspace")},
+        {"Setting": "Datablix Project Format", "Value": "1"},
+    ])
+
+
+def project_workbook_bytes():
+    working = st.session_state.get(S_WORKING)
+    if not isinstance(working, pd.DataFrame):
+        working = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
+    working, registry = synchronize_company_registry(
+        working,
+        st.session_state.get(S_COMPANIES),
+    )
+    st.session_state[S_WORKING] = working
+    st.session_state[S_COMPANIES] = registry
+    if not working.empty:
+        qa_frame = qa_checks(working)
+    else:
+        qa_frame = working.copy()
+        for column, default in {
+            "QA Flags": "No rental property data issues found",
+            "QA Flag Count": 0,
+            "Research Gap Count": 0,
+            "Record Readiness": "Needs Research",
+            "QA Status": "Pass",
+        }.items():
+            qa_frame[column] = default
+    baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = pd.DataFrame()
+    sheets = {
+        "Project Info": project_info_dataframe(qa_frame, registry),
+        "Company Registry": registry,
+        "Working Data": working,
+        "Current QA": qa_frame,
+        "Company Analysis": company_progress_summary(qa_frame, registry) if not qa_frame.empty else pd.DataFrame(),
+        "Quality Baseline": baseline,
+        "Quality Impact": quality_impact_summary(qa_frame, baseline),
+        "Report Summary": report_summary(qa_frame, registry, baseline=baseline),
+    }
+    return excel_bytes(sheets)
+
+
+def load_project_workbook(uploaded):
+    data = uploaded.getvalue()
+    with pd.ExcelFile(io.BytesIO(data), engine="openpyxl") as workbook:
+        if "Working Data" not in workbook.sheet_names:
+            raise ValueError(
+                "This workbook is not a resumable Datablix project. Open a file containing a 'Working Data' sheet, or use Open file for an ordinary directory workbook."
+            )
+        working = prepare_data(pd.read_excel(workbook, sheet_name="Working Data"))
+        for column in INTERNAL_COLUMNS:
+            if column not in working.columns:
+                working[column] = pd.NA
+        working = ensure_ids(normalize_workflow(working))
+        registry = (
+            pd.read_excel(workbook, sheet_name="Company Registry")
+            if "Company Registry" in workbook.sheet_names
+            else empty_company_registry()
+        )
+        baseline = (
+            pd.read_excel(workbook, sheet_name="Quality Baseline")
+            if "Quality Baseline" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        project_name = safe_filename(uploaded.name).replace("_", " ").title()
+        if "Project Info" in workbook.sheet_names:
+            project_info = pd.read_excel(workbook, sheet_name="Project Info")
+            if {"Setting", "Value"}.issubset(project_info.columns):
+                name_rows = project_info.loc[project_info["Setting"].eq("Project Name"), "Value"]
+                if not name_rows.empty and str(name_rows.iloc[0]).strip():
+                    project_name = str(name_rows.iloc[0]).strip()
+
+    working, registry = synchronize_company_registry(working, registry)
+    mapping = pd.DataFrame({
+        "Datablix Field": INTERNAL_COLUMNS,
+        "Imported Column(s)": INTERNAL_COLUMNS,
+        "Mapping Status": "Saved project field",
+    })
+    signature = f"project:{uploaded.name}:{hashlib.sha256(data).hexdigest()}"
+    st.session_state.pop(S_FILE, None)
+    open_workspace(
+        working,
+        mapping,
+        signature,
+        uploaded.name,
+        "Working Data",
+        "Saved Datablix project",
+        uploaded.name,
+        message=f"Resumed {project_name} with {len(working):,} building record(s).",
+    )
+    st.session_state[S_PROJECT_NAME] = project_name
+    st.session_state[S_COMPANIES] = registry
+    st.session_state[S_QA_BASELINE] = baseline
+    st.session_state[S_PROJECT_LOADED] = True
+    if not registry.empty:
+        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        if active_id not in set(registry["Company ID"].astype(str)):
+            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
+
+
 # =========================================================
 # Session operations
 # =========================================================
 
 def open_workspace(mapped, mapping, signature, name, sheet, source_type, source_ref="", selector="", message="Rental property workspace opened."):
     if st.session_state.get(S_FILE) != signature:
+        mapped, registry = synchronize_company_registry(
+            mapped,
+            st.session_state.get(S_COMPANIES),
+        )
         st.session_state[S_FILE] = signature
         st.session_state[S_ORIGINAL] = mapped.copy()
         st.session_state[S_WORKING] = mapped.copy()
@@ -1066,6 +1504,11 @@ def open_workspace(mapped, mapping, signature, name, sheet, source_type, source_
         st.session_state[S_SOURCE_REF] = source_ref
         st.session_state[S_SELECTOR] = selector
         st.session_state[S_EDIT_COUNT] = 0
+        st.session_state[S_COMPANIES] = registry
+        st.session_state.setdefault(S_PROJECT_NAME, safe_filename(name).replace("_", " ").title())
+        st.session_state.setdefault(S_QA_BASELINE, pd.DataFrame())
+        if not registry.empty and not str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip():
+            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
         st.session_state[S_FLASH] = message
 
 
@@ -1095,6 +1538,10 @@ def blank_workspace():
     df = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
     mapping = pd.DataFrame({"Datablix Field": INTERNAL_COLUMNS, "Imported Column(s)": INTERNAL_COLUMNS, "Mapping Status": "Template field"})
     st.session_state.pop(S_FILE, None)
+    st.session_state[S_COMPANIES] = empty_company_registry()
+    st.session_state[S_QA_BASELINE] = pd.DataFrame()
+    st.session_state[S_ACTIVE_COMPANY] = ""
+    st.session_state[S_PROJECT_NAME] = "Datablix master project"
     open_workspace(df, mapping, "blank-workspace", "datablix_rental_property_research.csv", "", "Blank workspace", message="Created a blank rental property workspace.")
 
 
@@ -1147,6 +1594,7 @@ def render_process_bar(active_section: str) -> None:
         ("Collect", "Website scanner"),
         ("Review", "Review records"),
         ("Verify", "Progress & quality"),
+        ("Analyse", "Analysis & report"),
         ("Download", "Downloads"),
     ]
     active_index = next(
@@ -1468,7 +1916,7 @@ button[data-testid="stSidebarCollapseButton"]::after{
 /* Persistent mental model without numbering or dense instructions. */
 .db-process{
     display:grid;
-    grid-template-columns:repeat(4,minmax(0,1fr));
+    grid-template-columns:repeat(5,minmax(0,1fr));
     gap:.55rem;
     margin:.1rem 0 1.25rem;
 }
@@ -1548,16 +1996,18 @@ with st.sidebar:
 
     current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
     start_options = [
+        "Resume project",
         "Open file",
         "Google Sheet",
         "Scan website",
         "Blank workspace",
     ]
     start_default = {
-        "Uploaded file": 0,
-        "Google Sheet": 1,
-        "Website scan": 2,
-        "Blank workspace": 3,
+        "Saved Datablix project": 0,
+        "Uploaded file": 1,
+        "Google Sheet": 2,
+        "Website scan": 3,
+        "Blank workspace": 4,
     }.get(current, 0)
 
     source = st.radio(
@@ -1568,7 +2018,24 @@ with st.sidebar:
     )
 
     try:
-        if source == "Open file":
+        if source == "Resume project":
+            project_upload = st.file_uploader(
+                "Saved Datablix project",
+                type=["xlsx"],
+                help="Open a workbook previously downloaded with Save master project.",
+                key="db_sidebar_project_upload",
+            )
+            if project_upload is not None:
+                if st.button(
+                    "Resume project",
+                    type="primary",
+                    width="stretch",
+                    key="db_sidebar_resume_project",
+                ):
+                    load_project_workbook(project_upload)
+                    st.rerun()
+
+        elif source == "Open file":
             uploaded = st.file_uploader(
                 "CSV or Excel file",
                 type=["csv", "xlsx"],
@@ -1651,6 +2118,91 @@ with st.sidebar:
     if S_WORKING in st.session_state:
         st.divider()
         sidebar_working = st.session_state[S_WORKING]
+        synchronized_working, synchronized_registry = synchronize_company_registry(
+            sidebar_working,
+            st.session_state.get(S_COMPANIES),
+        )
+        st.session_state[S_WORKING] = synchronized_working
+        st.session_state[S_COMPANIES] = synchronized_registry
+        sidebar_working = synchronized_working
+
+        with st.expander("Master project", expanded=True):
+            project_name = st.text_input(
+                "Project name",
+                value=st.session_state.get(S_PROJECT_NAME, "Datablix master project"),
+                key="db_project_name_input",
+            )
+            st.session_state[S_PROJECT_NAME] = project_name.strip() or "Datablix master project"
+
+            registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+            if registry.empty:
+                st.caption("Add the company you are about to scan or research.")
+            else:
+                active_ids = registry["Company ID"].astype(str).tolist()
+                current_active = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+                active_index = active_ids.index(current_active) if current_active in active_ids else 0
+                selected_active = st.selectbox(
+                    "Active company",
+                    active_ids,
+                    index=active_index,
+                    format_func=lambda company_id: company_label(
+                        registry.loc[registry["Company ID"].eq(company_id)].iloc[0]
+                    ),
+                    key="db_active_company_selector",
+                )
+                st.session_state[S_ACTIVE_COMPANY] = selected_active
+
+                active_match = registry.loc[registry["Company ID"].eq(selected_active)]
+                if not active_match.empty:
+                    current_status = active_match.iloc[0]["Company Status"]
+                    status_index = COMPANY_STATUSES.index(current_status) if current_status in COMPANY_STATUSES else 0
+                    selected_status = st.selectbox(
+                        "Company status",
+                        COMPANY_STATUSES,
+                        index=status_index,
+                        key="db_active_company_status",
+                    )
+                    if selected_status != current_status:
+                        registry.loc[registry["Company ID"].eq(selected_active), "Company Status"] = selected_status
+                        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+
+            with st.form("db_add_company_form", clear_on_submit=True):
+                new_company_name = st.text_input("Add company or owner")
+                new_company_website = st.text_input("Main website (optional)")
+                new_scope_type = st.selectbox(
+                    "Scope type",
+                    ["Initial assignment", "Added later"],
+                )
+                new_company_notes = st.text_area("Notes (optional)", height=70)
+                add_company = st.form_submit_button("Add to project", width="stretch")
+            if add_company:
+                try:
+                    company_id, created = add_company_to_project(
+                        new_company_name,
+                        new_company_website,
+                        new_scope_type,
+                        new_company_notes,
+                    )
+                    st.session_state[S_FLASH] = (
+                        f"Added {new_company_name.strip()} as {company_id}."
+                        if created
+                        else f"{new_company_name.strip()} is already in the project and is now active."
+                    )
+                    st.rerun()
+                except Exception as error:
+                    st.error(str(error))
+
+            st.download_button(
+                "Save master project",
+                project_workbook_bytes(),
+                f"{safe_filename(st.session_state[S_PROJECT_NAME])}_datablix_project.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                width="stretch",
+                key="db_sidebar_save_project",
+            )
+
+        st.divider()
         workspace_label = st.session_state.get(S_NAME, "workspace")
         if st.session_state.get(S_SHEET):
             workspace_label += f" · {st.session_state[S_SHEET]}"
@@ -1723,13 +2275,32 @@ if S_WORKING not in st.session_state:
 
     start_mode = st.radio(
         "Choose a starting point",
-        ["Scan website", "Open file", "Google Sheet", "Blank workspace"],
+        ["Resume project", "Scan website", "Open file", "Google Sheet", "Blank workspace"],
         horizontal=True,
         label_visibility="collapsed",
         key="db_landing_mode",
     )
 
-    if start_mode == "Scan website":
+    if start_mode == "Resume project":
+        st.subheader("Resume a saved Datablix project")
+        landing_project = st.file_uploader(
+            "Choose the saved project workbook",
+            type=["xlsx"],
+            key="db_landing_project_upload",
+        )
+        if landing_project is not None and st.button(
+            "Resume project",
+            type="primary",
+            width="stretch",
+            key="db_landing_resume_project",
+        ):
+            try:
+                load_project_workbook(landing_project)
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    elif start_mode == "Scan website":
         st.subheader("Scan a public website")
         st.write(
             "Datablix searches permitted public pages for rental property listings and holds every finding for review. "
@@ -1827,7 +2398,12 @@ if S_WORKING not in st.session_state:
 if S_FLASH in st.session_state:
     st.toast(st.session_state.pop(S_FLASH), icon="✅")
 
-working = st.session_state[S_WORKING].copy()
+working, project_registry = synchronize_company_registry(
+    st.session_state[S_WORKING].copy(),
+    st.session_state.get(S_COMPANIES),
+)
+st.session_state[S_WORKING] = working
+st.session_state[S_COMPANIES] = project_registry
 has_records = not working.empty
 qa = qa_checks(working) if has_records else None
 
@@ -1839,6 +2415,7 @@ sections = [
     "Website scanner",
     "Review records",
     "Progress & quality",
+    "Analysis & report",
     "Downloads",
 ]
 NAV_LABELS = {
@@ -1846,6 +2423,7 @@ NAV_LABELS = {
     "Website scanner": "Scan website",
     "Review records": "Review records",
     "Progress & quality": "Quality & progress",
+    "Analysis & report": "Analysis & report",
     "Downloads": "Downloads",
 }
 legacy_sections = {
@@ -1856,6 +2434,8 @@ legacy_sections = {
     "Review and edit records": "Review records",
     "Progress and data quality": "Progress & quality",
     "Download your work": "Downloads",
+    "Analysis": "Analysis & report",
+    "Report": "Analysis & report",
 }
 current_section = st.session_state.get("db_section", "Overview")
 current_section = legacy_sections.get(current_section, current_section)
@@ -1873,6 +2453,7 @@ st.markdown(
         '<div class="db-workspace-strip">'
         f'<span><strong>Workspace:</strong> {workspace_display}</span>'
         f'<span><strong>Source:</strong> {workspace_source}</span>'
+        f'<span><strong>Companies:</strong> <span class="db-num">{len(project_registry):,}</span></span>'
         f'<span><strong>Records:</strong> <span class="db-num">{len(working):,}</span></span>'
         f'<span><strong>Session edits:</strong> <span class="db-num">{st.session_state.get(S_EDIT_COUNT, 0):,}</span></span>'
         '</div>'
@@ -1895,7 +2476,7 @@ for nav_column, section_key in zip(nav_columns, sections):
 section = st.session_state["db_section"]
 render_process_bar(section)
 
-if not has_records and section in ["Progress & quality", "Downloads"]:
+if not has_records and section in ["Progress & quality", "Analysis & report", "Downloads"]:
     st.info(
         "This workspace has no records yet. Scan a website or add the first listing to begin."
     )
@@ -2014,6 +2595,13 @@ if section == "Overview":
 # Website scanner
 # -----------------------------
 elif section == "Website scanner":
+    active_company = active_company_row()
+    if active_company is None:
+        st.warning(
+            "Add and select the company being scanned in the Master project panel. This keeps every approved record attached to the correct company."
+        )
+    else:
+        st.info(f"Approved findings from this scan will be assigned to **{active_company['Management/Owner']}**.")
     scanner_start_count = len(st.session_state[S_WORKING])
     render_website_scanner_panel(working_data_key=S_WORKING)
 
@@ -2028,7 +2616,8 @@ elif section == "Website scanner":
             if column not in merged.columns:
                 merged[column] = pd.NA
 
-        new_row_mask = merged.index >= scanner_start_count
+        new_row_mask = pd.Series(False, index=merged.index)
+        new_row_mask.iloc[scanner_start_count:] = True
         today_text = date.today().isoformat()
 
         merged.loc[new_row_mask, "Research Status"] = "Ready for Review"
@@ -2039,6 +2628,7 @@ elif section == "Website scanner":
         merged.loc[new_row_mask, "Missing Information"] = (
             "Website-scanned rental property candidate. Confirm every extracted detail and supporting source before final use."
         )
+        merged = assign_active_company(merged, new_row_mask)
 
         merged = ensure_ids(merged)
         merged = normalize_workflow(prepare_data(merged))
@@ -2380,7 +2970,15 @@ elif section == "Review records":
                 help="A unique reference that keeps similar records separate.",
             )
             building_name = p1.text_input("Apartment Building Name")
-            owner = p1.text_input("Management / Owner")
+            manual_active_company = active_company_row()
+            owner = p1.text_input(
+                "Management / Owner",
+                value=(
+                    str(manual_active_company["Management/Owner"])
+                    if manual_active_company is not None
+                    else ""
+                ),
+            )
             classification = p2.text_input(
                 "Building Classification",
                 placeholder="Example: High Rise or Townhome",
@@ -2456,6 +3054,11 @@ elif section == "Review records":
                 record = {c: pd.NA for c in current.columns}
                 record.update({
                     "Record ID": final_id,
+                    "Company ID": (
+                        manual_active_company["Company ID"]
+                        if manual_active_company is not None
+                        else pd.NA
+                    ),
                     "Building Name": building_name,
                     "Management/Owner": owner,
                     "Street Address": address,
@@ -2506,7 +3109,7 @@ elif section == "Progress & quality":
         "Research progress",
         "Quality issues",
         "Field coverage",
-        "Management / owner",
+        "Company progress",
         "Draft profiles",
     ])
 
@@ -2559,10 +3162,10 @@ elif section == "Progress & quality":
 
     with progress_tabs[3]:
         st.caption(
-            "Records are grouped by the management or ownership name on file, making it easier to research one organization at a time."
+            "Track every assigned company, including companies that have not produced building records yet. The list expands when new companies are added."
         )
         st.dataframe(
-            owner_summary(qa),
+            company_progress_summary(qa, st.session_state.get(S_COMPANIES)),
             width="stretch",
             hide_index=True,
             height=500,
@@ -2581,6 +3184,165 @@ elif section == "Progress & quality":
 
 
 # -----------------------------
+# Analysis and report
+# -----------------------------
+elif section == "Analysis & report":
+    render_page_heading(
+        "ANALYSE",
+        "Analyse and report",
+        "Review one company in depth or combine every company currently in scope for the final stakeholder report.",
+    )
+
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    scope_mode = st.radio(
+        "Analysis scope",
+        ["One company", "All companies"],
+        horizontal=True,
+        key="db_analysis_scope",
+    )
+
+    selected_company_id = None
+    scope_label = "All companies"
+    analysis_qa = qa.copy()
+    analysis_baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(analysis_baseline, pd.DataFrame):
+        analysis_baseline = pd.DataFrame()
+
+    if scope_mode == "One company":
+        available = registry.loc[
+            registry["Company ID"].astype(str).isin(set(qa["Company ID"].astype(str)))
+        ].copy()
+        if available.empty:
+            st.warning(
+                "No company-linked records are available yet. Select an active company before adding approved scanner findings."
+            )
+            st.stop()
+        company_ids = available["Company ID"].astype(str).tolist()
+        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        selected_index = company_ids.index(active_id) if active_id in company_ids else 0
+        selected_company_id = st.selectbox(
+            "Company",
+            company_ids,
+            index=selected_index,
+            format_func=lambda company_id: company_label(
+                available.loc[available["Company ID"].eq(company_id)].iloc[0]
+            ),
+            key="db_analysis_company",
+        )
+        company_row = available.loc[available["Company ID"].eq(selected_company_id)].iloc[0]
+        scope_label = company_row["Management/Owner"]
+        analysis_qa = qa.loc[qa["Company ID"].astype(str).eq(selected_company_id)].copy()
+        if not analysis_baseline.empty and "Company ID" in analysis_baseline.columns:
+            analysis_baseline = analysis_baseline.loc[
+                analysis_baseline["Company ID"].astype(str).eq(selected_company_id)
+            ].copy()
+
+        with st.expander("Quality baseline", expanded=analysis_baseline.empty):
+            st.caption(
+                "Capture the baseline immediately after adding and reviewing the scan candidates, before correcting the QA findings. Datablix will preserve it in the saved project."
+            )
+            replace_baseline = st.checkbox(
+                "Replace the existing baseline for this company",
+                key="db_replace_company_baseline",
+            )
+            if st.button(
+                "Capture company quality baseline",
+                type="primary" if analysis_baseline.empty else "secondary",
+                width="stretch",
+                key="db_capture_company_baseline",
+            ):
+                captured = capture_quality_baseline(
+                    selected_company_id,
+                    replace=replace_baseline,
+                )
+                if captured == -1:
+                    st.warning(
+                        "A baseline already exists for this company. Select the replacement option only when you deliberately want to reset it."
+                    )
+                else:
+                    st.session_state[S_FLASH] = (
+                        f"Captured {captured:,} baseline quality issue(s) for {scope_label}."
+                    )
+                    st.rerun()
+
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("Companies", f"{analysis_qa['Company ID'].astype(str).replace('', pd.NA).dropna().nunique():,}")
+    metric_columns[1].metric("Building records", f"{len(analysis_qa):,}")
+    metric_columns[2].metric("Ready records", f"{int(ready_mask(analysis_qa).sum()):,}")
+    metric_columns[3].metric("Records passing QA", f"{int(analysis_qa['QA Status'].eq('Pass').sum()):,}")
+    metric_columns[4].metric("Open QA issues", f"{int(analysis_qa['QA Flag Count'].sum()):,}")
+
+    analysis_tabs = st.tabs([
+        "Company results",
+        "Quality impact",
+        "Coverage and gaps",
+        "Report summary",
+    ])
+
+    with analysis_tabs[0]:
+        company_table = company_progress_summary(
+            analysis_qa,
+            registry.loc[registry["Company ID"].astype(str).isin(set(analysis_qa["Company ID"].astype(str)))]
+            if not registry.empty
+            else registry,
+        )
+        st.dataframe(company_table, width="stretch", hide_index=True)
+        if scope_mode == "All companies" and not company_table.empty:
+            chart_data = company_table.set_index("Management/Owner")[["Building Records"]]
+            st.bar_chart(chart_data)
+
+    with analysis_tabs[1]:
+        impact = quality_impact_summary(analysis_qa, analysis_baseline)
+        st.dataframe(impact, width="stretch", hide_index=True)
+        impact_map = dict(zip(impact["Metric"], impact["Value"]))
+        impact_metrics = st.columns(4)
+        impact_metrics[0].metric("Baseline issues", f"{int(impact_map.get('Baseline issues', 0)):,}")
+        impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
+        impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
+        impact_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
+        if int(impact_map.get("Baseline issues", 0)) == 0:
+            st.info(
+                "No saved baseline is available for this scope. Current QA results are still valid, but a before-and-after issue-resolution rate cannot yet be claimed."
+            )
+
+    with analysis_tabs[2]:
+        coverage = field_coverage(analysis_qa)
+        st.dataframe(coverage, width="stretch", hide_index=True)
+        gaps_chart = coverage.set_index("Field")[["Missing Records"]]
+        st.bar_chart(gaps_chart)
+
+    with analysis_tabs[3]:
+        report = report_summary(
+            analysis_qa,
+            registry,
+            scope_label=scope_label,
+            baseline=analysis_baseline,
+        )
+        st.dataframe(report, width="stretch", hide_index=True)
+        analysis_export = excel_bytes({
+            "Report Summary": report,
+            "Company Analysis": company_progress_summary(
+                analysis_qa,
+                registry.loc[registry["Company ID"].astype(str).isin(set(analysis_qa["Company ID"].astype(str)))]
+                if scope_mode == "One company" and not registry.empty
+                else registry,
+            ),
+            "Quality Impact": quality_impact_summary(analysis_qa, analysis_baseline),
+            "Field Coverage": field_coverage(analysis_qa),
+            "Issue Summary": issue_summary(analysis_qa),
+            "Analysed Records": analysis_qa,
+        })
+        st.download_button(
+            "Download this analysis",
+            analysis_export,
+            f"{safe_filename(scope_label)}_datablix_analysis.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            width="stretch",
+        )
+
+
+# -----------------------------
 # Downloads
 # -----------------------------
 elif section == "Downloads":
@@ -2590,7 +3352,7 @@ elif section == "Downloads":
         "Export the complete workspace, formatted listings, research records, or focused review tables.",
     )
     st.warning(
-        "This workspace lives only in the current browser session. Download a copy before refreshing the page or closing the app."
+        "The browser session is temporary. Save the master project to preserve company assignments, working records, quality baselines, and report data for the next session."
     )
 
     listings = listing_export(qa)
@@ -2599,8 +3361,17 @@ elif section == "Downloads":
     ]
     ready = qa[ready_mask(qa)]
     quality = qa[qa["QA Status"].isin(["Critical", "Review"])]
+    baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = pd.DataFrame()
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
     sheets = {
         "Workspace Summary": project_summary(qa),
+        "Company Registry": registry,
+        "Company Analysis": company_progress_summary(qa, registry),
+        "Quality Baseline": baseline,
+        "Quality Impact": quality_impact_summary(qa, baseline),
+        "Report Summary": report_summary(qa, registry, baseline=baseline),
         "Building Listings": listings,
         "Owner Research List": owner_summary(qa),
         "Draft Profiles": draft_profiles(qa),
@@ -2623,9 +3394,23 @@ elif section == "Downloads":
     export_metrics[2].metric("Follow-up records", f"{len(follow_up):,}")
     export_metrics[3].metric("Quality review", f"{len(quality):,}")
 
-    st.subheader("Complete workbook")
+    st.subheader("Save and resume")
     st.write(
-        "The complete workbook keeps rental property listings, source evidence, follow-ups, draft profiles, field coverage, and working data in separate sheets."
+        "Save the master project after each company or major research session. Upload this file through Resume project to continue with the full company registry and quality history intact."
+    )
+    st.download_button(
+        "Save master project",
+        project_workbook_bytes(),
+        f"{safe_filename(st.session_state.get(S_PROJECT_NAME, 'datablix_master_project'))}_datablix_project.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        width="stretch",
+        key="db_download_save_project",
+    )
+
+    st.subheader("Complete reporting workbook")
+    st.write(
+        "The reporting workbook keeps rental property listings, company analysis, source evidence, quality impact, follow-ups, draft profiles, field coverage, and working data in separate sheets."
     )
     download_main, download_followup = st.columns([1.4, 1])
     download_main.download_button(
