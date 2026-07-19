@@ -14,9 +14,9 @@ Each demo represents a stage in the development of Datablix.
 
 | Demo | Main capabilities | Live application |
 |---|---|---|
-| Datablix 1.0 | Spreadsheet upload, automated quality checks, review queue, reviewer notes, and basic exports | Open Datablix 1.0 |
-| Datablix 2.0 | Direct record correction, QA reruns, filters, verification KPIs, workspace reset, and status-based exports | Open Datablix 2.0 |
-| Datablix 3.0 | CSV, Excel, Google Sheets, blank-workspace, saved-project, and public-website intake; human-reviewed scanner candidates; dynamic company management; source evidence; editable records; integrated QA; freshness monitoring; Save and Resume; company and project analysis; quality-impact tracking; report generation; formatted listings; platform field recommendations; and optional AI note summaries | Open Datablix 3.0 |
+| Datablix 1.0 | Spreadsheet upload, automated quality checks, review queue, reviewer notes, and basic exports | [Open Datablix 1.0](https://datablix.streamlit.app/) |
+| Datablix 2.0 | Direct record correction, QA reruns, filters, verification KPIs, workspace reset, and status-based exports | [Open Datablix 2.0](https://datablix-v2.streamlit.app/) |
+| Datablix 3.0 | CSV, Excel, Google Sheets, blank-workspace, saved-project, and public-website intake; human-reviewed scanner candidates; dynamic company management; source evidence; editable records; integrated QA; freshness monitoring; Save and Resume; company and project analysis; quality-impact tracking; report generation; formatted listings; platform field recommendations; and optional AI note summaries | [Open Datablix 3.0](https://datablix-v3.streamlit.app/) |
 
 ## Project Snapshot
 
