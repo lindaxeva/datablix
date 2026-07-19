@@ -25,7 +25,7 @@ Each demo represents a stage in the development of Datablix.
 | Business need | Prepare publicly sourced rental-property information for consistent review, verification, follow-up, directory use, analysis, and stakeholder reporting |
 | Primary challenge | Repetitive website and spreadsheet research, inconsistent headings, scattered source evidence, limited company-level progress visibility, temporary application sessions, and dependence on manual checks |
 | Users | Researchers, reviewers, project coordinators, directory administrators, and project stakeholders |
-| Organization | Rental-property directory research project |
+| Organization | Coyle Media Group × Riipen Level Up |
 | Solution | Human-in-the-loop rental-property research, data-quality, source-tracking, website-scanning, project-saving, analysis, and reporting assistant |
 | Inputs | Permitted public webpages, manual entries, CSV files, Excel files, viewable Google Sheets, and saved Datablix project workbooks |
 | Outputs | Formatted building listings, master working directory, company registry, approved scanner records, scan history, scanner candidates, pages scanned, research log, review queue, issue summaries, quality-impact results, draft profiles, readiness reports, report summaries, platform field recommendations, and task-specific exports |
