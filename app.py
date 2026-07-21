@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
+from openai import OpenAI
 from openpyxl.styles import Alignment, Border, Font, Side
 from datablix_scanner_panel import render_website_scanner_panel
 
