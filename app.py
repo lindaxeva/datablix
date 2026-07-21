@@ -406,7 +406,7 @@ def render_public_entry_gate() -> None:
     with demo_col:
         with st.container(border=True):
             st.markdown("#### Explore Your Demo")
-            st.write("Explore your rental property research workflow using realistic sample information.")
+            st.write("Explore your rental property research workflow using realistic sample info.")
             if st.button("Explore Demo", type="primary", width="stretch", key="db_public_demo"):
                 start_demo_workspace()
                 st.rerun()
