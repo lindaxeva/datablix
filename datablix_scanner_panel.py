@@ -22,7 +22,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Ontario Recovery 2026.07.17-r4"
+SCANNER_BUILD = "Optional Coverage Cross-Check 2026.07.21-r1"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -882,7 +882,7 @@ def render_website_scanner_panel(
     )
     st.markdown(
         '<div class="db-guidance"><strong>Ontario-only research scope.</strong>'
-        '<span>The scanner may read a broader company website, but only Ontario properties can be approved, added, or exported. Confirmed non-Ontario records remain in the scan log.</span></div>',
+        '<span>Use this optional scanner to cross-check website coverage and possible omissions. Only Ontario properties can be approved, added, or exported; confirmed non-Ontario records remain in the scan log.</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
