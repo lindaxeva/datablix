@@ -1,501 +1,373 @@
-from __future__ import annotations
-
-import copy
+import base64
 import hashlib
 import io
-import json
-import os
 import re
-import unicodedata
-from dataclasses import asdict
-from datetime import date, datetime, timezone
+from html import escape
+from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
+from openai import OpenAI
 from openpyxl.styles import Alignment, Border, Font, Side
+from datablix_scanner_panel import render_website_scanner_panel
 
-from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_website
+st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-
-# Change this key if your existing Datablix working dataframe uses another
-# st.session_state name.
-WORKING_DATA_KEY = "working_df"
-
-SCANNER_BUILD = "Ontario Recovery 2026.07.17-r4"
-CHECKPOINT_DIRECTORY = Path(
-    os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
-)
-
-COMPANY_SCAN_STATE_STORE = "_db_company_scan_states"
-ACTIVE_SCAN_COMPANY_KEY = "_db_active_scan_company"
-
-
-def _scanner_session_keys() -> list[str]:
-    """Return transient scanner keys that must stay isolated by company."""
-    return [
-        key for key in st.session_state
-        if (
-            key.startswith("website_scan_")
-            or key.startswith("full_scan_")
-            or key == "confirm_clear_full_scan"
-        )
-        and key not in {COMPANY_SCAN_STATE_STORE, ACTIVE_SCAN_COMPANY_KEY}
-    ]
-
-
-def _safe_session_copy(value):
+def get_openai_api_key() -> str:
+    """Return the configured API key without exposing it in the interface."""
     try:
-        return copy.deepcopy(value)
-    except Exception:
-        return value
-
-
-def _switch_company_scan_state(company_id: str, default_website: str = "") -> None:
-    """Save the previous company's scanner UI and restore the selected company."""
-    company_id = str(company_id or "").strip()
-    if not company_id:
-        return
-
-    previous_company = str(
-        st.session_state.get(ACTIVE_SCAN_COMPANY_KEY, "")
-    ).strip()
-    if previous_company == company_id:
-        return
-
-    store = st.session_state.get(COMPANY_SCAN_STATE_STORE)
-    if not isinstance(store, dict):
-        store = {}
-
-    transient_keys = _scanner_session_keys()
-    if previous_company:
-        store[previous_company] = {
-            key: _safe_session_copy(st.session_state[key])
-            for key in transient_keys
-            if key != "full_scan_submit"  # Button state must never be restored.
-        }
-
-    for key in transient_keys:
-        st.session_state.pop(key, None)
-
-    saved_state = store.get(company_id, {})
-    if isinstance(saved_state, dict):
-        for key, value in saved_state.items():
-            st.session_state[key] = _safe_session_copy(value)
-
-    if not str(st.session_state.get("full_scan_website_url", "")).strip():
-        st.session_state["full_scan_website_url"] = str(default_website or "").strip()
-
-    st.session_state[COMPANY_SCAN_STATE_STORE] = store
-    st.session_state[ACTIVE_SCAN_COMPANY_KEY] = company_id
-
-
-def _normalized_scan_url(value: str) -> str:
-    return str(value or "").strip().lower().rstrip("/")
-
-
-def _checkpoint_path(website_url: str) -> Path | None:
-    normalized = _normalized_scan_url(website_url)
-    if not normalized:
-        return None
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
-    return CHECKPOINT_DIRECTORY / f"{digest}.json"
-
-
-def _write_durable_checkpoint(
-    report,
-    website_url: str,
-    scope: str,
-    *,
-    is_final: bool = False,
-) -> Path | None:
-    path = _checkpoint_path(website_url)
-    if path is None:
-        return None
-
-    CHECKPOINT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "scanner_build": SCANNER_BUILD,
-        "website_url": website_url,
-        "scope": scope,
-        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
-        "is_final": bool(is_final),
-        "report": report.as_dict(),
-    }
-
-    temporary_path = path.with_suffix(".tmp")
-    temporary_path.write_text(
-        json.dumps(payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    os.replace(temporary_path, path)
-    return path
-
-
-def _read_durable_checkpoint(website_url: str) -> tuple[ScanReport, dict] | None:
-    path = _checkpoint_path(website_url)
-    if path is None or not path.exists():
-        return None
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        report_data = payload.get("report", {})
-        report = ScanReport.from_dict(report_data)
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
-
-    if not report.pages:
-        return None
-    return report, payload
-
-
-def _delete_durable_checkpoint(website_url: str) -> None:
-    path = _checkpoint_path(website_url)
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-DIRECTORY_FIELD_MAP = {
-    "company_id": "Company ID",
-    "scan_id": "Scan ID",
-    "building_name": "Building Name",
-    "management_owner": "Management/Owner",
-    "street_address": "Street Address",
-    "address_line_2": "Address Line 2",
-    "city": "City",
-    "province": "Province",
-    "postal_code": "Postal Code",
-    "country": "Country",
-    "phone": "Phone",
-    "primary_email": "Primary Email",
-    "website": "Website",
-    "number_of_apartments": "Number of Apartments",
-    "building_classification": "Building Classification",
-    "source_url": "Source URL",
-    "source_page_title": "Source Page Title",
-    "extraction_method": "Extraction Method",
-    "confidence": "Detection Confidence",
-    "evidence": "Supporting Evidence",
-    "review_status": "Verification Status",
-    "ontario_scope_status": "Ontario Scope Status",
-    "ontario_scope_reason": "Ontario Scope Reason",
-    "scan_start_url": "Scan Start URL",
-}
-
-
-ONTARIO_SCOPE_CONFIRMED = "Confirmed Ontario"
-ONTARIO_SCOPE_LIKELY = "Likely Ontario — Review"
-ONTARIO_SCOPE_UNCLEAR = "Location Unclear"
-ONTARIO_SCOPE_OUTSIDE = "Outside Ontario"
-
-ONTARIO_APPROVABLE_STATUSES = {
-    ONTARIO_SCOPE_CONFIRMED,
-    ONTARIO_SCOPE_LIKELY,
-}
-
-ONTARIO_POSTAL_PREFIXES = set("KLMNP")
-
-CANADIAN_PROVINCE_ALIASES = {
-    "alberta": "AB", "ab": "AB",
-    "british columbia": "BC", "bc": "BC",
-    "manitoba": "MB", "mb": "MB",
-    "new brunswick": "NB", "nb": "NB",
-    "newfoundland and labrador": "NL", "newfoundland": "NL",
-    "labrador": "NL", "nl": "NL",
-    "nova scotia": "NS", "ns": "NS",
-    "northwest territories": "NT", "nt": "NT",
-    "nunavut": "NU", "nu": "NU",
-    "ontario": "ON", "on": "ON",
-    "prince edward island": "PE", "pei": "PE", "pe": "PE",
-    "quebec": "QC", "québec": "QC", "qc": "QC",
-    "saskatchewan": "SK", "sk": "SK",
-    "yukon": "YT", "yt": "YT",
-}
-
-# Municipality names are supporting evidence only. Province and postal-code
-# evidence take precedence whenever they are available.
-ONTARIO_MUNICIPALITIES = {
-    "ajax", "alexandria", "alliston", "almonte", "amherstburg", "ancaster",
-    "arnprior", "aurora", "aylmer", "bancroft", "barrie", "beamsville",
-    "belle river", "belleville", "blind river", "bolton", "bracebridge",
-    "bradford", "brampton", "brantford", "brighton", "brockville",
-    "burlington", "caledon", "caledonia", "cambridge", "campbellford",
-    "carleton place", "casselman", "chatham", "chelmsford", "clarington",
-    "cobourg", "cochrane", "collingwood", "cornwall", "deep river", "delhi",
-    "dryden", "dunnville", "east gwillimbury", "elliot lake", "elmira",
-    "elora", "embrun", "erin", "espanola", "essex", "etobicoke", "fergus",
-    "fort erie", "fort frances", "gananoque", "georgetown", "geraldton",
-    "gloucester", "goderich", "grand bend", "gravenhurst", "greater napanee",
-    "greater sudbury", "grimsby", "guelph", "haliburton", "hamilton",
-    "hanover", "harriston", "hawkesbury", "hearst", "huntsville",
-    "ingersoll", "iroquois falls", "kanata", "kapuskasing", "kawartha lakes",
-    "kemptville", "kenora", "keswick", "kincardine", "kingston",
-    "kirkland lake", "kitchener", "lasalle", "leamington", "lindsay",
-    "listowel", "london", "markham", "midland", "milton", "mississauga",
-    "mitchell", "napanee", "nepean", "new hamburg", "new liskeard",
-    "newmarket", "niagara falls", "niagara on the lake", "north bay",
-    "north york", "oakville", "orangeville", "orillia", "oshawa", "ottawa",
-    "owen sound", "paris", "parry sound", "pembroke", "perth", "petawawa",
-    "peterborough", "petrolia", "pickering", "port colborne", "port elgin",
-    "port hope", "prescott", "prince edward county", "renfrew",
-    "richmond hill", "rockland", "sarnia", "sault ste marie", "scarborough",
-    "simcoe", "smiths falls", "south porcupine", "st catharines",
-    "st marys", "st thomas", "stittsville", "stratford", "strathroy",
-    "sturgeon falls", "sudbury", "tecumseh", "temiskaming shores",
-    "thunder bay", "tillsonburg", "timmins", "toronto", "trenton",
-    "uxbridge", "vaughan", "walkerton", "wallaceburg", "waterdown",
-    "waterloo", "welland", "whitby", "wiarton", "windsor", "wingham",
-    "woodstock",
-}
-
-CANADIAN_POSTAL_PATTERN = re.compile(
-    r"^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$",
-    re.IGNORECASE,
-)
-
-
-def _normalize_location_text(value) -> str:
-    if value is None or pd.isna(value):
+        return str(st.secrets.get("OPENAI_API_KEY", "")).strip()
+    except (FileNotFoundError, KeyError):
         return ""
-    text = unicodedata.normalize("NFKD", str(value))
-    text = "".join(
-        character for character in text
-        if not unicodedata.combining(character)
-    )
-    text = text.lower().replace("&", " and ")
-    return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
-def _normalized_postal_code(value) -> str:
-    return re.sub(r"[^A-Za-z0-9]", "", _clean_value(value)).upper()
+def ai_is_available() -> bool:
+    """Enable AI only when it has been deliberately switched on and configured."""
+    try:
+        enabled = bool(st.secrets.get("AI_ENABLED", False))
+    except (FileNotFoundError, KeyError):
+        enabled = False
+
+    return enabled and bool(get_openai_api_key())
 
 
-def _province_code(value) -> str:
-    return CANADIAN_PROVINCE_ALIASES.get(_normalize_location_text(value), "")
+def create_ai_summary(notes: str) -> str:
+    """Create a reviewable summary without changing the original notes."""
+    clean_notes = str(notes or "").strip()
+    if not clean_notes:
+        raise ValueError("Add notes before creating a summary.")
 
-
-def _country_is_canada(value) -> bool:
-    normalized = _normalize_location_text(value)
-    return not normalized or normalized in {"canada", "ca", "can"}
-
-
-def _classify_ontario_scope(row: pd.Series) -> tuple[str, str]:
-    province_text = _clean_value(row.get("province"))
-    province_code = _province_code(province_text)
-    city = _normalize_location_text(row.get("city"))
-    street = _clean_value(row.get("street_address"))
-    postal = _normalized_postal_code(row.get("postal_code"))
-    country = _clean_value(row.get("country"))
-
-    source_context = " ".join(
-        _normalize_location_text(row.get(field))
-        for field in ["source_page_title", "evidence", "source_url"]
-    )
-
-    postal_is_canadian = bool(CANADIAN_POSTAL_PATTERN.fullmatch(postal))
-    postal_is_ontario = (
-        postal_is_canadian
-        and bool(postal)
-        and postal[0] in ONTARIO_POSTAL_PREFIXES
-    )
-    city_is_ontario = city in ONTARIO_MUNICIPALITIES
-    source_mentions_ontario = bool(re.search(r"\bontario\b", source_context))
-
-    if not _country_is_canada(country):
-        return ONTARIO_SCOPE_OUTSIDE, f"Country is recorded as {country}."
-
-    if province_code and province_code != "ON":
-        if postal_is_ontario:
-            return (
-                ONTARIO_SCOPE_UNCLEAR,
-                "Province conflicts with an Ontario postal-code pattern.",
-            )
-        return ONTARIO_SCOPE_OUTSIDE, f"Province is recorded as {province_text}."
-
-    if province_code == "ON":
-        details = ["Province is Ontario"]
-        if street:
-            details.append("a street address is present")
-        if city:
-            details.append(f"city is {_clean_value(row.get('city'))}")
-        return ONTARIO_SCOPE_CONFIRMED, "; ".join(details) + "."
-
-    if postal_is_ontario:
-        return (
-            ONTARIO_SCOPE_CONFIRMED,
-            f"Postal code {_clean_value(row.get('postal_code'))} follows an Ontario pattern.",
+    api_key = get_openai_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "AI assistance is not configured. Add OPENAI_API_KEY to Streamlit Secrets."
         )
 
-    if city_is_ontario and street:
-        return (
-            ONTARIO_SCOPE_LIKELY,
-            f"{_clean_value(row.get('city'))} is recognized as an Ontario municipality and a street address is present.",
-        )
-
-    if city_is_ontario:
-        return (
-            ONTARIO_SCOPE_LIKELY,
-            f"{_clean_value(row.get('city'))} is recognized as an Ontario municipality; confirm the street or province.",
-        )
-
-    if source_mentions_ontario and street:
-        return (
-            ONTARIO_SCOPE_LIKELY,
-            "The source mentions Ontario and a street address is present; confirm the city or postal code.",
-        )
-
-    if source_mentions_ontario:
-        return (
-            ONTARIO_SCOPE_LIKELY,
-            "The source mentions Ontario; confirm the city and street address.",
-        )
-
-    if street or city or postal or province_text:
-        return (
-            ONTARIO_SCOPE_UNCLEAR,
-            "The available location details do not yet confirm Ontario.",
-        )
-
-    return (
-        ONTARIO_SCOPE_UNCLEAR,
-        "No province, Ontario postal code, recognized Ontario municipality, or street evidence was detected.",
+    client = OpenAI(api_key=api_key)
+    response = client.responses.create(
+        model="gpt-5-mini",
+        instructions=(
+            "Summarize the supplied rental property research notes in plain English. "
+            "Use only the information provided and never invent details. "
+            "Separate confirmed findings from unresolved or conflicting information. "
+            "Mention what still needs human verification. Keep the summary concise."
+        ),
+        input=clean_notes,
     )
 
+    summary = str(response.output_text or "").strip()
+    if not summary:
+        raise RuntimeError("The AI service returned an empty summary.")
+    return summary
 
-def _apply_ontario_scope(frame: pd.DataFrame) -> pd.DataFrame:
-    scoped = frame.copy()
-    if scoped.empty:
-        scoped["ontario_scope_status"] = pd.Series(dtype="object")
-        scoped["ontario_scope_reason"] = pd.Series(dtype="object")
-        return scoped
+# =========================================================
+# Configuration
+# =========================================================
 
-    classifications = scoped.apply(_classify_ontario_scope, axis=1)
-    scoped["ontario_scope_status"] = classifications.map(lambda result: result[0])
-    scoped["ontario_scope_reason"] = classifications.map(lambda result: result[1])
+INTERNAL_COLUMNS = [
+    "Record ID", "Company ID", "Building Name", "Management/Owner", "Street Address",
+    "Address Line 2", "City", "Province", "Postal Code", "Country",
+    "Phone", "Primary Email", "Secondary Email", "Website",
+    "Number of Apartments", "Rental Rate Range", "Building Classification",
+    "Source URL", "Date Researched", "Researcher", "Research Status",
+    "Source Status", "Verification Status", "Missing Information",
+    "Reviewer Notes", "Record Decision",
+]
 
-    if "approved" not in scoped.columns:
-        scoped["approved"] = False
+LISTING_COLUMNS = [
+    "Apartment Building Name",
+    "Street Address",
+    "City and Postal Code",
+    "Building Classification",
+    "Number of Apartments",
+    "Apartment Building Management/Owner",
+    "Phone Number",
+    "Email Contact",
+    "WebSite",
+]
 
-    outside_or_unclear = scoped["ontario_scope_status"].isin(
-        {ONTARIO_SCOPE_OUTSIDE, ONTARIO_SCOPE_UNCLEAR}
-    )
-    scoped.loc[outside_or_unclear, "approved"] = False
-    return scoped
-
-
-def _ontario_eligible_mask(frame: pd.DataFrame) -> pd.Series:
-    scoped = (
-        frame
-        if "ontario_scope_status" in frame.columns
-        else _apply_ontario_scope(frame)
-    )
-    return scoped["ontario_scope_status"].isin(ONTARIO_APPROVABLE_STATUSES)
-
-
-
-def _records_dataframe(report) -> pd.DataFrame:
-    frame = pd.DataFrame([asdict(record) for record in report.records])
-    if frame.empty:
-        return pd.DataFrame(
-            columns=[
-                "approved", "building_name", "management_owner",
-                "street_address",
-                "address_line_2", "city", "province", "postal_code", "country",
-                "phone", "primary_email", "website", "number_of_apartments",
-                "building_classification", "source_url", "source_page_title",
-                "extraction_method", "confidence",
-                "review_status", "evidence",
-                "ontario_scope_status", "ontario_scope_reason",
-            ]
-        )
-    frame["confidence"] = pd.to_numeric(frame["confidence"], errors="coerce").fillna(0.0)
-    return _apply_ontario_scope(frame)
-
-
-def _pages_dataframe(report) -> pd.DataFrame:
-    return pd.DataFrame([asdict(page) for page in report.pages])
-
-
-SCAN_LISTING_FIELDS = [
-    ("Apartment Building Name", "building_name"),
-    ("Street Address", "street_address"),
+# Required listing fields are kept in the exact order shown in the sample.
+# Other useful findings are placed below the main listing instead of widening it.
+LISTING_FIELD_MAP = [
+    ("Apartment Building Name", "Building Name"),
+    ("Street Address", "Street Address"),
     ("City and Postal Code", None),
-    ("Building Classification", "building_classification"),
-    ("Number of Apartments", "number_of_apartments"),
-    ("Apartment Building Management/Owner", "management_owner"),
-    ("Phone Number", "phone"),
-    ("Email Contact", "primary_email"),
-    ("WebSite", "website"),
+    ("Building Classification", "Building Classification"),
+    ("Number of Apartments", "Number of Apartments"),
+    ("Apartment Building Management/Owner", "Management/Owner"),
+    ("Phone Number", "Phone"),
+    ("Email Contact", "Primary Email"),
+    ("WebSite", "Website"),
 ]
 
-SCAN_ADDITIONAL_FIELDS = [
-    ("Address Line 2", "address_line_2"),
-    ("Country", "country"),
-    ("Official Source URL", "source_url"),
-    ("Source Page Title", "source_page_title"),
-    ("Extraction Method", "extraction_method"),
-    ("Confidence", "confidence"),
-    ("Ontario Scope Status", "ontario_scope_status"),
-    ("Ontario Scope Reason", "ontario_scope_reason"),
-    ("Evidence", "evidence"),
+LISTING_ADDITIONAL_FIELD_MAP = [
+    ("Address Line 2", "Address Line 2"),
+    ("Secondary Email", "Secondary Email"),
+    ("Rental Rate Range", "Rental Rate Range"),
+    ("Country", "Country"),
+    ("Official Source URL", "Source URL"),
+    ("Date Researched", "Date Researched"),
+    ("Researcher", "Researcher"),
+    ("Verification Status", "Verification Status"),
+    ("Missing Information", "Missing Information"),
+    ("Reviewer Notes", "Reviewer Notes"),
 ]
 
+TEMPLATE_COLUMNS = LISTING_COLUMNS + [
+    "Source URL", "Date Researched", "Researcher", "Research Status",
+    "Source Status", "Verification Status", "Missing Information",
+    "Reviewer Notes", "Record Decision",
+]
 
-def _clean_value(value) -> str:
-    if value is None or pd.isna(value):
-        return ""
-    return str(value).strip()
+ALIASES = {
+    "Record ID": ["Record ID", "ID", "Directory ID"],
+    "Company ID": ["Company ID", "Organization ID", "Owner ID", "Management ID"],
+    "Building Name": [
+        "Building Name", "Apartment Building Name",
+        "Apartment Building Name (Draft - Check)", "Property Name",
+    ],
+    "Management/Owner": [
+        "Management/Owner", "Apartment Building Management/Owner",
+        "Apartment Building Management / Owner", "Assigned Company",
+        "Management Company", "Owner", "Original Owner Name", "Company",
+    ],
+    "Street Address": ["Street Address", "Address (Street Address)", "Address"],
+    "Address Line 2": ["Address Line 2", "Address (Address Line 2)", "Suite / Unit"],
+    "City": ["City", "Address (City)"],
+    "Province": ["Province", "State / Province", "Address (State / Province)"],
+    "Postal Code": ["Postal Code", "ZIP / Postal Code", "Address (ZIP / Postal Code)"],
+    "Country": ["Country", "Address (Country)"],
+    "Phone": ["Phone", "Phone Number", "Primary Phone"],
+    "Primary Email": ["Primary Email", "Primary Email (Enter Email)", "Email", "Email Contact"],
+    "Secondary Email": ["Secondary Email", "Alternate Email"],
+    "Website": ["Website", "WebSite", "Website / Source URL", "Property Website"],
+    "Number of Apartments": ["Number of Apartments", "No. of Units", "Number of Units", "Unit Count", "Units"],
+    "Rental Rate Range": ["Rental Rate Range", "Rental Rates", "Rent Range", "Rent"],
+    "Building Classification": ["Building Classification", "Verified Building Classification", "Category", "Building Type"],
+    "Source URL": ["Source URL", "Official Source URL", "Research Source", "Website / Source URL"],
+    "Date Researched": ["Date Researched", "Date Verified", "Verification Date", "Research Date"],
+    "Researcher": ["Researcher", "Assigned To"],
+    "Research Status": ["Research Status"],
+    "Source Status": ["Source Status"],
+    "Verification Status": ["Verification Status", "Review Status"],
+    "Missing Information": ["Missing Information", "Information Missing"],
+    "Reviewer Notes": ["Reviewer Notes", "Research Notes", "Notes"],
+    "Record Decision": ["Record Decision", "Decision"],
+}
+
+COMBINED_LOCATION_ALIASES = [
+    "City and Postal Code", "City & Postal Code",
+    "City, Province and Postal Code", "City Province Postal Code",
+]
+
+CLASSIFICATION_SOURCE_COLUMNS = [
+    "Luxury", "Adult", "Low Rental", "Hi Rise", "Townhome", "Duplex", "Garden Home"
+]
+CLASSIFICATION_LABELS = {
+    "Luxury": "Luxury", "Adult": "Adult-oriented", "Low Rental": "Low Rental",
+    "Hi Rise": "High Rise", "Townhome": "Townhome", "Duplex": "Duplex",
+    "Garden Home": "Garden Home",
+}
+
+CORE_FIELDS = ["Management/Owner", "Street Address", "City"]
+TARGET_FIELDS = [
+    "Building Name", "Province", "Postal Code", "Phone", "Primary Email",
+    "Website", "Number of Apartments", "Building Classification",
+]
+ALL_RESEARCH_FIELDS = CORE_FIELDS + TARGET_FIELDS
+
+RESEARCH_STATUSES = [
+    "Imported - Needs Review", "Not Started", "In Progress", "Needs Follow-up",
+    "Ready for Review", "Completed",
+]
+SOURCE_STATUSES = ["Not Checked", "Active", "Needs Follow-up", "Unavailable"]
+VERIFICATION_STATUSES = ["Not Reviewed", "Needs Review", "Verified"]
+RECORD_DECISIONS = ["Undecided", "Keep", "Update", "Possible Duplicate", "Remove"]
+
+COMPANY_STATUSES = [
+    "Not started", "Researching", "Needs follow-up", "Ready for QA",
+    "Complete", "Complete with limitations",
+]
+COMPANY_SCOPE_TYPES = ["Initial assignment", "Added later", "Imported"]
+COMPANY_COLUMNS = [
+    "Company ID", "Management/Owner", "Main Website", "Scope Type",
+    "Date Assigned", "Company Status", "Notes",
+]
+
+UNRESOLVED = {
+    "", "n/a", "na", "n.a.", "unknown", "not known", "not available",
+    "not found", "not provided", "not researched", "tbd", "-", "--",
+    "none", "null",
+}
+YES_VALUES = {"yes", "y", "true", "1"}
+NO_VALUES = {"no", "n", "false", "0"}
+
+STATUS_ALIASES = {
+    "Research Status": {
+        "imported": "Imported - Needs Review", "complete": "Completed",
+        "completed": "Completed", "ready": "Ready for Review",
+        "follow up": "Needs Follow-up", "follow-up": "Needs Follow-up",
+    },
+    "Source Status": {
+        "verified": "Active", "working": "Active", "broken": "Unavailable",
+        "follow up": "Needs Follow-up", "follow-up": "Needs Follow-up",
+    },
+    "Verification Status": {
+        "complete": "Verified", "completed": "Verified", "reviewed": "Verified",
+        "not verified": "Not Reviewed",
+    },
+    "Record Decision": {"duplicate": "Possible Duplicate", "delete": "Remove"},
+}
+
+PROVINCES = {
+    "ab": ("Alberta", "AB"), "alberta": ("Alberta", "AB"),
+    "bc": ("British Columbia", "BC"), "british columbia": ("British Columbia", "BC"),
+    "mb": ("Manitoba", "MB"), "manitoba": ("Manitoba", "MB"),
+    "nb": ("New Brunswick", "NB"), "new brunswick": ("New Brunswick", "NB"),
+    "nl": ("Newfoundland and Labrador", "NL"),
+    "newfoundland and labrador": ("Newfoundland and Labrador", "NL"),
+    "ns": ("Nova Scotia", "NS"), "nova scotia": ("Nova Scotia", "NS"),
+    "nt": ("Northwest Territories", "NT"),
+    "northwest territories": ("Northwest Territories", "NT"),
+    "nu": ("Nunavut", "NU"), "nunavut": ("Nunavut", "NU"),
+    "on": ("Ontario", "ON"), "ontario": ("Ontario", "ON"),
+    "pe": ("Prince Edward Island", "PE"),
+    "prince edward island": ("Prince Edward Island", "PE"),
+    "qc": ("Quebec", "QC"), "quebec": ("Quebec", "QC"), "québec": ("Quebec", "QC"),
+    "sk": ("Saskatchewan", "SK"), "saskatchewan": ("Saskatchewan", "SK"),
+    "yt": ("Yukon", "YT"), "yukon": ("Yukon", "YT"),
+}
+
+FRESHNESS_DAYS = 180
+
+S_FILE = "db_file_signature"
+S_ORIGINAL = "db_original"
+S_WORKING = "db_working"
+S_NAME = "db_name"
+S_SHEET = "db_sheet"
+S_MAPPING = "db_mapping"
+S_FLASH = "db_flash"
+S_SOURCE_TYPE = "db_source_type"
+S_SOURCE_REF = "db_source_ref"
+S_SELECTOR = "db_selector"
+S_EDIT_COUNT = "db_edit_count"
+S_PROJECT_NAME = "db_project_name"
+S_COMPANIES = "db_company_registry"
+S_ACTIVE_COMPANY = "db_active_company_id"
+S_QA_BASELINE = "db_quality_baseline"
+S_PROJECT_LOADED = "db_project_loaded"
+S_SCAN_HISTORY = "db_scan_history"
+S_SCAN_CANDIDATES = "db_scan_candidates_history"
+S_SCAN_PAGES = "db_scan_pages_history"
 
 
-def _scan_location(row: pd.Series) -> str:
-    city = _clean_value(row.get("city"))
-    province = _clean_value(row.get("province"))
-    postal = _clean_value(row.get("postal_code"))
-    tail = " ".join(value for value in [province, postal] if value)
-    return f"{city}, {tail}" if city and tail else city or tail
+# =========================================================
+# Helpers
+# =========================================================
+
+def render_brand_header():
+    """Render the Datablix identity with a clear purpose statement."""
+    svg = Path("datablix_logo.svg")
+    png = Path("datablix_logo.png")
+    if svg.exists() or png.exists():
+        path = svg if svg.exists() else png
+        mime = "image/svg+xml" if path.suffix.lower() == ".svg" else "image/png"
+        encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+        st.html(f"""
+        <div class="db-brand">
+            <img class="db-logo" src="data:{mime};base64,{encoded}" alt="Datablix logo">
+            <div class="db-tag">Turn rental property research into structured, review-ready listings.</div>
+            <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
+        </div>
+        """)
+    else:
+        st.html("""
+        <div class="db-brand">
+            <div class="db-brand-name">Datablix</div>
+            <div class="db-tag">Turn your rental property research into structured, review-ready listings.</div>
+            <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
+        </div>
+        """)
 
 
-def _approved_listing_table(frame: pd.DataFrame) -> pd.DataFrame:
-    output = pd.DataFrame(index=frame.index)
-    for label, source_field in SCAN_LISTING_FIELDS:
-        output[label] = (
-            frame.apply(_scan_location, axis=1)
-            if source_field is None
-            else frame.get(source_field, "")
-        )
-    for label, source_field in SCAN_ADDITIONAL_FIELDS:
-        output[label] = frame.get(source_field, "")
-    return output.reset_index(drop=True)
+def norm_header(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
 
 
-def _write_approved_listing_blocks(ws, approved: pd.DataFrame) -> None:
+def norm_scalar(value):
+    return "" if pd.isna(value) else str(value).strip().lower()
+
+
+def is_unresolved(value):
+    return norm_scalar(value) in UNRESOLVED
+
+
+def unresolved_mask(series):
+    text = series.astype("string").fillna("").str.strip().str.lower()
+    return series.isna() | text.isin(UNRESOLVED)
+
+
+def resolved(series):
+    out = series.copy()
+    out.loc[unresolved_mask(out)] = pd.NA
+    return out
+
+
+def prepare_data(df):
+    out = df.copy()
+    out.columns = [str(c).strip() for c in out.columns]
+    return out.replace(r"^\s*$", pd.NA, regex=True)
+
+
+def display_values(series, blank="Blank"):
+    return series.astype("string").fillna(blank).str.strip().replace("", blank)
+
+
+def csv_bytes(df):
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def safe_filename(name):
+    stem = name.rsplit(".", 1)[0].strip()
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in stem) or "datablix"
+
+
+def _excel_display_value(value):
+    return "" if is_unresolved(value) else str(value).strip()
+
+
+def _write_listing_blocks_sheet(ws, listings):
+    """Write one apartment building at a time in the supplied two-column layout."""
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
     ws.merge_cells("A1:B1")
     ws["A1"] = "Create a listing for each Apartment Building as per sample below"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A1"].alignment = Alignment(wrap_text=True)
+    ws["A1"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[1].height = 30
 
     row_number = 3
-    required_fields = [label for label, _ in SCAN_LISTING_FIELDS]
-    for listing_number, (_, row) in enumerate(approved.iterrows(), start=1):
-        name = _clean_value(row.get("Apartment Building Name")) or f"Listing {listing_number}"
+    required = LISTING_COLUMNS
+    additional = [label for label, _ in LISTING_ADDITIONAL_FIELD_MAP]
+
+    for listing_number, (_, record) in enumerate(listings.iterrows(), start=1):
+        name = _excel_display_value(record.get("Apartment Building Name")) or f"Listing {listing_number}"
         ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=2)
-        ws.cell(
+        title_cell = ws.cell(
             row=row_number,
             column=1,
             value=f"Apartment Building {listing_number}: {name}",
-        ).font = Font(bold=True, size=12)
+        )
+        title_cell.font = Font(bold=True, size=12)
+        title_cell.alignment = Alignment(wrap_text=True, vertical="top")
         row_number += 1
 
-        for field_name, raw_value in row.items():
-            value = _clean_value(raw_value)
-            if field_name not in required_fields and not value:
-                continue
+        for field_name in required:
+            value = _excel_display_value(record.get(field_name))
             field_cell = ws.cell(row=row_number, column=1, value=field_name)
             value_cell = ws.cell(row=row_number, column=2, value=value)
             field_cell.font = Font(bold=True)
@@ -503,13 +375,46 @@ def _write_approved_listing_blocks(ws, approved: pd.DataFrame) -> None:
             value_cell.border = border
             field_cell.alignment = Alignment(wrap_text=True, vertical="top")
             value_cell.alignment = Alignment(wrap_text=True, vertical="top")
-            if field_name in {"WebSite", "Official Source URL"} and value.startswith(("http://", "https://")):
-                value_cell.hyperlink = value
-                value_cell.style = "Hyperlink"
-            elif field_name == "Email Contact" and value:
+            if field_name == "Email Contact" and value:
                 value_cell.hyperlink = f"mailto:{value}"
                 value_cell.style = "Hyperlink"
+            elif field_name == "WebSite" and value.startswith(("http://", "https://")):
+                value_cell.hyperlink = value
+                value_cell.style = "Hyperlink"
             row_number += 1
+
+        populated_additional = [
+            field_name
+            for field_name in additional
+            if _excel_display_value(record.get(field_name))
+        ]
+        if populated_additional:
+            ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=2)
+            section_cell = ws.cell(
+                row=row_number,
+                column=1,
+                value="Additional information and research reference",
+            )
+            section_cell.font = Font(bold=True)
+            section_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            row_number += 1
+            for field_name in populated_additional:
+                value = _excel_display_value(record.get(field_name))
+                field_cell = ws.cell(row=row_number, column=1, value=field_name)
+                value_cell = ws.cell(row=row_number, column=2, value=value)
+                field_cell.font = Font(bold=True)
+                field_cell.border = border
+                value_cell.border = border
+                field_cell.alignment = Alignment(wrap_text=True, vertical="top")
+                value_cell.alignment = Alignment(wrap_text=True, vertical="top")
+                if field_name == "Official Source URL" and value.startswith(("http://", "https://")):
+                    value_cell.hyperlink = value
+                    value_cell.style = "Hyperlink"
+                elif field_name == "Secondary Email" and value:
+                    value_cell.hyperlink = f"mailto:{value}"
+                    value_cell.style = "Hyperlink"
+                row_number += 1
+
         row_number += 2
 
     ws.column_dimensions["A"].width = 42
@@ -518,1304 +423,3308 @@ def _write_approved_listing_blocks(ws, approved: pd.DataFrame) -> None:
     ws.sheet_view.showGridLines = False
 
 
-def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> bytes:
+def excel_bytes(sheets):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        approved_mask = records_df.get(
-            "approved",
-            pd.Series(False, index=records_df.index),
-        ).fillna(False)
-        approved = records_df.loc[
-            approved_mask & _ontario_eligible_mask(records_df)
-        ].copy()
-        approved_listings = _approved_listing_table(approved)
-        ws = writer.book.create_sheet("Approved Listings")
-        _write_approved_listing_blocks(ws, approved_listings)
-        records_df.to_excel(writer, sheet_name="Record Candidates", index=False)
-        records_df.loc[
-            records_df["ontario_scope_status"].eq(ONTARIO_SCOPE_OUTSIDE)
-        ].to_excel(writer, sheet_name="Outside Ontario", index=False)
-        records_df.loc[
-            records_df["ontario_scope_status"].eq(ONTARIO_SCOPE_UNCLEAR)
-        ].to_excel(writer, sheet_name="Location Review", index=False)
-        pages_df.to_excel(writer, sheet_name="Pages Scanned", index=False)
-        pd.DataFrame({"Blocked URL": report.blocked_urls}).to_excel(
-            writer,
-            sheet_name="Blocked",
-            index=False,
-        )
-        pd.DataFrame({"Error": report.errors}).to_excel(
-            writer,
-            sheet_name="Errors",
-            index=False,
-        )
+        used = set()
+        for requested, df in sheets.items():
+            name = re.sub(r"[:\\/?*\[\]]", " ", str(requested))
+            name = re.sub(r"\s+", " ", name).strip()[:31] or "Sheet"
+            base, n = name, 2
+            while name in used:
+                suffix = f" {n}"
+                name = f"{base[:31-len(suffix)]}{suffix}"
+                n += 1
+            used.add(name)
+
+            if requested == "Building Listings":
+                ws = writer.book.create_sheet(title=name)
+                _write_listing_blocks_sheet(ws, df)
+                continue
+
+            df.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.book[name]
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+            for cells in ws.columns:
+                lengths = [len(str(c.value)) for c in cells[:101] if c.value is not None]
+                ws.column_dimensions[cells[0].column_letter].width = min(
+                    max(lengths + [12]) + 2,
+                    42,
+                )
+    output.seek(0)
     return output.getvalue()
 
 
-
-SCAN_HISTORY_COLUMNS = [
-    "Scan ID", "Company ID", "Management/Owner", "Start URL", "Coverage",
-    "Started At UTC", "Completed At UTC", "Completion Reason",
-    "Pages Scanned", "Candidates Detected", "Candidates Approved",
-    "Records Added", "Duplicates Skipped", "Blocked URLs", "Scan Errors",
-    "Recovered Partial", "Last Updated UTC",
-]
+def canonical_province(value):
+    if is_unresolved(value):
+        return pd.NA
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return PROVINCES.get(text.lower(), (text, text))[0]
 
 
-def _scan_id_for_report(report, company_id: str, website_url: str) -> str:
-    existing = str(st.session_state.get("website_scan_id", "")).strip()
-    if existing:
-        return existing
+def province_code(value):
+    if is_unresolved(value):
+        return ""
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return PROVINCES.get(text.lower(), (text, text.upper() if len(text) == 2 else text))[1]
 
-    started = str(getattr(report, "started_at_utc", "") or "").strip()
-    source = "|".join([
-        str(company_id or "").strip(),
-        _normalized_scan_url(website_url),
-        started,
+
+def postal_code(value):
+    if is_unresolved(value):
+        return pd.NA
+    text = re.sub(r"\s+", "", str(value)).upper()
+    return f"{text[:3]} {text[3:]}" if re.fullmatch(r"[A-Z]\d[A-Z]\d[A-Z]\d", text) else str(value).strip().upper()
+
+
+def parse_combined_location(value):
+    if is_unresolved(value):
+        return pd.NA, pd.NA, pd.NA
+    text = re.sub(r"\s+", " ", str(value)).strip(" ,")
+    match = re.search(r"\b([ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][ -]?\d[ABCEGHJ-NPRSTV-Z]\d)\b", text, re.I)
+    pc = pd.NA
+    if match:
+        pc = postal_code(match.group(1))
+        text = (text[:match.start()] + text[match.end():]).strip(" ,")
+    province_pattern = "|".join(re.escape(k) for k in sorted(PROVINCES, key=len, reverse=True))
+    pm = re.search(rf"(?:,\s*|\s+)({province_pattern})$", text, re.I)
+    province = pd.NA
+    city = text
+    if pm:
+        province = canonical_province(pm.group(1))
+        city = text[:pm.start()].strip(" ,")
+    return city or pd.NA, province, pc
+
+
+def formatted_location(row):
+    city = "" if is_unresolved(row.get("City")) else str(row.get("City")).strip()
+    province = province_code(row.get("Province"))
+    pc = "" if is_unresolved(row.get("Postal Code")) else str(postal_code(row.get("Postal Code")))
+    tail = " ".join(v for v in [province, pc] if v)
+    return f"{city}, {tail}" if city and tail else city or tail or pd.NA
+
+
+def normalize_choice(series, choices, default, aliases=None):
+    mapping = {v.lower(): v for v in choices}
+    mapping.update(aliases or {})
+    return series.astype("string").fillna("").str.strip().str.lower().map(mapping).fillna(default)
+
+
+def normalize_workflow(df):
+    out = df.copy()
+    for c in INTERNAL_COLUMNS:
+        if c not in out.columns:
+            out[c] = pd.NA
+    out["Research Status"] = normalize_choice(out["Research Status"], RESEARCH_STATUSES, "Not Started", STATUS_ALIASES["Research Status"])
+    out["Source Status"] = normalize_choice(out["Source Status"], SOURCE_STATUSES, "Not Checked", STATUS_ALIASES["Source Status"])
+    out["Verification Status"] = normalize_choice(out["Verification Status"], VERIFICATION_STATUSES, "Not Reviewed", STATUS_ALIASES["Verification Status"])
+    out["Record Decision"] = normalize_choice(out["Record Decision"], RECORD_DECISIONS, "Undecided", STATUS_ALIASES["Record Decision"])
+    for c in ["Researcher", "Missing Information", "Reviewer Notes"]:
+        out[c] = out[c].fillna("").astype(str)
+    return out
+
+
+def empty_company_registry():
+    return pd.DataFrame(columns=COMPANY_COLUMNS)
+
+
+def normalize_company_registry(registry):
+    if not isinstance(registry, pd.DataFrame):
+        registry = empty_company_registry()
+    out = registry.copy()
+    for column in COMPANY_COLUMNS:
+        if column not in out.columns:
+            out[column] = pd.NA
+    out = out[COMPANY_COLUMNS].copy()
+    out["Management/Owner"] = out["Management/Owner"].fillna("").astype(str).str.strip()
+    out["Company ID"] = out["Company ID"].fillna("").astype(str).str.strip()
+    out["Main Website"] = out["Main Website"].fillna("").astype(str).str.strip()
+    out["Scope Type"] = normalize_choice(
+        out["Scope Type"], COMPANY_SCOPE_TYPES, "Imported"
+    )
+    out["Company Status"] = normalize_choice(
+        out["Company Status"], COMPANY_STATUSES, "Not started"
+    )
+    out["Date Assigned"] = out["Date Assigned"].fillna("").astype(str).str.strip()
+    out["Notes"] = out["Notes"].fillna("").astype(str)
+    out = out.loc[out["Management/Owner"].ne("") | out["Company ID"].ne("")].copy()
+
+    used_ids = set(out.loc[out["Company ID"].ne(""), "Company ID"].astype(str))
+    next_number = 1
+    for index in out.index[out["Company ID"].eq("")]:
+        while f"CMP-{next_number:03d}" in used_ids:
+            next_number += 1
+        company_id = f"CMP-{next_number:03d}"
+        out.at[index, "Company ID"] = company_id
+        used_ids.add(company_id)
+        next_number += 1
+
+    return out.drop_duplicates(subset=["Company ID"], keep="last").reset_index(drop=True)
+
+
+def next_company_id(registry):
+    existing = set(
+        normalize_company_registry(registry)["Company ID"].astype(str).str.strip()
+    )
+    number = 1
+    while f"CMP-{number:03d}" in existing:
+        number += 1
+    return f"CMP-{number:03d}"
+
+
+def company_name_key(value):
+    return norm_header(value)
+
+
+def synchronize_company_registry(records, registry=None):
+    data = normalize_workflow(prepare_data(records.copy()))
+    registry = normalize_company_registry(registry)
+
+    by_name = {
+        company_name_key(row["Management/Owner"]): row["Company ID"]
+        for _, row in registry.iterrows()
+        if row["Management/Owner"] and row["Company ID"]
+    }
+    used_ids = set(registry["Company ID"].astype(str))
+
+    for owner in resolved(data["Management/Owner"]).dropna().astype(str).str.strip().unique():
+        key = company_name_key(owner)
+        if not key or key in by_name:
+            continue
+        candidate_id = next_company_id(registry)
+        while candidate_id in used_ids:
+            suffix = len(used_ids) + 1
+            candidate_id = f"CMP-{suffix:03d}"
+        owner_rows = data.loc[data["Management/Owner"].astype(str).str.strip().eq(owner)]
+        website = ""
+        if not owner_rows.empty:
+            available_websites = resolved(owner_rows["Website"]).dropna().astype(str).str.strip()
+            if not available_websites.empty:
+                website = available_websites.iloc[0]
+        registry = pd.concat([
+            registry,
+            pd.DataFrame([{
+                "Company ID": candidate_id,
+                "Management/Owner": owner,
+                "Main Website": website,
+                "Scope Type": "Imported",
+                "Date Assigned": "",
+                "Company Status": "Researching" if len(owner_rows) else "Not started",
+                "Notes": "",
+            }]),
+        ], ignore_index=True)
+        by_name[key] = candidate_id
+        used_ids.add(candidate_id)
+
+    registry = normalize_company_registry(registry)
+    by_name = {
+        company_name_key(row["Management/Owner"]): row["Company ID"]
+        for _, row in registry.iterrows()
+        if row["Management/Owner"] and row["Company ID"]
+    }
+    missing_company_id = unresolved_mask(data["Company ID"])
+    mapped_ids = data["Management/Owner"].apply(
+        lambda value: by_name.get(company_name_key(value), pd.NA)
+    )
+    data.loc[missing_company_id, "Company ID"] = mapped_ids.loc[missing_company_id]
+    return data, registry
+
+
+def active_company_row():
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+    match = registry.loc[registry["Company ID"].eq(active_id)]
+    return None if match.empty else match.iloc[0]
+
+
+def company_label(row):
+    name = str(row.get("Management/Owner", "")).strip() or "Unnamed company"
+    company_id = str(row.get("Company ID", "")).strip()
+    return f"{name} · {company_id}" if company_id else name
+
+
+def assign_active_company(records, row_mask):
+    out = records.copy()
+    active = active_company_row()
+    if active is None:
+        return out
+    out.loc[row_mask, "Company ID"] = active["Company ID"]
+    blank_owner = row_mask & unresolved_mask(out["Management/Owner"])
+    out.loc[blank_owner, "Management/Owner"] = active["Management/Owner"]
+    return out
+
+
+def add_company_to_project(name, website="", scope_type="Added later", notes=""):
+    clean_name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not clean_name:
+        raise ValueError("Enter the management company or owner name.")
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    key = company_name_key(clean_name)
+    existing = registry.loc[
+        registry["Management/Owner"].apply(company_name_key).eq(key)
+    ]
+    if not existing.empty:
+        company_id = existing.iloc[0]["Company ID"]
+        st.session_state[S_ACTIVE_COMPANY] = company_id
+        return company_id, False
+    company_id = next_company_id(registry)
+    new_row = {
+        "Company ID": company_id,
+        "Management/Owner": clean_name,
+        "Main Website": str(website or "").strip(),
+        "Scope Type": scope_type if scope_type in COMPANY_SCOPE_TYPES else "Added later",
+        "Date Assigned": date.today().isoformat(),
+        "Company Status": "Not started",
+        "Notes": str(notes or "").strip(),
+    }
+    st.session_state[S_COMPANIES] = normalize_company_registry(
+        pd.concat([registry, pd.DataFrame([new_row])], ignore_index=True)
+    )
+    st.session_state[S_ACTIVE_COMPANY] = company_id
+    return company_id, True
+
+
+# =========================================================
+# Reading and mapping
+# =========================================================
+
+def source_columns(df, aliases):
+    lookup = {}
+    for c in df.columns:
+        lookup.setdefault(norm_header(c), []).append(c)
+    matches = []
+    for alias in aliases:
+        for c in lookup.get(norm_header(alias), []):
+            if c not in matches:
+                matches.append(c)
+    return matches
+
+
+def combine_columns(df, columns):
+    out = pd.Series(pd.NA, index=df.index, dtype="object")
+    for c in columns:
+        candidate = resolved(df[c])
+        mask = unresolved_mask(out) & ~unresolved_mask(candidate)
+        out.loc[mask] = candidate.loc[mask]
+    return out
+
+
+def derive_classification(df):
+    available = [c for c in CLASSIFICATION_SOURCE_COLUMNS if c in df.columns]
+    if not available:
+        return pd.Series(pd.NA, index=df.index, dtype="object")
+    def derive(row):
+        values = []
+        for c in available:
+            value = row[c]
+            n = norm_scalar(value)
+            if n in UNRESOLVED or n in NO_VALUES:
+                continue
+            label = CLASSIFICATION_LABELS.get(c, c) if n in YES_VALUES or norm_header(value) == norm_header(c) else str(value).strip()
+            if label and label not in values:
+                values.append(label)
+        return " | ".join(values) if values else pd.NA
+    return df[available].apply(derive, axis=1)
+
+
+def ensure_ids(df):
+    out = df.copy()
+    existing = set(resolved(out["Record ID"]).dropna().astype(str).str.strip())
+    result, counter = [], 1
+    for value in out["Record ID"]:
+        if not is_unresolved(value):
+            result.append(str(value).strip())
+            continue
+        while f"DB-{counter:04d}" in existing:
+            counter += 1
+        candidate = f"DB-{counter:04d}"
+        existing.add(candidate)
+        result.append(candidate)
+        counter += 1
+    out["Record ID"] = result
+    return out
+
+
+def map_schema(df):
+    imported = prepare_data(df)
+    mapped = imported.copy()
+    rows = []
+    for target in INTERNAL_COLUMNS:
+        matches = source_columns(imported, ALIASES.get(target, [target]))
+        if matches:
+            mapped[target] = combine_columns(imported, matches)
+            rows.append({"Datablix Field": target, "Imported Column(s)": ", ".join(matches), "Mapping Status": "Mapped"})
+        else:
+            mapped[target] = pd.NA
+            rows.append({"Datablix Field": target, "Imported Column(s)": "None", "Mapping Status": "Not found"})
+
+    combined = source_columns(imported, COMBINED_LOCATION_ALIASES)
+    if combined:
+        parsed = pd.DataFrame(
+            combine_columns(imported, combined).apply(parse_combined_location).tolist(),
+            columns=["City", "Province", "Postal Code"], index=imported.index,
+        )
+        for field in ["City", "Province", "Postal Code"]:
+            current, derived = resolved(mapped[field]), resolved(parsed[field])
+            mask = unresolved_mask(current) & ~unresolved_mask(derived)
+            current.loc[mask] = derived.loc[mask]
+            mapped[field] = current
+            if mask.any():
+                for row in rows:
+                    if row["Datablix Field"] == field and row["Mapping Status"] == "Not found":
+                        row["Imported Column(s)"] = ", ".join(combined)
+                        row["Mapping Status"] = "Derived"
+
+    derived = derive_classification(imported)
+    current = resolved(mapped["Building Classification"])
+    mask = unresolved_mask(current) & ~unresolved_mask(derived)
+    current.loc[mask] = derived.loc[mask]
+    mapped["Building Classification"] = current
+
+    source = resolved(mapped["Source URL"])
+    website = resolved(mapped["Website"])
+    mask = unresolved_mask(source) & ~unresolved_mask(website)
+    source.loc[mask] = website.loc[mask]
+    mapped["Source URL"] = source
+
+    mapped["Province"] = mapped["Province"].apply(canonical_province)
+    mapped["Postal Code"] = mapped["Postal Code"].apply(postal_code)
+    mapped["Management/Owner"] = mapped["Management/Owner"].apply(
+        lambda v: pd.NA if is_unresolved(v) else re.sub(r"\s+", " ", str(v)).strip()
+    )
+    mapped = ensure_ids(mapped)
+
+    imported_mask = pd.Series(False, index=mapped.index)
+    for c in ["Building Name", "Management/Owner", "Street Address", "City", "Website", "Phone"]:
+        imported_mask |= ~unresolved_mask(mapped[c])
+    mapped.loc[imported_mask & unresolved_mask(mapped["Research Status"]), "Research Status"] = "Imported - Needs Review"
+
+    canonical = [c for c in INTERNAL_COLUMNS if c in mapped.columns]
+    originals = [c for c in imported.columns if c not in canonical]
+    return normalize_workflow(mapped[canonical + originals]), pd.DataFrame(rows)
+
+
+def validate_input(df):
+    groups = [ALIASES["Building Name"], ALIASES["Management/Owner"], ALIASES["Street Address"], ALIASES["City"], COMBINED_LOCATION_ALIASES, ALIASES["Website"], ALIASES["Phone"]]
+    if sum(bool(source_columns(df, g)) for g in groups) < 2:
+        raise ValueError(
+            "Datablix could not find rental property columns in this worksheet. "
+            "Pick the tab where the first row contains headings such as building name, "
+            "address, or owner, and each row below is one building."
+        )
+
+
+def excel_sheet_names(uploaded):
+    with pd.ExcelFile(io.BytesIO(uploaded.getvalue()), engine="openpyxl") as workbook:
+        return workbook.sheet_names
+
+
+def preferred_sheet(names):
+    keywords = ["working", "research", "apartmentbuildings", "buildings", "directory", "listing"]
+    normalized = [norm_header(n) for n in names]
+    for keyword in keywords:
+        for i, name in enumerate(normalized):
+            if keyword in name:
+                return i
+    return 0
+
+
+def read_upload(uploaded, sheet=None):
+    data = uploaded.getvalue()
+    extension = uploaded.name.rsplit(".", 1)[-1].lower()
+    df = pd.read_csv(io.BytesIO(data)) if extension == "csv" else pd.read_excel(io.BytesIO(data), sheet_name=sheet, engine="openpyxl")
+    return prepare_data(df), data
+
+
+def sheet_id(url):
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", str(url))
+    return match.group(1) if match else None
+
+
+def sheet_gid(url):
+    parsed = urlparse(str(url))
+    for text in [parsed.query, parsed.fragment]:
+        values = parse_qs(text).get("gid", [])
+        if values and str(values[0]).isdigit():
+            return str(values[0])
+    match = re.search(r"(?:[?#&]gid=)(\d+)", str(url))
+    return match.group(1) if match else None
+
+
+def sheet_csv_url(url, selector=""):
+    clean, selector = str(url).strip(), str(selector).strip()
+    if not clean:
+        raise ValueError("Paste a Google Sheets link first.")
+    parsed = urlparse(clean)
+    if "docs.google.com" in parsed.netloc.lower() and "/spreadsheets/d/e/" in parsed.path:
+        parts = urlparse(clean.replace("/pubhtml", "/pub"))
+        query = parse_qs(parts.query)
+        query["output"] = ["csv"]
+        if selector.isdigit():
+            query["gid"] = [selector]
+        return urlunparse(parts._replace(query=urlencode({k: v[-1] for k, v in query.items() if v})))
+    if clean.lower().endswith(".csv") or "output=csv" in clean.lower():
+        return clean
+    sid = sheet_id(clean)
+    if not sid:
+        raise ValueError(
+            "This link does not look like a Google Sheets sharing link. "
+            "Copy it from Share > Copy link inside the Sheet."
+        )
+    if selector and not selector.isdigit():
+        return f"https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&sheet={quote(selector)}"
+    gid = selector if selector.isdigit() else sheet_gid(clean)
+    return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv" + (f"&gid={gid}" if gid else "")
+
+
+def read_google_sheet(url, selector=""):
+    request = Request(sheet_csv_url(url, selector), headers={"User-Agent": "Mozilla/5.0 (compatible; Datablix/1.0)"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            data = response.read()
+            content_type = response.headers.get("Content-Type", "").lower()
+    except Exception as error:
+        raise ValueError(
+            "Datablix could not open this Google Sheet. Check the link, then set the Sheet's "
+            "General access to 'Anyone with the link' with the Viewer role and try again."
+        ) from error
+    preview = data[:500].decode("utf-8", errors="ignore").lower()
+    if "text/html" in content_type or "<html" in preview:
+        raise ValueError(
+            "Google returned a webpage instead of spreadsheet data. Set the Sheet's General "
+            "access to 'Anyone with the link', or paste a published CSV link instead."
+        )
+    try:
+        df = pd.read_csv(io.BytesIO(data))
+    except Exception as error:
+        raise ValueError(
+            "The Sheet opened, but its first row could not be read as column headings. "
+            "Make sure row 1 contains the column names."
+        ) from error
+    sid = sheet_id(url)
+    return prepare_data(df), data, f"google_sheet_{sid[:10]}.csv" if sid else "google_sheet.csv", selector or sheet_gid(url) or "linked worksheet"
+
+
+# =========================================================
+# Quality checks and output views
+# =========================================================
+
+def qa_checks(df):
+    out = normalize_workflow(df.copy())
+    issues = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+    core_gaps = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+    research_gaps = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+
+    def flag(mask, severity, message):
+        for idx in out.index[mask.fillna(False)]:
+            issues.at[idx].append((severity, message))
+
+    for field in CORE_FIELDS:
+        mask = unresolved_mask(out[field])
+        flag(mask, "Critical", f"Missing {field}")
+        for idx in out.index[mask]:
+            core_gaps.at[idx].append(field)
+    for field in TARGET_FIELDS:
+        mask = unresolved_mask(out[field])
+        for idx in out.index[mask]:
+            research_gaps.at[idx].append(field)
+
+    ids = out["Record ID"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+    flag(ids.ne("") & ids.duplicated(False), "Critical", "Duplicate Record ID")
+
+    address_key = (
+        out["Street Address"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+        + "|" + out["City"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+        + "|" + out["Postal Code"].astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
+    )
+    flag(address_key.str.split("|").str[0].ne("") & address_key.duplicated(False), "Warning", "Possible duplicate address")
+
+    units = pd.to_numeric(out["Number of Apartments"].astype("string").str.replace(",", "", regex=False).str.extract(r"(\d+(?:\.\d+)?)", expand=False), errors="coerce")
+    flag(~unresolved_mask(out["Number of Apartments"]) & (units.isna() | units.le(0)), "Warning", "Invalid number of apartments")
+
+    email = out["Primary Email"].astype("string").fillna("").str.strip()
+    flag(~unresolved_mask(out["Primary Email"]) & ~email.str.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", na=False), "Warning", "Invalid email format")
+    phone = out["Phone"].astype("string").fillna("").str.replace(r"\D", "", regex=True)
+    flag(~unresolved_mask(out["Phone"]) & ~phone.str.len().isin([10, 11]), "Warning", "Phone number does not contain 10 or 11 digits")
+    pc = out["Postal Code"].astype("string").fillna("").str.upper().str.strip()
+    flag(~unresolved_mask(out["Postal Code"]) & ~pc.str.match(r"^[A-Z]\d[A-Z][ -]?\d[A-Z]\d$", na=False), "Warning", "Invalid Canadian postal code format")
+    for field in ["Website", "Source URL"]:
+        urls = out[field].astype("string").fillna("").str.lower().str.strip()
+        flag(~unresolved_mask(out[field]) & ~urls.str.startswith(("http://", "https://"), na=False), "Warning", f"Invalid {field}")
+
+    dates = pd.to_datetime(out["Date Researched"], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+    flag(~unresolved_mask(out["Date Researched"]) & dates.isna(), "Warning", "Invalid Date Researched")
+    flag(dates.notna() & dates.gt(today), "Warning", "Date Researched is in the future")
+
+    out["Working Record Label"] = resolved(out["Building Name"]).combine_first(resolved(out["Street Address"])).combine_first(resolved(out["Record ID"])).fillna("Unlabelled record")
+    out["Core Gap Count"] = core_gaps.apply(len)
+    out["Core Gaps"] = core_gaps.apply(lambda v: ", ".join(v) if v else "None")
+    out["Research Gap Count"] = research_gaps.apply(len)
+    out["Research Gaps"] = research_gaps.apply(lambda v: ", ".join(v) if v else "None")
+    out["Critical Issue Count"] = issues.apply(lambda v: sum(s == "Critical" for s, _ in v))
+    out["Warning Count"] = issues.apply(lambda v: sum(s == "Warning" for s, _ in v))
+    out["QA Flag Count"] = issues.apply(len)
+    out["QA Flags"] = issues.apply(lambda v: "; ".join(f"{s}: {m}" for s, m in v) if v else "No rental property data issues found")
+    out["QA Status"] = out.apply(lambda r: "Critical" if r["Critical Issue Count"] else "Review" if r["Warning Count"] else "Pass", axis=1)
+    out["Core Completeness %"] = ((len(CORE_FIELDS) - out["Core Gap Count"]) / len(CORE_FIELDS) * 100).round(1)
+    out["Target Coverage %"] = ((len(TARGET_FIELDS) - out["Research Gap Count"]) / len(TARGET_FIELDS) * 100).round(1)
+
+    workflow = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
+    def gap(mask, message):
+        for idx in out.index[mask.fillna(False)]:
+            workflow.at[idx].append(message)
+    gap(unresolved_mask(out["Source URL"]), "Research source not recorded")
+    gap(unresolved_mask(out["Date Researched"]), "Research date not recorded")
+    gap(unresolved_mask(out["Researcher"]), "Researcher not recorded")
+    gap(out["Research Status"].isin(["Imported - Needs Review", "Not Started", "In Progress"]), "Research is not complete")
+    gap(out["Research Status"].eq("Needs Follow-up"), "Research requires follow-up")
+    gap(out["Source Status"].eq("Not Checked"), "Source not checked")
+    gap(out["Source Status"].isin(["Needs Follow-up", "Unavailable"]), "Source requires documentation or follow-up")
+    gap(out["Verification Status"].ne("Verified"), "Human verification not completed")
+    gap(out["Record Decision"].eq("Undecided"), "Record decision not made")
+    gap(out["Record Decision"].isin(["Update", "Possible Duplicate"]), "Record decision requires action")
+    gap(out["Research Status"].eq("Completed") & out["Research Gap Count"].gt(0) & unresolved_mask(out["Missing Information"]), "Document unavailable information")
+    out["Workflow Gap Count"] = workflow.apply(len)
+    out["Workflow Gaps"] = workflow.apply(lambda v: "; ".join(v) if v else "No workflow gaps")
+
+    def readiness(row):
+        if row["Record Decision"] == "Remove": return "Excluded from Listings"
+        if row["Record Decision"] == "Possible Duplicate": return "Duplicate Review"
+        if row["Critical Issue Count"]: return "Fix Critical Data"
+        if row["Research Status"] in ["Imported - Needs Review", "Not Started", "In Progress"]: return "Needs Research"
+        if row["Research Status"] == "Needs Follow-up": return "Needs Follow-up"
+        if row["Research Status"] != "Completed": return "Needs Review"
+        if row["Warning Count"]: return "Needs Data Review"
+        if row["Verification Status"] != "Verified": return "Needs Verification"
+        if row["Record Decision"] == "Update": return "Needs Update"
+        if row["Record Decision"] != "Keep": return "Needs Decision"
+        if is_unresolved(row["Source URL"]) and row["Source Status"] != "Unavailable": return "Record Research Source"
+        if is_unresolved(row["Date Researched"]) or is_unresolved(row["Researcher"]): return "Complete Research Trail"
+        if row["Research Gap Count"] and is_unresolved(row["Missing Information"]): return "Document Research Gaps"
+        if row["Research Gap Count"]: return "Ready with Documented Gaps"
+        return "Ready to Use"
+    out["Record Readiness"] = out.apply(readiness, axis=1)
+    out["Follow-up Priority"] = out.apply(
+        lambda r: "None" if r["Record Readiness"] in ["Ready to Use", "Ready with Documented Gaps", "Excluded from Listings"]
+        else "High" if r["Critical Issue Count"] or r["Record Readiness"] in ["Duplicate Review", "Needs Follow-up"]
+        else "Medium" if r["Warning Count"] or r["Research Gap Count"] else "Low", axis=1
+    )
+    age = (today - dates).dt.days
+    out["Source Age (Days)"] = age.where(dates.notna() & dates.le(today)).astype("Int64")
+    out["Freshness Status"] = "Current"
+    out.loc[unresolved_mask(out["Date Researched"]), "Freshness Status"] = "Missing date"
+    out.loc[~unresolved_mask(out["Date Researched"]) & dates.isna(), "Freshness Status"] = "Invalid date"
+    out.loc[dates.gt(today), "Freshness Status"] = "Future date"
+    out.loc[dates.notna() & dates.le(today) & age.gt(FRESHNESS_DAYS), "Freshness Status"] = "Stale"
+    return out
+
+
+def listing_export(df):
+    """Return a flat export with the required sample fields first."""
+    listing = pd.DataFrame(index=df.index)
+    for label, source_field in LISTING_FIELD_MAP:
+        listing[label] = (
+            df.apply(formatted_location, axis=1)
+            if source_field is None
+            else df[source_field]
+        )
+    for label, source_field in LISTING_ADDITIONAL_FIELD_MAP:
+        listing[label] = df[source_field] if source_field in df.columns else pd.NA
+    columns = LISTING_COLUMNS + [label for label, _ in LISTING_ADDITIONAL_FIELD_MAP]
+    return listing[columns]
+
+
+def listing_block_dataframe(row, include_additional=True):
+    """Turn one record into the same vertical field/value order as the sample."""
+    rows = []
+    for label, source_field in LISTING_FIELD_MAP:
+        value = formatted_location(row) if source_field is None else row.get(source_field)
+        rows.append({
+            "Listing Field": label,
+            "Listing Value": _excel_display_value(value),
+        })
+
+    if include_additional:
+        additional_rows = []
+        for label, source_field in LISTING_ADDITIONAL_FIELD_MAP:
+            value = row.get(source_field)
+            if not is_unresolved(value):
+                additional_rows.append({
+                    "Listing Field": label,
+                    "Listing Value": _excel_display_value(value),
+                })
+        if additional_rows:
+            rows.append({
+                "Listing Field": "Additional information and research reference",
+                "Listing Value": "",
+            })
+            rows.extend(additional_rows)
+    return pd.DataFrame(rows)
+
+
+def render_listing_preview(df, limit=5):
+    """Show sample-style listing blocks without turning the page into a wide table."""
+    if df.empty:
+        st.info("No apartment building records are available to preview yet.")
+        return
+
+    visible = df.head(limit)
+    for listing_number, (_, row) in enumerate(visible.iterrows(), start=1):
+        name = _excel_display_value(row.get("Building Name")) or "Unnamed apartment building"
+        with st.expander(
+            f"Apartment Building {listing_number}: {name}",
+            expanded=listing_number == 1,
+        ):
+            st.dataframe(
+                listing_block_dataframe(row),
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Listing Field": st.column_config.TextColumn(
+                        "Listing Field",
+                        width="medium",
+                    ),
+                    "Listing Value": st.column_config.TextColumn(
+                        "Listing Value",
+                        width="large",
+                    ),
+                },
+            )
+
+    if len(df) > limit:
+        st.caption(
+            f"Showing {limit:,} of {len(df):,} listings. "
+            "The workbook download includes every building."
+        )
+
+
+def ready_mask(df):
+    return df["Record Readiness"].isin(["Ready to Use", "Ready with Documented Gaps"])
+
+
+def research_log(df):
+    columns = [
+        "Record ID", "Working Record Label", "Building Name", "Management/Owner",
+        "Street Address", "City", "Province", "Postal Code", "Source URL",
+        "Date Researched", "Source Age (Days)", "Freshness Status", "Researcher",
+        "Research Status", "Source Status", "Verification Status",
+        "Research Gap Count", "Research Gaps", "Missing Information",
+        "Reviewer Notes", "Record Decision", "Follow-up Priority",
+        "Workflow Gap Count", "Workflow Gaps", "Record Readiness",
+    ]
+    return df[[c for c in columns if c in df.columns]].copy()
+
+
+def owner_summary(df):
+    working = df.assign(_owner=display_values(df["Management/Owner"], "Unassigned"))
+    rows = []
+    for owner, group in working.groupby("_owner", dropna=False):
+        rows.append({
+            "Management/Owner": owner,
+            "Building Records": len(group),
+            "Named Buildings": int((~unresolved_mask(group["Building Name"])).sum()),
+            "Cities": ", ".join(sorted(set(resolved(group["City"]).dropna().astype(str).str.strip()))),
+            "Records with Website": int((~unresolved_mask(group["Website"])).sum()),
+            "Records with Apartment Count": int((~unresolved_mask(group["Number of Apartments"])).sum()),
+            "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
+            "Ready Records": int(ready_mask(group).sum()),
+            "Listings Needing Follow-up": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()),
+        })
+    return pd.DataFrame(rows).sort_values(["Listings Needing Follow-up", "Building Records"], ascending=[False, False]).reset_index(drop=True) if rows else pd.DataFrame()
+
+
+def draft_profiles(df):
+    rows = []
+    for _, row in df.iterrows():
+        if row["Record Decision"] == "Remove":
+            continue
+        label = str(row["Working Record Label"]).strip() or "Rental property"
+        sentences = [f"{label} is located at {row['Street Address']}, {formatted_location(row)}."]
+        if not is_unresolved(row["Management/Owner"]): sentences.append(f"The recorded management or owner is {row['Management/Owner']}.")
+        if not is_unresolved(row["Building Classification"]): sentences.append(f"The current building classification is {row['Building Classification']}.")
+        if not is_unresolved(row["Number of Apartments"]): sentences.append(f"The source records approximately {row['Number of Apartments']} apartments.")
+        contact = []
+        for label_text, field in [("phone", "Phone"), ("email", "Primary Email"), ("website", "Website")]:
+            if not is_unresolved(row[field]): contact.append(f"{label_text}: {row[field]}")
+        if contact: sentences.append("Contact information: " + "; ".join(contact) + ".")
+        rows.append({
+            "Record ID": row["Record ID"], "Profile Heading": label,
+            "Management/Owner": row["Management/Owner"], "Draft Profile": " ".join(sentences),
+            "Research Gaps": row["Research Gaps"], "Source URL": row["Source URL"],
+            "Verification Status": row["Verification Status"],
+            "Profile Status": "Ready for editorial review" if ready_mask(pd.DataFrame([row])).iloc[0] else "Needs research or verification",
+            "Editorial Note": "Confirm the facts and refine the wording before use.",
+        })
+    return pd.DataFrame(rows)
+
+
+def field_coverage(df):
+    rows = []
+    for field in ALL_RESEARCH_FIELDS:
+        missing = int(unresolved_mask(df[field]).sum())
+        rows.append({
+            "Field": field,
+            "Field Group": "Core field" if field in CORE_FIELDS else "Useful detail",
+            "Missing Records": missing,
+            "Populated Records": len(df) - missing,
+            "Coverage": f"{((len(df)-missing)/len(df)*100 if len(df) else 0):.1f}%",
+            "How Datablix treats a blank": "Prevents the record from being treated as complete" if field in CORE_FIELDS else "Keeps the detail visible as an open gap rather than an error",
+        })
+    return pd.DataFrame(rows)
+
+
+def issue_summary(df):
+    counts = {}
+    for text in df["QA Flags"].fillna(""):
+        for item in str(text).split("; "):
+            if item and item != "No rental property data issues found": counts[item] = counts.get(item, 0) + 1
+    rows = []
+    for item, count in counts.items():
+        severity, _, issue = item.partition(": ")
+        rows.append({"Severity": severity, "Issue": issue or item, "Affected Records": count})
+    return pd.DataFrame(rows).sort_values(["Severity", "Affected Records"], ascending=[True, False]) if rows else pd.DataFrame(columns=["Severity", "Issue", "Affected Records"])
+
+
+def project_summary(df):
+    return pd.DataFrame([
+        {"Metric": "Records", "Value": len(df), "Interpretation": "Rows in the working rental property dataset."},
+        {"Metric": "Management/owner organizations", "Value": resolved(df["Management/Owner"]).dropna().astype(str).str.strip().nunique(), "Interpretation": "Distinct recorded organizations."},
+        {"Metric": "Records with usable core identity", "Value": int(df["Core Gap Count"].eq(0).sum()), "Interpretation": "Records with management/owner, street address, and city."},
+        {"Metric": "Verified records", "Value": int(df["Verification Status"].eq("Verified").sum()), "Interpretation": "Records marked as human-verified."},
+        {"Metric": "Listings ready to use", "Value": int(ready_mask(df).sum()), "Interpretation": "Rental property listings accepted for use, including those with documented gaps."},
+        {"Metric": "Open research gaps", "Value": int(df["Research Gap Count"].sum()), "Interpretation": "Unconfirmed listing fields."},
     ])
-    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:8].upper()
-    compact_time = re.sub(r"[^0-9]", "", started)[:14]
-    if not compact_time:
-        compact_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    scan_id = f"SCAN-{compact_time}-{digest}"
-    st.session_state["website_scan_id"] = scan_id
-    return scan_id
 
 
-def _attach_scan_context(
-    frame: pd.DataFrame,
-    *,
-    scan_id: str,
-    company_id: str,
-    company_name: str,
-    website_url: str,
-) -> pd.DataFrame:
-    contextual = frame.copy()
-    contextual["scan_id"] = scan_id
-    contextual["company_id"] = str(company_id or "").strip()
-    contextual["assigned_company"] = str(company_name or "").strip()
-    contextual["scan_start_url"] = str(website_url or "").strip()
-
-    if "management_owner" not in contextual.columns:
-        contextual["management_owner"] = ""
-    owner_blank = contextual["management_owner"].apply(_clean_value).eq("")
-    contextual.loc[owner_blank, "management_owner"] = str(company_name or "").strip()
-    return contextual
-
-
-def _history_frame(key: str, columns: list[str] | None = None) -> pd.DataFrame:
-    value = st.session_state.get(key)
-    if not isinstance(value, pd.DataFrame):
-        value = pd.DataFrame(columns=columns or [])
-    value = value.copy()
-    if columns:
-        for column in columns:
-            if column not in value.columns:
-                value[column] = pd.NA
-    return value
-
-
-def _replace_scan_rows(existing: pd.DataFrame, new_rows: pd.DataFrame, scan_id: str) -> pd.DataFrame:
-    if "Scan ID" in existing.columns:
-        existing = existing.loc[
-            ~existing["Scan ID"].fillna("").astype(str).eq(str(scan_id))
-        ].copy()
-    if new_rows is None or new_rows.empty:
-        return existing.reset_index(drop=True)
-
-    all_columns = list(existing.columns)
-    all_columns.extend(
-        column for column in new_rows.columns
-        if column not in all_columns
-    )
-    return pd.concat(
-        [
-            existing.reindex(columns=all_columns),
-            new_rows.reindex(columns=all_columns),
-        ],
-        ignore_index=True,
-        sort=False,
-    )
-
-
-def _persist_scan_evidence(
-    *,
-    report,
-    records_df: pd.DataFrame,
-    pages_df: pd.DataFrame,
-    scan_id: str,
-    company_id: str,
-    company_name: str,
-    website_url: str,
-    scope: str,
-    history_key: str,
-    candidates_key: str,
-    pages_key: str,
-    added_count: int | None = None,
-    duplicate_count: int | None = None,
-) -> None:
-    approval_mask = records_df.get(
-        "approved",
-        pd.Series(False, index=records_df.index),
-    ).fillna(False)
-    eligible_mask = _ontario_eligible_mask(records_df)
-    approved_count = int((approval_mask & eligible_mask).sum())
-
-    history = _history_frame(history_key, SCAN_HISTORY_COLUMNS)
-    prior_added = 0
-    prior_duplicates = 0
-    if not history.empty and "Scan ID" in history.columns:
-        prior = history.loc[history["Scan ID"].astype(str).eq(scan_id)]
-        if not prior.empty:
-            prior_added_value = pd.to_numeric(
-                prior.iloc[-1].get("Records Added", 0),
-                errors="coerce",
-            )
-            prior_duplicate_value = pd.to_numeric(
-                prior.iloc[-1].get("Duplicates Skipped", 0),
-                errors="coerce",
-            )
-            prior_added = (
-                0 if pd.isna(prior_added_value) else int(prior_added_value)
-            )
-            prior_duplicates = (
-                0
-                if pd.isna(prior_duplicate_value)
-                else int(prior_duplicate_value)
-            )
-
-    summary = pd.DataFrame([{
-        "Scan ID": scan_id,
-        "Company ID": str(company_id or "").strip(),
-        "Management/Owner": str(company_name or "").strip(),
-        "Start URL": str(website_url or "").strip(),
-        "Coverage": str(scope or "").strip(),
-        "Started At UTC": str(getattr(report, "started_at_utc", "") or ""),
-        "Completed At UTC": str(getattr(report, "completed_at_utc", "") or ""),
-        "Completion Reason": str(getattr(report, "completion_reason", "") or ""),
-        "Pages Scanned": len(getattr(report, "pages", []) or []),
-        "Candidates Detected": len(records_df),
-        "Candidates Approved": approved_count,
-        "Records Added": prior_added if added_count is None else int(added_count),
-        "Duplicates Skipped": (
-            prior_duplicates if duplicate_count is None else int(duplicate_count)
-        ),
-        "Blocked URLs": len(getattr(report, "blocked_urls", []) or []),
-        "Scan Errors": len(getattr(report, "errors", []) or []),
-        "Recovered Partial": bool(
-            st.session_state.get("website_scan_recovered_partial", False)
-        ),
-        "Last Updated UTC": datetime.now(timezone.utc).isoformat(),
-    }])
-    st.session_state[history_key] = _replace_scan_rows(history, summary, scan_id)
-
-    candidates = records_df.copy().rename(columns={
-        "scan_id": "Scan ID",
-        "company_id": "Company ID",
-        "assigned_company": "Assigned Company",
-        "scan_start_url": "Scan Start URL",
-    })
-    candidates.columns = [
-        column
-        if column in {
-            "Scan ID", "Company ID", "Assigned Company", "Scan Start URL"
-        }
-        else str(column).replace("_", " ").title()
-        for column in candidates.columns
+def structure_recommendations():
+    rows = [
+        ("Identity", "Apartment Building Name", "Where available", "Text", "Recognizable building or property name", "Search"),
+        ("Location", "Street Address", "Required", "Text", "Primary building address", "Search"),
+        ("Location", "City and Postal Code", "Required", "Formatted location", "City, province code, and postal code", "Search/Filter"),
+        ("Property", "Building Classification", "Where available", "Controlled text", "Building classification", "Filter"),
+        ("Property", "Number of Apartments", "Where available", "Whole number", "Apartment count", "Sort/Filter"),
+        ("Ownership", "Apartment Building Management/Owner", "Required", "Controlled text", "Responsible organization", "Filter"),
+        ("Contact", "Phone Number", "Where available", "Phone", "Available contact number", "Search"),
+        ("Contact", "Email Contact", "Where available", "Email", "Available email contact", "Search"),
+        ("Contact", "WebSite", "Recommended", "URL", "Property or company webpage", "Link"),
+        ("Research", "Source URL", "Required for verification", "URL", "Exact supporting page", "Link"),
+        ("Research", "Date Researched", "Required for verified records", "Date", "Freshness trail", "Filter"),
+        ("Research", "Researcher", "Required for verified records", "Controlled text", "Accountability", "Filter"),
+        ("Research", "Verification Status", "Required", "Controlled status", "Human review outcome", "Filter"),
+        ("Research", "Missing Information", "When applicable", "Long text", "Records details that could not be confirmed", "No"),
+        ("Workflow", "Record Decision", "Required before final use", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
     ]
-    candidates["Scan ID"] = scan_id
-    candidates["Company ID"] = str(company_id or "").strip()
-    candidates["Management/Owner"] = str(company_name or "").strip()
-    candidates["Candidate Outcome"] = "Not selected"
-    if "Approved" in candidates.columns:
-        candidates.loc[candidates["Approved"].fillna(False), "Candidate Outcome"] = (
-            "Selected for approval"
-        )
-    candidate_history = _history_frame(candidates_key)
-    st.session_state[candidates_key] = _replace_scan_rows(
-        candidate_history,
-        candidates,
-        scan_id,
+    return pd.DataFrame(rows, columns=["Field Group", "Field", "Requirement", "Recommended Type", "Purpose", "Platform Use"])
+
+
+def methodology(df, name, sheet):
+    return pd.DataFrame([
+        {"Section": "Purpose", "Report Text": "Organize listing information into a consistent, searchable structure using the records provided and publicly available sources."},
+        {"Section": "Input reviewed", "Report Text": f"Workspace: {name}. Worksheet: {sheet or 'not specified'}. Records reviewed: {len(df):,}."},
+        {"Section": "Core record view", "Report Text": "The Building Listings sheet keeps the main rental property, location, ownership, and contact fields together in a concise view."},
+        {"Section": "Method", "Report Text": "Match imported headings, preserve original columns, check identity and formats, track sources and verification, and keep review decisions explicit."},
+        {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, duplicated, or inconsistent. Automated checks support review but do not replace human judgment."},
+        {"Section": "Suggested next checks", "Report Text": "Work through high-priority records, confirm sources, document unavailable information, and read through generated text before use."},
+    ])
+
+
+def qa_issue_rows(qa_frame):
+    columns = [
+        "Issue Key", "Company ID", "Management/Owner", "Record ID",
+        "Severity", "Issue", "Captured At",
+    ]
+    if qa_frame is None or qa_frame.empty:
+        return pd.DataFrame(columns=columns)
+    rows = []
+    captured_at = datetime.now().isoformat(timespec="seconds")
+    for _, record in qa_frame.iterrows():
+        record_id = str(record.get("Record ID", "")).strip()
+        company_id = str(record.get("Company ID", "")).strip()
+        owner = str(record.get("Management/Owner", "")).strip()
+        for item in str(record.get("QA Flags", "")).split("; "):
+            if not item or item == "No rental property data issues found":
+                continue
+            severity, separator, issue = item.partition(": ")
+            if not separator:
+                severity, issue = "Review", item
+            key = f"{record_id}|{severity}|{issue}"
+            rows.append({
+                "Issue Key": key,
+                "Company ID": company_id,
+                "Management/Owner": owner,
+                "Record ID": record_id,
+                "Severity": severity,
+                "Issue": issue,
+                "Captured At": captured_at,
+            })
+    return pd.DataFrame(rows, columns=columns).drop_duplicates(
+        subset=["Issue Key"], keep="last"
     )
 
-    pages = pages_df.copy()
-    pages.columns = [
-        str(column).replace("_", " ").title()
-        for column in pages.columns
+
+def quality_impact_summary(qa_frame, baseline=None):
+    current = qa_issue_rows(qa_frame)
+    baseline = baseline.copy() if isinstance(baseline, pd.DataFrame) else pd.DataFrame()
+    if baseline.empty or "Issue Key" not in baseline.columns:
+        baseline = pd.DataFrame(columns=current.columns)
+    baseline_keys = set(baseline["Issue Key"].astype(str))
+    current_keys = set(current["Issue Key"].astype(str))
+    initial = len(baseline_keys)
+    remaining = len(baseline_keys & current_keys)
+    resolved_count = len(baseline_keys - current_keys)
+    new_count = len(current_keys - baseline_keys)
+    resolution_rate = (resolved_count / initial * 100) if initial else 0.0
+    return pd.DataFrame([
+        {"Metric": "Baseline issues", "Value": initial, "Interpretation": "Rule-based issues captured before correction."},
+        {"Metric": "Baseline issues resolved", "Value": resolved_count, "Interpretation": "Captured issues that no longer appear after revalidation."},
+        {"Metric": "Baseline issues remaining", "Value": remaining, "Interpretation": "Captured issues still present."},
+        {"Metric": "New issues currently detected", "Value": new_count, "Interpretation": "Current issues that were not part of the saved baseline."},
+        {"Metric": "Issue-resolution rate", "Value": round(resolution_rate, 1), "Interpretation": "Resolved baseline issues divided by baseline issues."},
+    ])
+
+
+def capture_quality_baseline(company_id=None, replace=False):
+    working = st.session_state.get(S_WORKING)
+    if not isinstance(working, pd.DataFrame) or working.empty:
+        return 0
+    current_qa = qa_checks(working)
+    if company_id:
+        current_qa = current_qa.loc[current_qa["Company ID"].astype(str).eq(str(company_id))]
+    captured = qa_issue_rows(current_qa)
+    existing = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(existing, pd.DataFrame) or existing.empty:
+        existing = pd.DataFrame(columns=captured.columns)
+    if company_id and not replace and not existing.empty:
+        existing_company = existing["Company ID"].astype(str).eq(str(company_id))
+        if existing_company.any():
+            return -1
+    if company_id:
+        existing = existing.loc[~existing["Company ID"].astype(str).eq(str(company_id))]
+    elif replace:
+        existing = existing.iloc[0:0]
+    st.session_state[S_QA_BASELINE] = pd.concat(
+        [existing, captured], ignore_index=True
+    ).drop_duplicates(subset=["Issue Key"], keep="last")
+    return len(captured)
+
+
+def company_progress_summary(qa_frame, registry=None):
+    registry = normalize_company_registry(registry)
+    rows = []
+    represented_ids = set()
+    for _, company in registry.iterrows():
+        company_id = str(company["Company ID"]).strip()
+        represented_ids.add(company_id)
+        group = qa_frame.loc[qa_frame["Company ID"].astype(str).eq(company_id)]
+        rows.append({
+            "Company ID": company_id,
+            "Management/Owner": company["Management/Owner"],
+            "Scope Type": company["Scope Type"],
+            "Company Status": company["Company Status"],
+            "Building Records": len(group),
+            "Completed Records": int(group["Research Status"].eq("Completed").sum()) if not group.empty else 0,
+            "Verified Records": int(group["Verification Status"].eq("Verified").sum()) if not group.empty else 0,
+            "Records Passing QA": int(group["QA Status"].eq("Pass").sum()) if not group.empty else 0,
+            "Ready Records": int(ready_mask(group).sum()) if not group.empty else 0,
+            "Open QA Issues": int(group["QA Flag Count"].sum()) if not group.empty else 0,
+            "Open Field Gaps": int(group["Research Gap Count"].sum()) if not group.empty else 0,
+            "Follow-up Records": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()) if not group.empty else 0,
+        })
+    unregistered = qa_frame.loc[
+        ~qa_frame["Company ID"].astype(str).isin(represented_ids)
     ]
-    pages["Scan ID"] = scan_id
-    pages["Company ID"] = str(company_id or "").strip()
-    pages["Management/Owner"] = str(company_name or "").strip()
-    page_history = _history_frame(pages_key)
-    st.session_state[pages_key] = _replace_scan_rows(
-        page_history,
-        pages,
-        scan_id,
+    for owner, group in unregistered.assign(
+        _owner=display_values(unregistered["Management/Owner"], "Unassigned")
+    ).groupby("_owner"):
+        rows.append({
+            "Company ID": "",
+            "Management/Owner": owner,
+            "Scope Type": "Imported",
+            "Company Status": "Researching",
+            "Building Records": len(group),
+            "Completed Records": int(group["Research Status"].eq("Completed").sum()),
+            "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
+            "Records Passing QA": int(group["QA Status"].eq("Pass").sum()),
+            "Ready Records": int(ready_mask(group).sum()),
+            "Open QA Issues": int(group["QA Flag Count"].sum()),
+            "Open Field Gaps": int(group["Research Gap Count"].sum()),
+            "Follow-up Records": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()),
+        })
+    return pd.DataFrame(rows)
+
+
+def report_summary(qa_frame, registry=None, scope_label="All companies", baseline=None):
+    registry = normalize_company_registry(registry)
+    company_count = int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
+    if scope_label == "All companies" and not registry.empty:
+        company_count = len(registry)
+    ready_count = int(ready_mask(qa_frame).sum())
+    issue_count = int(qa_frame["QA Flag Count"].sum())
+    unresolved_count = int((~ready_mask(qa_frame) & ~qa_frame["Record Readiness"].eq("Excluded from Listings")).sum())
+    cities = sorted(set(resolved(qa_frame["City"]).dropna().astype(str).str.strip()))
+    impact = quality_impact_summary(qa_frame, baseline)
+    impact_map = dict(zip(impact["Metric"], impact["Value"]))
+    rows = [
+        {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Building records analysed: {len(qa_frame):,}."},
+        {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {ready_count:,} records are currently ready to use or ready with documented gaps."},
+        {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {unresolved_count:,} records still require correction, verification, a decision, or documented follow-up."},
+        {"Section": "Quality impact", "Report Text": f"The saved baseline contains {int(impact_map.get('Baseline issues', 0)):,} issues. {int(impact_map.get('Baseline issues resolved', 0)):,} no longer appear after revalidation, producing an issue-resolution rate of {float(impact_map.get('Issue-resolution rate', 0)):.1f}%."},
+        {"Section": "Method", "Report Text": "Companies were researched separately, scanner findings were reviewed by a person, approved records were consolidated into one master project, and quality checks were run at company and project levels."},
+        {"Section": "Assumptions", "Report Text": "Scanner findings are candidates rather than verified facts; public websites may be incomplete or change over time; unavailable information is documented rather than invented; and the project scope may expand when additional companies are assigned."},
+        {"Section": "Limitations", "Report Text": "Automated checks identify structural and formatting concerns but do not independently confirm ownership, management relationships, addresses, unit counts, or the completeness of a company portfolio."},
+        {"Section": "Recommended next actions", "Report Text": "Resolve high-priority follow-ups, confirm source evidence, review cross-company duplicate warnings, document unavailable information, and preserve the final master project as the reporting source of truth."},
+    ]
+    return pd.DataFrame(rows)
+
+
+def project_info_dataframe(qa_frame, registry):
+    registry = normalize_company_registry(registry)
+    return pd.DataFrame([
+        {"Setting": "Project Name", "Value": st.session_state.get(S_PROJECT_NAME, "Datablix master project")},
+        {"Setting": "Saved At", "Value": datetime.now().isoformat(timespec="seconds")},
+        {"Setting": "Companies in Scope", "Value": len(registry)},
+        {"Setting": "Building Records", "Value": len(qa_frame)},
+        {"Setting": "Listings Ready", "Value": int(ready_mask(qa_frame).sum())},
+        {"Setting": "Source", "Value": st.session_state.get(S_SOURCE_TYPE, "Workspace")},
+        {"Setting": "Datablix Project Format", "Value": "1"},
+    ])
+
+
+def project_workbook_bytes():
+    working = st.session_state.get(S_WORKING)
+    if not isinstance(working, pd.DataFrame):
+        working = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
+    working, registry = synchronize_company_registry(
+        working,
+        st.session_state.get(S_COMPANIES),
     )
-
-
-
-def _merge_into_working_data(
-    approved: pd.DataFrame,
-    working_data_key: str,
-    company_id: str,
-    company_name: str,
-) -> tuple[int, int]:
-    mapped = approved.rename(columns=DIRECTORY_FIELD_MAP)
-    available_mapped_columns = [
-        destination
-        for source, destination in DIRECTORY_FIELD_MAP.items()
-        if source in approved.columns
-    ]
-    mapped = mapped[available_mapped_columns].copy()
-
-    # The active company is the authoritative parent of every approved record.
-    # Do not infer it later from whichever company happens to be selected.
-    mapped["Company ID"] = str(company_id or "").strip()
-    if "Management/Owner" not in mapped.columns:
-        mapped["Management/Owner"] = str(company_name or "").strip()
+    st.session_state[S_WORKING] = working
+    st.session_state[S_COMPANIES] = registry
+    if not working.empty:
+        qa_frame = qa_checks(working)
     else:
-        blank_owner = mapped["Management/Owner"].apply(_clean_value).eq("")
-        mapped.loc[blank_owner, "Management/Owner"] = str(
-            company_name or ""
-        ).strip()
+        qa_frame = working.copy()
+        for column, default in {
+            "QA Flags": "No rental property data issues found",
+            "QA Flag Count": 0,
+            "Research Gap Count": 0,
+            "Record Readiness": "Needs Research",
+            "QA Status": "Pass",
+        }.items():
+            qa_frame[column] = default
+    baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = pd.DataFrame()
+    sheets = {
+        "Project Info": project_info_dataframe(qa_frame, registry),
+        "Company Registry": registry,
+        "Working Data": working,
+        "Current QA": qa_frame,
+        "Company Analysis": company_progress_summary(qa_frame, registry) if not qa_frame.empty else pd.DataFrame(),
+        "Quality Baseline": baseline,
+        "Quality Impact": quality_impact_summary(qa_frame, baseline),
+        "Report Summary": report_summary(qa_frame, registry, baseline=baseline),
+        "Scan History": st.session_state.get(S_SCAN_HISTORY, pd.DataFrame()),
+        "Scan Candidates": st.session_state.get(S_SCAN_CANDIDATES, pd.DataFrame()),
+        "Scan Pages": st.session_state.get(S_SCAN_PAGES, pd.DataFrame()),
+    }
+    return excel_bytes(sheets)
 
-    mapped["Date Researched"] = date.today().isoformat()
-    mapped["Research Status"] = "Ready for Review"
-    mapped["Source Status"] = "Active"
-    mapped["Verification Status"] = "Needs Review"
-    mapped["Record Decision"] = "Undecided"
-    mapped["Missing Information"] = (
-        "Website-scanned rental property candidate. Confirm every extracted "
-        "detail and supporting source before final use."
+
+def load_project_workbook(uploaded):
+    data = uploaded.getvalue()
+    with pd.ExcelFile(io.BytesIO(data), engine="openpyxl") as workbook:
+        if "Working Data" not in workbook.sheet_names:
+            raise ValueError(
+                "This workbook is not a resumable Datablix project. Open a file containing a 'Working Data' sheet, or use Open file for an ordinary directory workbook."
+            )
+        working = prepare_data(pd.read_excel(workbook, sheet_name="Working Data"))
+        for column in INTERNAL_COLUMNS:
+            if column not in working.columns:
+                working[column] = pd.NA
+        working = ensure_ids(normalize_workflow(working))
+        registry = (
+            pd.read_excel(workbook, sheet_name="Company Registry")
+            if "Company Registry" in workbook.sheet_names
+            else empty_company_registry()
+        )
+        baseline = (
+            pd.read_excel(workbook, sheet_name="Quality Baseline")
+            if "Quality Baseline" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        scan_history = (
+            pd.read_excel(workbook, sheet_name="Scan History")
+            if "Scan History" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        scan_candidates = (
+            pd.read_excel(workbook, sheet_name="Scan Candidates")
+            if "Scan Candidates" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        scan_pages = (
+            pd.read_excel(workbook, sheet_name="Scan Pages")
+            if "Scan Pages" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        project_name = safe_filename(uploaded.name).replace("_", " ").title()
+        if "Project Info" in workbook.sheet_names:
+            project_info = pd.read_excel(workbook, sheet_name="Project Info")
+            if {"Setting", "Value"}.issubset(project_info.columns):
+                name_rows = project_info.loc[project_info["Setting"].eq("Project Name"), "Value"]
+                if not name_rows.empty and str(name_rows.iloc[0]).strip():
+                    project_name = str(name_rows.iloc[0]).strip()
+
+    working, registry = synchronize_company_registry(working, registry)
+    mapping = pd.DataFrame({
+        "Datablix Field": INTERNAL_COLUMNS,
+        "Imported Column(s)": INTERNAL_COLUMNS,
+        "Mapping Status": "Saved project field",
+    })
+    signature = f"project:{uploaded.name}:{hashlib.sha256(data).hexdigest()}"
+    st.session_state.pop(S_FILE, None)
+    open_workspace(
+        working,
+        mapping,
+        signature,
+        uploaded.name,
+        "Working Data",
+        "Saved Datablix project",
+        uploaded.name,
+        message=f"Resumed {project_name} with {len(working):,} building record(s).",
+        registry=registry,
     )
+    st.session_state[S_PROJECT_NAME] = project_name
+    st.session_state[S_COMPANIES] = registry
+    st.session_state[S_QA_BASELINE] = baseline
+    st.session_state[S_SCAN_HISTORY] = scan_history
+    st.session_state[S_SCAN_CANDIDATES] = scan_candidates
+    st.session_state[S_SCAN_PAGES] = scan_pages
+    st.session_state[S_PROJECT_LOADED] = True
+    if not registry.empty:
+        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        if active_id not in set(registry["Company ID"].astype(str)):
+            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
 
-    existing = st.session_state.get(working_data_key)
-    if existing is None or not isinstance(existing, pd.DataFrame):
-        st.session_state[working_data_key] = mapped.reset_index(drop=True)
-        return len(mapped), 0
 
-    existing = existing.copy()
-    for column in mapped.columns:
-        if column not in existing.columns:
-            existing[column] = ""
-    for column in existing.columns:
-        if column not in mapped.columns:
-            mapped[column] = ""
-    mapped = mapped[existing.columns]
+# =========================================================
+# Session operations
+# =========================================================
 
-    def key_frame(frame: pd.DataFrame) -> pd.Series:
-        company = frame.get(
-            "Company ID",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        address = frame.get(
-            "Street Address",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        name = frame.get(
-            "Building Name",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        source = frame.get(
-            "Source URL",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        return (
-            company.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
-            + "|"
-            + name.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
-            + "|"
-            + address.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
-            + "|"
-            + source.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
+def open_workspace(
+    mapped,
+    mapping,
+    signature,
+    name,
+    sheet,
+    source_type,
+    source_ref="",
+    selector="",
+    message="Rental property workspace opened.",
+    registry=None,
+):
+    if st.session_state.get(S_FILE) != signature:
+        starting_registry = (
+            normalize_company_registry(registry)
+            if isinstance(registry, pd.DataFrame)
+            else empty_company_registry()
+        )
+        mapped, registry = synchronize_company_registry(mapped, starting_registry)
+
+        # A newly opened source is a new project context. Do not silently carry
+        # companies, scan results, or QA baselines from the previous project.
+        st.session_state[S_FILE] = signature
+        st.session_state[S_ORIGINAL] = mapped.copy()
+        st.session_state[S_WORKING] = mapped.copy()
+        st.session_state[S_MAPPING] = mapping
+        st.session_state[S_NAME] = name
+        st.session_state[S_SHEET] = sheet or ""
+        st.session_state[S_SOURCE_TYPE] = source_type
+        st.session_state[S_SOURCE_REF] = source_ref
+        st.session_state[S_SELECTOR] = selector
+        st.session_state[S_EDIT_COUNT] = 0
+        st.session_state[S_COMPANIES] = registry
+        st.session_state[S_PROJECT_NAME] = (
+            safe_filename(name).replace("_", " ").title()
+            or "Datablix master project"
+        )
+        st.session_state[S_QA_BASELINE] = pd.DataFrame()
+        st.session_state[S_SCAN_HISTORY] = pd.DataFrame()
+        st.session_state[S_SCAN_CANDIDATES] = pd.DataFrame()
+        st.session_state[S_SCAN_PAGES] = pd.DataFrame()
+        st.session_state[S_PROJECT_LOADED] = True
+        st.session_state[S_ACTIVE_COMPANY] = (
+            registry.iloc[0]["Company ID"] if not registry.empty else ""
         )
 
-    existing_keys = set(key_frame(existing))
-    mapped_keys = key_frame(mapped)
-    new_rows = mapped.loc[~mapped_keys.isin(existing_keys)].copy()
-    duplicates = len(mapped) - len(new_rows)
-    st.session_state[working_data_key] = pd.concat(
-        [existing, new_rows],
-        ignore_index=True,
+        # Clear only the current scanner UI/session cache. Historical scan logs
+        # remain in the project tables above.
+        for key in list(st.session_state):
+            if (
+                key.startswith("website_scan_")
+                or key.startswith("full_scan_")
+                or key.startswith("_db_company_scan_")
+                or key in {"confirm_clear_full_scan", "_db_active_scan_company"}
+            ):
+                st.session_state.pop(key, None)
+
+        st.session_state[S_FLASH] = message
+
+
+def looks_like_company_assignment(df):
+    """Return True when rows describe assigned companies rather than buildings."""
+    imported = prepare_data(df)
+    has_company = bool(source_columns(imported, ALIASES["Management/Owner"]))
+    if not has_company:
+        return False
+
+    # City, province, or postal columns may describe a company's office and do
+    # not prove that each row is an apartment building. Treat strong property
+    # identity fields as the deciding signal.
+    has_building_name = bool(source_columns(imported, ALIASES["Building Name"]))
+    has_street_address = bool(source_columns(imported, ALIASES["Street Address"]))
+    has_apartment_count = bool(
+        source_columns(imported, ALIASES["Number of Apartments"])
     )
-    return len(new_rows), duplicates
+    has_building_records = (
+        has_building_name or has_street_address or has_apartment_count
+    )
+    return not has_building_records
 
 
+def company_registry_from_assignment(df):
+    """Build the company registry from an assignment/company-list worksheet."""
+    imported = prepare_data(df)
+    owner_columns = source_columns(imported, ALIASES["Management/Owner"])
+    if not owner_columns:
+        raise ValueError(
+            "Datablix could not find a company or management-owner column. "
+            "Use a heading such as Assigned Company, Management Company, Owner, or Company."
+        )
 
-def render_website_scanner_panel(
-    working_data_key: str = WORKING_DATA_KEY,
-    *,
-    active_company_id: str = "",
-    active_company_name: str = "",
-    active_company_website: str = "",
-    scan_history_key: str = "db_scan_history",
-    scan_candidates_key: str = "db_scan_candidates_history",
-    scan_pages_key: str = "db_scan_pages_history",
-) -> dict | None:
-    result: dict | None = None
-    active_company_id = str(active_company_id or "").strip()
-    active_company_name = str(active_company_name or "").strip()
-    active_company_website = str(active_company_website or "").strip()
-    company_context_ready = bool(active_company_id and active_company_name)
+    def values_for(aliases):
+        columns = source_columns(imported, aliases)
+        return (
+            combine_columns(imported, columns)
+            if columns
+            else pd.Series(pd.NA, index=imported.index, dtype="object")
+        )
 
-    # The app shell already renders the shared Collect → Review → Verify →
-    # Download process bar. Keep only the scanner page heading here so the
-    # workflow controls do not appear twice.
+    owners = combine_columns(imported, owner_columns)
+    company_ids = values_for(ALIASES["Company ID"])
+    websites = values_for([
+        "Main Website", "Company Website", "Portfolio Website",
+        "Website", "WebSite", "Website / Source URL",
+    ])
+    scope_types = values_for(["Scope Type", "Assignment Type"])
+    assigned_dates = values_for(["Date Assigned", "Assignment Date"])
+    statuses = values_for(["Company Status", "Status"])
+    notes = values_for(["Company Notes", "Assignment Notes", "Notes", "Reviewer Notes"])
+
+    rows_by_name = {}
+    for index in imported.index:
+        owner = "" if is_unresolved(owners.loc[index]) else re.sub(
+            r"\s+", " ", str(owners.loc[index])
+        ).strip()
+        if not owner:
+            continue
+        key = company_name_key(owner)
+        row = rows_by_name.setdefault(key, {
+            "Company ID": "",
+            "Management/Owner": owner,
+            "Main Website": "",
+            "Scope Type": "Initial assignment",
+            "Date Assigned": date.today().isoformat(),
+            "Company Status": "Not started",
+            "Notes": "",
+        })
+
+        candidates = {
+            "Company ID": company_ids.loc[index],
+            "Main Website": websites.loc[index],
+            "Scope Type": scope_types.loc[index],
+            "Date Assigned": assigned_dates.loc[index],
+            "Company Status": statuses.loc[index],
+            "Notes": notes.loc[index],
+        }
+        for field, value in candidates.items():
+            if is_unresolved(value):
+                continue
+            clean = str(value).strip()
+            if field == "Notes" and row[field] and clean not in row[field]:
+                row[field] = f"{row[field]} | {clean}"
+            elif not row[field] or field in {"Scope Type", "Company Status"}:
+                row[field] = clean
+
+    if not rows_by_name:
+        raise ValueError("No company names were found in the selected worksheet.")
+
+    registry = pd.DataFrame(list(rows_by_name.values()))
+    registry["Scope Type"] = normalize_choice(
+        registry["Scope Type"], COMPANY_SCOPE_TYPES, "Initial assignment"
+    )
+    registry["Company Status"] = normalize_choice(
+        registry["Company Status"], COMPANY_STATUSES, "Not started"
+    )
+    return normalize_company_registry(registry)
+
+
+def open_assignment_project(
+    df,
+    data,
+    name,
+    sheet,
+    source_type,
+    source_ref="",
+    selector="",
+):
+    registry = company_registry_from_assignment(df)
+    working = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
+    mapping = pd.DataFrame({
+        "Datablix Field": COMPANY_COLUMNS,
+        "Imported Column(s)": COMPANY_COLUMNS,
+        "Mapping Status": "Company assignment field",
+    })
+    signature = f"assignment:{name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
+    open_workspace(
+        working,
+        mapping,
+        signature,
+        name,
+        sheet,
+        source_type,
+        source_ref,
+        selector,
+        message=(
+            f"Project registered with {len(registry):,} assigned company or owner "
+            "record(s). Select a company and start its website research."
+        ),
+        registry=registry,
+    )
+
+
+def load_upload(uploaded, sheet=None):
+    df, data = read_upload(uploaded, sheet)
+    if looks_like_company_assignment(df):
+        open_assignment_project(
+            df, data, uploaded.name, sheet, "Uploaded assignment file", uploaded.name
+        )
+        return "company_assignment"
+
+    validate_input(df)
+    mapped, mapping = map_schema(df)
+    signature = f"{uploaded.name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
+    open_workspace(
+        mapped,
+        mapping,
+        signature,
+        uploaded.name,
+        sheet,
+        "Uploaded building file",
+        uploaded.name,
+        message=(
+            f"Opened {uploaded.name} with {len(mapped):,} building record(s). "
+            "Companies were registered from the management-owner fields."
+        ),
+    )
+    return "building_records"
+
+
+def load_google(url, selector="", force=False):
+    df, data, name, sheet = read_google_sheet(url, selector)
+    signature = f"{name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
+    if not force and st.session_state.get(S_FILE) == signature:
+        st.session_state[S_FLASH] = "This Google Sheet is already open. Your session edits were kept."
+        return False
+    if force:
+        st.session_state.pop(S_FILE, None)
+
+    if looks_like_company_assignment(df):
+        open_assignment_project(
+            df,
+            data,
+            name,
+            sheet,
+            "Google Sheet assignment",
+            str(url).strip(),
+            str(selector).strip(),
+        )
+    else:
+        validate_input(df)
+        mapped, mapping = map_schema(df)
+        open_workspace(
+            mapped,
+            mapping,
+            signature,
+            name,
+            sheet,
+            "Google Sheet building file",
+            str(url).strip(),
+            str(selector).strip(),
+            (
+                "Opened the Google Sheet as a building-record working copy. "
+                "The original Sheet is never edited."
+            ),
+        )
+    return True
+
+
+def blank_workspace():
+    df = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
+    mapping = pd.DataFrame({"Datablix Field": INTERNAL_COLUMNS, "Imported Column(s)": INTERNAL_COLUMNS, "Mapping Status": "Template field"})
+    st.session_state.pop(S_FILE, None)
+    st.session_state[S_COMPANIES] = empty_company_registry()
+    st.session_state[S_QA_BASELINE] = pd.DataFrame()
+    st.session_state[S_ACTIVE_COMPANY] = ""
+    st.session_state[S_PROJECT_NAME] = "Datablix master project"
+    open_workspace(
+        df, mapping, "blank-workspace", "datablix_rental_property_research.csv",
+        "", "Blank project", message="Created a blank Datablix project. Add a company before starting research.",
+        registry=empty_company_registry(),
+    )
+
+
+def generate_id(df):
+    existing = set(resolved(df["Record ID"]).dropna().astype(str).str.strip())
+    n = 1
+    while f"DB-NEW-{n:03d}" in existing: n += 1
+    return f"DB-NEW-{n:03d}"
+
+
+def save_edits(edited, columns):
+    working = st.session_state[S_WORKING].copy()
+    for c in columns:
+        if c in edited.columns:
+            working.loc[edited.index, c] = edited[c]
+    working["Province"] = working["Province"].apply(canonical_province)
+    working["Postal Code"] = working["Postal Code"].apply(postal_code)
+    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working))
+    st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+    st.session_state[S_FLASH] = "Changes saved. Rental property quality checks have been updated."
+
+
+# =========================================================
+# Interface
+# =========================================================
+
+
+def go_to(section_name: str) -> None:
+    """Move to another primary area on the next Streamlit rerun."""
+    st.session_state["db_section"] = section_name
+
+
+def render_page_heading(label: str, title: str, description: str) -> None:
+    """Render a consistent, accessible page introduction."""
     st.markdown(
-        """
-        <section class="db-page-head" aria-label="Scan a rental property website">
-            <div class="db-eyebrow">COLLECT</div>
-            <h2>Scan a rental property website</h2>
-            <p>Search permitted public pages for listing details, contacts, building classifications, apartment counts, and supporting evidence. Only approved candidates move into the workspace.</p>
+        f"""
+        <section class="db-page-head" aria-label="{escape(title)}">
+            <div class="db-eyebrow">{escape(label)}</div>
+            <h2>{escape(title)}</h2>
+            <p>{escape(description)}</p>
         </section>
         """,
         unsafe_allow_html=True,
     )
-    st.caption(f"Scanner build: **{SCANNER_BUILD}**")
+
+
+def render_process_bar(active_section: str) -> None:
+    """Keep the collect-review-verify-download mental model visible."""
+    stages = [
+        ("Collect", "Website scanner"),
+        ("Review", "Review records"),
+        ("Verify", "Progress & quality"),
+        ("Analyse", "Analysis & report"),
+        ("Download", "Downloads"),
+    ]
+    active_index = next(
+        (index for index, (_, section_name) in enumerate(stages) if section_name == active_section),
+        -1,
+    )
+    items = []
+    for index, (label, _section_name) in enumerate(stages):
+        state = "active" if index == active_index else "complete" if 0 <= active_index and index < active_index else "upcoming"
+        current = ' aria-current="step"' if state == "active" else ""
+        items.append(
+            f'<div class="db-process-item {state}"{current}>'
+            f'<span class="db-process-dot" aria-hidden="true"></span>'
+            f'<span>{escape(label)}</span></div>'
+        )
     st.markdown(
-        '<div class="db-guidance"><strong>Ontario-only research scope.</strong>'
-        '<span>The scanner may read a broader company website, but only Ontario properties can be approved, added, or exported. Confirmed non-Ontario records remain in the scan log.</span></div>',
+        '<div class="db-process" aria-label="Rental property research workflow">'
+        + "".join(items)
+        + "</div>",
         unsafe_allow_html=True,
     )
+
+
+def render_guidance(title: str, message: str) -> None:
+    """Place short decision-support copy beside the task it explains."""
     st.markdown(
-        '<div class="db-guidance"><strong>Approval and verification are separate.</strong>'
-        '<span>Approve a candidate to add it to the workspace; complete human verification in Review records.</span></div>',
+        f'<div class="db-guidance"><strong>{escape(title)}</strong>'
+        f'<span>{escape(message)}</span></div>',
         unsafe_allow_html=True,
     )
 
-    if not company_context_ready:
-        st.warning(
-            "Select or add the company in the Master project area before "
-            "starting a scan. This prevents findings from being attached to "
-            "the wrong organization."
-        )
-        return None
 
-    _switch_company_scan_state(active_company_id, active_company_website)
-
-    saved_scan_company_id = str(
-        st.session_state.get("website_scan_company_id", "")
-    ).strip()
-    has_current_scan = (
-        st.session_state.get("website_scan_report") is not None
-        or st.session_state.get("website_scan_records") is not None
-    )
-    company_context_mismatch = bool(
-        has_current_scan
-        and saved_scan_company_id
-        and saved_scan_company_id != active_company_id
-    )
-
-    st.success(
-        f"Current company: **{active_company_name}** "
-        f"({active_company_id}). Approved records and scan evidence will "
-        "remain attached to this company."
-    )
-    if active_company_website:
-        st.caption(f"Registered website: {active_company_website}")
-
-    if company_context_mismatch:
-        st.warning(
-            "These restored scan results carry a different company identifier. "
-            "Clear them before starting a new scan for this company."
+def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, str, str]:
+    """Return a practical next action based on the current workspace."""
+    if qa_frame is None or qa_frame.empty:
+        return (
+            "Add your first records",
+            "Scan a permitted public website or add a listing manually to start the workspace.",
+            "Website scanner",
+            "Open website scanner",
         )
 
-    st.markdown("### Choose website")
-    website_url = st.text_input(
-        "Website address",
-        placeholder="https://examplepropertycompany.ca",
-        help="Use the main public website of the property owner or management company.",
-        key="full_scan_website_url",
+    critical_count = int(qa_frame["QA Status"].eq("Critical").sum())
+    review_count = int(qa_frame["Verification Status"].eq("Needs Review").sum())
+    follow_up_count = int(qa_frame["Record Readiness"].isin([
+        "Duplicate Review", "Needs Follow-up", "Fix Critical Data"
+    ]).sum())
+    ready_count = int(ready_mask(qa_frame).sum())
+
+    if critical_count:
+        return (
+            "Fix critical records first",
+            f"{critical_count:,} record(s) are missing core identity details or carry a critical conflict.",
+            "Review records",
+            "Fix critical records",
+        )
+    if follow_up_count:
+        return (
+            "Clear the high-priority follow-ups",
+            f"{follow_up_count:,} record(s) need a duplicate decision, a source follow-up, or a key correction.",
+            "Review records",
+            "Open review queue",
+        )
+    if review_count:
+        return (
+            "Verify the reviewed candidates",
+            f"{review_count:,} record(s) are waiting for a human verification decision.",
+            "Review records",
+            "Verify candidates",
+        )
+    if ready_count < len(qa_frame):
+        return (
+            "Check progress and remaining gaps",
+            "See which research is incomplete, which details are missing, and how fresh each source is.",
+            "Progress & quality",
+            "Check progress",
+        )
+    return (
+        "Download a fresh copy",
+        "Every record is ready. Export the workbook before you leave this session.",
+        "Downloads",
+        "Download workbook",
     )
 
-    coverage_settings = {
-        "Quick check": (25, 3),
-        "Recommended": (500, 12),
-        "Extended scan": (2_000, 20),
-        "Custom": (100, 5),
+
+st.html("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&display=swap');
+
+:root{
+    --db-accent:#1287CE;            /* sky blue, matching the Datablix logo; deep enough for white button text */
+    --db-accent-strong:#0E6BA4;
+    --db-accent-soft:rgba(18,135,206,.09);
+    --db-accent-edge:rgba(18,135,206,.45);
+    --db-ink:#1C272E;
+    --db-border:rgba(28,39,46,.14);
+    --db-soft:rgba(28,39,46,.035);
+    --db-soft-strong:rgba(28,39,46,.07);
+    --db-display:'Sora','Source Sans Pro',sans-serif;
+}
+@media(prefers-color-scheme:dark){
+    :root{
+        --db-accent:#4FB6F0;
+        --db-accent-strong:#79C8F5;
+        --db-accent-soft:rgba(79,182,240,.12);
+        --db-accent-edge:rgba(79,182,240,.5);
+        --db-border:rgba(255,255,255,.14);
+        --db-soft:rgba(255,255,255,.04);
+        --db-soft-strong:rgba(255,255,255,.075);
     }
+}
 
-    # Reset older preset names safely after an app update.
-    if st.session_state.get("full_scan_scope") not in coverage_settings:
-        st.session_state["full_scan_scope"] = "Recommended"
+.block-container{
+    max-width:1380px;
+    padding-top:1rem;
+    padding-bottom:4rem;
+}
 
-    def _select_extended_scan() -> None:
-        st.session_state["full_scan_scope"] = "Extended scan"
+/* Type: Sora carries the identity in headings and the brand mark only. */
+h1,h2,h3{
+    font-family:var(--db-display);
+    letter-spacing:-.02em;
+}
+h2{margin-bottom:.1rem}
 
-    scope = st.session_state["full_scan_scope"]
+.db-brand{
+    text-align:center;
+    margin:.15rem auto 1.3rem;
+}
+.db-logo{
+    width:clamp(280px,42vw,540px);
+    max-width:88vw;
+    max-height:128px;
+    object-fit:contain;
+}
+.db-brand-name{
+    font-family:var(--db-display);
+    font-size:2.15rem;
+    font-weight:800;
+    letter-spacing:-.04em;
+    line-height:1.05;
+}
+.db-brand-name::after{
+    content:"";
+    display:block;
+    width:2.6rem;
+    height:3px;
+    margin:.45rem auto 0;
+    border-radius:2px;
+    background:var(--db-accent);
+}
+.db-tag{
+    margin-top:.4rem;
+    font-size:1.03rem;
+    font-weight:600;
+    opacity:.85;
+}
+.db-subtag{
+    margin-top:.2rem;
+    font-size:.9rem;
+    opacity:.62;
+}
 
-    with st.expander("Change coverage", expanded=False):
-        scope = st.radio(
-            "Coverage",
-            options=list(coverage_settings),
-            help=(
-                "Recommended is suitable for most websites. Quick check is for testing. "
-                "Extended scan is a follow-up option. Custom is for unusual cases."
-            ),
-            key="full_scan_scope",
-        )
+.db-eyebrow{
+    margin-top:.25rem;
+    margin-bottom:-.35rem;
+    font-size:.74rem;
+    font-weight:750;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:var(--db-accent);
+    opacity:.95;
+}
 
-    max_pages, max_depth = coverage_settings[scope]
+/* Workspace ledger strip: the one place session state is always visible. */
+.db-workspace-strip{
+    display:flex;
+    flex-wrap:wrap;
+    gap:.55rem 1.35rem;
+    align-items:center;
+    padding:.72rem 1rem;
+    margin:.25rem 0 1rem;
+    border:1px solid var(--db-border);
+    border-left:4px solid var(--db-accent-edge);
+    border-radius:10px;
+    background:var(--db-soft);
+    font-size:.88rem;
+}
+.db-workspace-strip strong{font-weight:700}
+.db-workspace-strip .db-num{
+    font-variant-numeric:tabular-nums;
+    font-weight:700;
+    color:var(--db-accent);
+}
 
-    if scope == "Recommended":
-        st.markdown(
-            "**Recommended scan**  \n"
-            "Up to **500 pages** · **12 link levels** · Sitemaps and related "
-            "subdomains included"
-        )
-        st.caption(
-            "Start here for broad, efficient coverage. Datablix will tell you when "
-            "an extended scan may be useful."
-        )
-    elif scope == "Extended scan":
-        st.markdown(
-            "**Extended scan selected**  \n"
-            "Up to **2,000 pages** · **20 link levels** · Sitemaps and related "
-            "subdomains included"
-        )
-        st.caption(
-            "Use this after the recommended scan reaches its limit or when known "
-            "listings still appear to be missing."
-        )
-    elif scope == "Quick check":
-        st.markdown(
-            "**Quick check selected**  \n"
-            "Up to **25 pages** · **3 link levels**"
-        )
-        st.caption("Use this only to confirm that a website can be scanned.")
-    else:
-        st.markdown("**Custom coverage selected**")
-        st.caption("Set manual limits for unusual websites or troubleshooting.")
+.db-step-line{
+    margin:.2rem 0 1rem;
+    font-size:.82rem;
+    letter-spacing:.02em;
+    opacity:.66;
+}
+.db-card-copy{min-height:3.6rem}
 
-    with st.expander("Advanced scan settings", expanded=scope == "Custom"):
-        if scope == "Custom":
-            custom_col1, custom_col2 = st.columns(2)
-            max_pages = custom_col1.number_input(
-                "Maximum pages",
-                min_value=1,
-                max_value=2_000,
-                value=100,
-                step=25,
-                help="The scan stops at this limit even when the site has more pages.",
-                key="full_scan_max_pages_custom",
-            )
-            max_depth = custom_col2.number_input(
-                "Maximum link depth",
-                min_value=0,
-                max_value=20,
-                value=5,
-                step=1,
-                help="How many link levels the scanner follows from the starting page.",
-                key="full_scan_max_depth_custom",
-            )
-        else:
-            st.caption(
-                f"Current coverage: up to **{max_pages:,} pages** and "
-                f"**{max_depth} link levels**."
-            )
+div[data-testid="stSidebar"]{
+    border-right:1px solid var(--db-border);
+}
 
-        advanced_col1, advanced_col2 = st.columns(2)
-        with advanced_col1:
-            render_label = st.selectbox(
-                "Page rendering",
-                options=[
-                    "Automatic",
-                    "HTML only",
-                    "Always render JavaScript",
-                ],
-                help=(
-                    "Automatic reads ordinary HTML first and opens a browser only "
-                    "when a page appears to require JavaScript."
-                ),
-                key="full_scan_render_mode",
-            )
-            delay = st.number_input(
-                "Delay between requests (seconds)",
-                min_value=0.1,
-                max_value=30.0,
-                value=0.75,
-                step=0.25,
-                help=(
-                    "A longer delay is gentler on the website and can reduce "
-                    "temporary blocking during large scans."
-                ),
-                key="full_scan_delay",
-            )
+div[data-testid="stMetric"]{
+    background:var(--db-soft);
+    border:1px solid var(--db-border);
+    border-top:3px solid var(--db-accent-edge);
+    border-radius:12px;
+    padding:.8rem .9rem;
+    min-height:100px;
+}
+div[data-testid="stMetric"] label{font-weight:650}
+div[data-testid="stMetricValue"]{
+    font-variant-numeric:tabular-nums;
+    font-family:var(--db-display);
+    letter-spacing:-.02em;
+}
 
-        with advanced_col2:
-            if scope == "Custom":
-                use_sitemaps = st.checkbox(
-                    "Use XML sitemaps",
-                    value=True,
-                    key="full_scan_sitemaps_custom",
-                )
-                include_subdomains = st.checkbox(
-                    "Include subdomains",
-                    value=False,
-                    help="Turn this on when listings live on a related subdomain.",
-                    key="full_scan_subdomains_custom",
-                )
-            else:
-                use_sitemaps = True
-                include_subdomains = scope in {"Recommended", "Extended scan"}
-                discovery_note = (
-                    "XML sitemaps and related subdomains are included automatically."
-                    if include_subdomains
-                    else "XML sitemaps are included; related subdomains are not followed."
-                )
-                st.caption(discovery_note)
+div[data-testid="stFileUploader"]{
+    border:1px dashed var(--db-accent-edge);
+    border-radius:11px;
+    padding:.3rem .6rem .7rem;
+    background:var(--db-accent-soft);
+}
 
-            follow_queries = st.checkbox(
-                "Follow query-string pages",
-                value=False,
-                help=(
-                    "Enable only when parameters such as ?page=2 or ?property=123 "
-                    "lead to unique listing pages."
-                ),
-                key="full_scan_queries",
-            )
-            st.checkbox(
-                "Respect robots.txt",
-                value=True,
-                disabled=True,
-                help="Always on. The scanner never visits pages a site asks crawlers to skip.",
-                key="full_scan_robots",
-            )
+div[data-testid="stExpander"],
+div[data-testid="stDataFrame"],
+div[data-testid="stDataEditor"]{
+    border:1px solid var(--db-border);
+    border-radius:10px;
+    overflow:hidden;
+}
 
-    acknowledgement = st.checkbox(
-        "I am scanning permitted public pages and will review every finding before use.",
-        key="full_scan_acknowledgement",
-    )
+.stButton>button,.stDownloadButton>button{
+    border-radius:9px;
+    font-weight:650;
+    min-height:2.65rem;
+}
+button[data-testid="stBaseButton-primary"],
+button[kind="primary"]{
+    background:var(--db-accent) !important;
+    border-color:var(--db-accent) !important;
+    color:#fff !important;
+}
+button[data-testid="stBaseButton-primary"]:hover,
+button[kind="primary"]:hover{
+    background:var(--db-accent-strong) !important;
+    border-color:var(--db-accent-strong) !important;
+}
+button[data-testid="stBaseButton-primaryFormSubmit"]{
+    background:var(--db-accent) !important;
+    border-color:var(--db-accent) !important;
+    color:#fff !important;
+}
+@media(prefers-color-scheme:dark){
+    button[data-testid="stBaseButton-primary"],
+    button[kind="primary"],
+    button[data-testid="stBaseButton-primaryFormSubmit"]{
+        color:#0B1D2A !important;
+    }
+}
+.stButton>button:focus-visible,
+.stDownloadButton>button:focus-visible{
+    outline:2px solid var(--db-accent);
+    outline-offset:2px;
+}
 
-    missing_requirements = []
-    if not website_url.strip():
-        missing_requirements.append("enter the company website")
-    if not acknowledgement:
-        missing_requirements.append("confirm the public-page acknowledgement")
-    if company_context_mismatch:
-        missing_requirements.append("clear the mismatched restored scan")
+.stProgress > div > div > div > div{
+    background-color:var(--db-accent);
+}
 
-    submitted = st.button(
-        f"Start scan for {active_company_name}",
-        type="primary",
-        width="stretch",
-        disabled=bool(missing_requirements),
-        key="full_scan_submit",
-    )
-    if missing_requirements:
-        st.caption("Before starting: " + "; ".join(missing_requirements) + ".")
-    else:
-        st.caption(
-            f"Ready to scan {website_url.strip()} for {active_company_name}."
-        )
+button[data-testid="stSidebarCollapseButton"]{
+    width:auto !important;
+    min-width:7.4rem !important;
+    justify-content:flex-start !important;
+    gap:.35rem !important;
+}
+button[data-testid="stSidebarCollapseButton"]::after{
+    content:"Start here";
+    font-size:.86rem;
+    font-weight:700;
+    white-space:nowrap;
+    opacity:.84;
+}
 
-    if submitted:
-        st.session_state["website_scan_active"] = True
-        st.session_state["website_scan_company_id"] = active_company_id
-        st.session_state["website_scan_company_name"] = active_company_name
-        st.session_state["website_scan_company_website"] = active_company_website
-        st.session_state.pop("website_scan_id", None)
-        st.session_state["website_scan_start_url"] = website_url
-        st.session_state["website_scan_last_progress"] = {
-            "pages_processed": 0,
-            "records_found": 0,
-            "blocked_count": 0,
-            "error_count": 0,
-            "current_url": website_url,
-            "max_pages": int(max_pages),
-        }
-        st.session_state.pop("website_scan_report", None)
-        st.session_state.pop("website_scan_records", None)
-        st.session_state.pop("website_scan_checkpoint_report", None)
-        st.session_state.pop("website_scan_recovered_partial", None)
+@media (max-width:900px){
+    .db-card-copy{min-height:auto}
+    button[data-testid="stSidebarCollapseButton"]{min-width:6.7rem !important}
+}
+@media (prefers-reduced-motion:reduce){
+    *{transition:none !important;animation:none !important}
+}
 
-        render_mode = {
-            "Automatic": "auto",
-            "HTML only": "html",
-            "Always render JavaScript": "javascript",
-        }[render_label]
+/* Page-level hierarchy: the heading and its explanation read as one unit. */
+.db-page-head{
+    max-width:920px;
+    margin:.3rem 0 1.25rem;
+    padding:0 0 1rem;
+    border-bottom:1px solid var(--db-border);
+}
+.db-page-head h2{
+    margin:.3rem 0 .35rem;
+    font-family:var(--db-display);
+    font-size:clamp(1.7rem,3vw,2.25rem);
+    line-height:1.12;
+}
+.db-page-head p{
+    max-width:820px;
+    margin:0;
+    font-size:.98rem;
+    line-height:1.55;
+    opacity:.72;
+}
 
-        options = ScanOptions(
-            max_pages=int(max_pages),
-            max_depth=int(max_depth),
-            request_delay_seconds=float(delay),
-            render_mode=render_mode,
-            use_sitemaps=use_sitemaps,
-            include_subdomains=include_subdomains,
-            follow_query_strings=follow_queries,
-            obey_robots_txt=True,
-            checkpoint_every_pages=10,
-        )
+/* Persistent mental model without numbering or dense instructions. */
+.db-process{
+    display:grid;
+    grid-template-columns:repeat(5,minmax(0,1fr));
+    gap:.55rem;
+    margin:.1rem 0 1.25rem;
+}
+.db-process-item{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:.45rem;
+    min-height:2.35rem;
+    padding:.45rem .7rem;
+    border:1px solid var(--db-border);
+    border-radius:9px;
+    background:var(--db-soft);
+    font-size:.82rem;
+    font-weight:650;
+    opacity:.68;
+}
+.db-process-item.active{
+    border-color:var(--db-accent-edge);
+    background:var(--db-accent-soft);
+    color:var(--db-accent-strong);
+    opacity:1;
+}
+.db-process-item.complete{opacity:.86}
+.db-process-dot{
+    width:.48rem;
+    height:.48rem;
+    border-radius:50%;
+    background:currentColor;
+}
 
-        status = st.status("Starting website scan…", expanded=True)
-        progress = st.progress(0.0)
-        current_page = st.empty()
-        counters = st.empty()
+/* Contextual help is visually quieter than an alert and stronger than a caption. */
+.db-guidance{
+    display:flex;
+    flex-wrap:wrap;
+    gap:.25rem .55rem;
+    align-items:baseline;
+    margin:.35rem 0 .9rem;
+    padding:.7rem .85rem;
+    border-left:3px solid var(--db-accent-edge);
+    border-radius:7px;
+    background:var(--db-accent-soft);
+    font-size:.88rem;
+    line-height:1.45;
+}
+.db-guidance strong{font-weight:750}
+.db-guidance span{opacity:.76}
 
-        def update_progress(update: dict) -> None:
-            st.session_state["website_scan_last_progress"] = dict(update)
-            processed = update.get("pages_processed", 0)
-            maximum = max(update.get("max_pages", 1), 1)
-            progress.progress(min(processed / maximum, 1.0))
-            current_page.caption(update.get("current_url", ""))
-            counters.write(
-                f"Pages processed: **{processed}** · "
-                f"Candidates: **{update.get('records_found', 0)}** · "
-                f"Blocked: **{update.get('blocked_count', 0)}** · "
-                f"Errors: **{update.get('error_count', 0)}**"
-            )
+/* Keep navigation scannable and equal in height. */
+div[data-testid="stHorizontalBlock"] .stButton>button{
+    line-height:1.2;
+}
+[data-testid="stTabs"] button{
+    font-weight:650;
+}
+[data-testid="stCaptionContainer"]{
+    line-height:1.45;
+}
 
-        def save_checkpoint(partial_report) -> None:
-            # Keep an in-session copy for fast recovery and an atomic JSON file
-            # for recovery after a Streamlit rerun or browser reconnection.
-            st.session_state["website_scan_checkpoint_report"] = partial_report
-            st.session_state["website_scan_checkpoint_pages"] = len(
-                partial_report.pages
-            )
-            checkpoint_path = _write_durable_checkpoint(
-                partial_report,
-                website_url,
-                scope,
-                is_final=False,
-            )
-            if checkpoint_path is not None:
-                st.session_state["website_scan_checkpoint_path"] = str(
-                    checkpoint_path
-                )
+@media (max-width:760px){
+    .db-process{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .db-workspace-strip{gap:.4rem .8rem}
+}
+</style>
+""")
+render_brand_header()
 
-        try:
-            report = scan_website(
-                website_url=website_url,
-                options=options,
-                progress_callback=update_progress,
-                checkpoint_callback=save_checkpoint,
-            )
-        except WebsiteScanError as exc:
-            st.session_state["website_scan_active"] = False
-            st.session_state["website_scan_stop_message"] = str(exc)
-            status.update(label="The scan could not start", state="error", expanded=True)
-            st.error(str(exc))
-        except Exception as exc:
-            st.session_state["website_scan_active"] = False
-            st.session_state["website_scan_stop_message"] = str(exc)
-            status.update(
-                label="The scan stopped unexpectedly",
-                state="error",
-                expanded=True,
-            )
-            st.error(
-                "The scan stopped because one page contained an unsupported or "
-                "malformed link. The corrected scanner now skips that link and "
-                "continues. Review the technical details only if the issue repeats."
-            )
-            with st.expander("Technical details"):
-                st.code(f"{type(exc).__name__}: {exc}")
 
-            recovered = _read_durable_checkpoint(website_url)
-            if recovered is not None:
-                recovered_report, checkpoint_meta = recovered
-                recovered_report.completion_reason = "interrupted_recovered"
-                recovered_records = _records_dataframe(recovered_report)
-                st.session_state["website_scan_report"] = recovered_report
-                st.session_state["website_scan_records"] = recovered_records
-                st.session_state["website_scan_scope"] = checkpoint_meta.get(
-                    "scope", scope
-                )
-                st.session_state["website_scan_page_limit_reached"] = False
-                st.session_state["website_scan_recovered_partial"] = True
-                st.warning(
-                    f"Recovered {len(recovered_report.pages):,} completed pages "
-                    f"and {len(recovered_records):,} candidate(s) from the latest "
-                    "durable checkpoint."
-                )
-        else:
-            st.session_state["website_scan_active"] = False
-            progress.progress(1.0)
-
-            completion_reason = getattr(report, "completion_reason", "")
-            page_limit_reached = (
-                completion_reason == "page_limit"
-                or len(report.pages) >= int(max_pages)
-            )
-
-            if completion_reason == "failure_limit":
-                visible_message = (
-                    f"Scan stopped after repeated page failures: "
-                    f"{len(report.pages)} pages processed and "
-                    f"{len(report.records)} unique candidates found."
-                )
-                status.update(
-                    label=visible_message,
-                    state="error",
-                    expanded=True,
-                )
-                st.error(
-                    visible_message
-                    + " Review the Errors section before trying again."
-                )
-            elif page_limit_reached:
-                visible_message = (
-                    f"Page limit reached: {len(report.pages)} pages processed and "
-                    f"{len(report.records)} unique candidates found."
-                )
-                status.update(
-                    label=visible_message,
-                    state="complete",
-                    expanded=True,
-                )
-                st.warning(
-                    visible_message
-                    + " Additional permitted pages may remain."
-                )
-            else:
-                visible_message = (
-                    f"Coverage complete: {len(report.pages)} eligible pages processed "
-                    f"and {len(report.records)} unique candidates found."
-                )
-                status.update(
-                    label=visible_message,
-                    state="complete",
-                    expanded=True,
-                )
-                st.success(
-                    visible_message
-                    + " The scan stopped because no more eligible pages were available."
-                )
-
-            st.session_state["website_scan_stop_message"] = visible_message
-            st.session_state["website_scan_report"] = report
-            st.session_state["website_scan_records"] = _records_dataframe(report)
-            st.session_state["website_scan_scope"] = scope
-            st.session_state["website_scan_page_limit_reached"] = page_limit_reached
-            final_checkpoint_path = _write_durable_checkpoint(
-                report,
-                website_url,
-                scope,
-                is_final=True,
-            )
-            if final_checkpoint_path is not None:
-                st.session_state["website_scan_checkpoint_path"] = str(
-                    final_checkpoint_path
-                )
-            st.session_state.pop("website_scan_checkpoint_report", None)
-            st.session_state.pop("website_scan_checkpoint_pages", None)
-            st.session_state.pop("website_scan_recovered_partial", None)
-
-    report = st.session_state.get("website_scan_report")
-    records_df = st.session_state.get("website_scan_records")
-
-    if report is None or not isinstance(records_df, pd.DataFrame):
-        checkpoint_report = st.session_state.get(
-            "website_scan_checkpoint_report"
-        )
-        checkpoint_meta = {}
-        recovery_url = (
-            website_url
-            or st.session_state.get("website_scan_start_url", "")
-        )
-
-        if checkpoint_report is None:
-            durable_recovery = _read_durable_checkpoint(recovery_url)
-            if durable_recovery is not None:
-                checkpoint_report, checkpoint_meta = durable_recovery
-
-        last_progress = st.session_state.get("website_scan_last_progress", {})
-        scan_active = bool(st.session_state.get("website_scan_active", False))
-        processed = int(last_progress.get("pages_processed", 0) or 0)
-
-        if checkpoint_report is not None and getattr(
-            checkpoint_report, "pages", None
-        ):
-            report = checkpoint_report
-            report.completion_reason = "interrupted_recovered"
-            records_df = _records_dataframe(report)
-
-            st.session_state["website_scan_active"] = False
-            st.session_state["website_scan_report"] = report
-            st.session_state["website_scan_records"] = records_df
-            st.session_state["website_scan_scope"] = checkpoint_meta.get(
-                "scope", scope
-            )
-            st.session_state["website_scan_page_limit_reached"] = False
-            st.session_state["website_scan_recovered_partial"] = True
-
-            st.warning(
-                f"Partial scan recovered: {len(report.pages):,} completed pages "
-                f"and {len(records_df):,} candidate(s) are available for review. "
-                "The latest durable checkpoint was restored."
-            )
-        elif scan_active and processed > 0:
-            # This covers sessions started with an older Datablix version that
-            # did not yet save checkpoints. Reset the stale flag so the same
-            # notice does not remain indefinitely.
-            st.session_state["website_scan_active"] = False
-            st.warning(
-                f"The earlier scan ended after approximately {processed:,} pages "
-                "before a durable checkpoint was available. Start the scan once "
-                "more. Future runs now save findings every 10 pages."
-            )
-            return
-        else:
-            st.caption(
-                "Scan results will appear here for review. Nothing is added to the "
-                "workspace automatically."
-            )
-            return
-
-    scan_company_id = str(
-        st.session_state.get("website_scan_company_id", active_company_id)
-        or active_company_id
-    ).strip()
-    scan_company_name = str(
-        st.session_state.get("website_scan_company_name", active_company_name)
-        or active_company_name
-    ).strip()
-    scan_start_url = str(
-        getattr(report, "start_url", "")
-        or st.session_state.get("website_scan_start_url", website_url)
-        or website_url
-    ).strip()
-    scan_id = _scan_id_for_report(
-        report,
-        scan_company_id,
-        scan_start_url,
-    )
-
-    records_df = _apply_ontario_scope(records_df)
-    records_df = _attach_scan_context(
-        records_df,
-        scan_id=scan_id,
-        company_id=scan_company_id,
-        company_name=scan_company_name,
-        website_url=scan_start_url,
-    )
-    st.session_state["website_scan_records"] = records_df
-
-    if (
-        active_company_id
-        and scan_company_id
-        and active_company_id != scan_company_id
-    ):
-        st.warning(
-            f"These results belong to **{scan_company_name}** "
-            f"({scan_company_id}), not the newly selected company. Clear the "
-            "current scan before starting work for another company."
-        )
-
-    if st.session_state.get("website_scan_recovered_partial", False):
-        st.info(
-            "You are reviewing recovered partial results. They can be approved, "
-            "exported, or cleared normally. Run the website again later only when "
-            "you need to search beyond the recovered pages."
-        )
-
-    last_scan_scope = st.session_state.get("website_scan_scope", "")
-    last_scan_reached_limit = bool(
-        st.session_state.get("website_scan_page_limit_reached", False)
-    )
-
-    if last_scan_scope == "Recommended" and last_scan_reached_limit:
-        st.warning(
-            "The recommended scan reached its 500-page limit. Some permitted pages "
-            "may remain, so an extended scan is the appropriate next step."
-        )
-        st.button(
-            "Select extended scan",
-            type="primary",
-            on_click=_select_extended_scan,
-            key="select_extended_scan_after_limit",
-        )
-    elif last_scan_scope == "Recommended":
-        st.success(
-            "Recommended coverage completed without reaching its page limit. "
-            "An extended scan is not needed unless a known listing is missing."
-        )
-
-    pages_df = _pages_dataframe(report)
-    successful_pages = (
-        int((pages_df.get("outcome") == "Scanned").sum())
-        if not pages_df.empty
-        else 0
-    )
-    rendered_pages = int(
-        pages_df.get(
-            "rendered_with_javascript",
-            pd.Series(dtype=bool),
-        ).fillna(False).sum()
-    )
-
-    st.divider()
-    st.markdown("### Review detected listings")
+# -----------------------------
+# Sidebar: start or switch work
+# -----------------------------
+with st.sidebar:
+    st.subheader("Open or create project")
     st.caption(
-        "Confirm the required listing fields first, then inspect additional findings and source evidence. "
-        "A blank value means the page did not provide enough information to confirm it."
+        "Start with a saved Datablix project, an assignment/company file, a building-record file, a Google Sheet, or a blank project."
     )
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Pages scanned", successful_pages)
-    m2.metric("Candidates", len(records_df))
-    m3.metric("JavaScript pages", rendered_pages)
-    m4.metric("Blocked or failed", len(report.blocked_urls) + len(report.errors))
+    current = st.session_state.get(S_SOURCE_TYPE, "Uploaded assignment file")
+    start_options = [
+        "Resume project",
+        "Create project from file",
+        "Google Sheet",
+        "Blank project",
+    ]
+    start_default = {
+        "Saved Datablix project": 0,
+        "Uploaded assignment file": 1,
+        "Uploaded building file": 1,
+        "Google Sheet assignment": 2,
+        "Google Sheet building file": 2,
+        "Blank project": 3,
+    }.get(current, 0)
 
-    scope_counts = records_df["ontario_scope_status"].value_counts()
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Confirmed Ontario", int(scope_counts.get(ONTARIO_SCOPE_CONFIRMED, 0)))
-    s2.metric("Likely Ontario — review", int(scope_counts.get(ONTARIO_SCOPE_LIKELY, 0)))
-    s3.metric("Location unclear", int(scope_counts.get(ONTARIO_SCOPE_UNCLEAR, 0)))
-    s4.metric("Outside Ontario", int(scope_counts.get(ONTARIO_SCOPE_OUTSIDE, 0)))
-    st.caption(
-        "Only Confirmed Ontario and human-approved Likely Ontario candidates can "
-        "move into the workspace. Location Unclear and Outside Ontario records are "
-        "kept for traceability but excluded automatically."
+    source = st.radio(
+        "Starting point",
+        start_options,
+        index=start_default,
+        key="db_start_source",
     )
 
-    with st.expander("Manage current scan results"):
-        st.caption("Clearing removes this scan report and its review edits from the current session.")
-        confirm_clear = st.checkbox(
-            "Clear the current scan results",
-            key="confirm_clear_full_scan",
+    try:
+        if source == "Resume project":
+            project_upload = st.file_uploader(
+                "Saved Datablix project",
+                type=["xlsx"],
+                help="Open a workbook previously downloaded with Save master project.",
+                key="db_sidebar_project_upload",
+            )
+            if project_upload is not None:
+                if st.button(
+                    "Resume project",
+                    type="primary",
+                    width="stretch",
+                    key="db_sidebar_resume_project",
+                ):
+                    load_project_workbook(project_upload)
+                    st.rerun()
+
+        elif source == "Create project from file":
+            uploaded = st.file_uploader(
+                "Assignment or building-data file",
+                type=["csv", "xlsx"],
+                help=("Datablix detects whether the selected worksheet contains assigned companies or apartment-building records."),
+                key="db_sidebar_upload",
+            )
+            selected = None
+            if uploaded is not None:
+                if uploaded.name.lower().endswith(".xlsx"):
+                    names = excel_sheet_names(uploaded)
+                    selected = st.selectbox(
+                        "Worksheet",
+                        names,
+                        index=preferred_sheet(names),
+                        help="Choose the worksheet containing either the assigned companies or the building records.",
+                        key="db_sidebar_sheet",
+                    )
+                load_upload(uploaded, selected)
+
+        elif source == "Google Sheet":
+            with st.form("google_form"):
+                url = st.text_input(
+                    "Google Sheets link",
+                    placeholder="https://docs.google.com/spreadsheets/d/...",
+                    help="The Sheet must be viewable by anyone with the link. Datablix reads a copy and never edits the original.",
+                )
+                selector = st.text_input(
+                    "Worksheet name or tab ID (optional)",
+                    placeholder="Example: Apartment Buildings or 0",
+                )
+                submit = st.form_submit_button(
+                    "Open working copy",
+                    type="primary",
+                    width="stretch",
+                )
+            if submit and load_google(url, selector):
+                st.rerun()
+
+        else:
+            if st.button(
+                "Create blank project",
+                width="stretch",
+                key="db_sidebar_blank",
+            ):
+                blank_workspace()
+                st.rerun()
+
+    except Exception as error:
+        st.error(str(error))
+
+    with st.expander("Blank listing template"):
+        st.caption(
+            "A starter CSV with listing, contact, source, and review columns already in place."
         )
-        if st.button(
-            "Clear results",
-            disabled=not confirm_clear,
+        st.download_button(
+            "Download blank template",
+            csv_bytes(pd.DataFrame(columns=TEMPLATE_COLUMNS)),
+            "datablix_building_listing_template.csv",
+            "text/csv",
             width="stretch",
-            key="clear_full_scan",
-        ):
-            _delete_durable_checkpoint(
-                st.session_state.get("website_scan_start_url", website_url)
+        )
+
+    if S_WORKING in st.session_state:
+        st.divider()
+        sidebar_working = st.session_state[S_WORKING]
+        synchronized_working, synchronized_registry = synchronize_company_registry(
+            sidebar_working,
+            st.session_state.get(S_COMPANIES),
+        )
+        st.session_state[S_WORKING] = synchronized_working
+        st.session_state[S_COMPANIES] = synchronized_registry
+        sidebar_working = synchronized_working
+
+        with st.expander("Master project", expanded=True):
+            project_name = st.text_input(
+                "Project name",
+                value=st.session_state.get(S_PROJECT_NAME, "Datablix master project"),
+                key="db_project_name_input",
             )
-            keys_to_clear = [
-                key for key in list(st.session_state)
-                if key.startswith("full_scan_record_editor_")
-            ]
-            keys_to_clear.extend([
-                "website_scan_report",
-                "website_scan_records",
-                "website_scan_active",
-                "website_scan_last_progress",
-                "website_scan_stop_message",
-                "website_scan_checkpoint_report",
-                "website_scan_checkpoint_pages",
-                "website_scan_checkpoint_path",
-                "website_scan_recovered_partial",
-                "website_scan_start_url",
-                "website_scan_scope",
-                "website_scan_page_limit_reached",
-                "website_scan_id",
-                "website_scan_company_id",
-                "website_scan_company_name",
-                "website_scan_company_website",
-                "full_scan_review_focus",
-                "confirm_clear_full_scan",
-            ])
-            for key in keys_to_clear:
-                st.session_state.pop(key, None)
+            st.session_state[S_PROJECT_NAME] = project_name.strip() or "Datablix master project"
+
+            registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+            if registry.empty:
+                st.caption("Add the company you are about to scan or research.")
+            else:
+                active_ids = registry["Company ID"].astype(str).tolist()
+                current_active = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+                active_index = active_ids.index(current_active) if current_active in active_ids else 0
+                selected_active = st.selectbox(
+                    "Active company",
+                    active_ids,
+                    index=active_index,
+                    format_func=lambda company_id: company_label(
+                        registry.loc[registry["Company ID"].eq(company_id)].iloc[0]
+                    ),
+                    key="db_active_company_selector",
+                )
+                st.session_state[S_ACTIVE_COMPANY] = selected_active
+
+                active_match = registry.loc[registry["Company ID"].eq(selected_active)]
+                if not active_match.empty:
+                    current_status = active_match.iloc[0]["Company Status"]
+                    status_index = COMPANY_STATUSES.index(current_status) if current_status in COMPANY_STATUSES else 0
+                    selected_status = st.selectbox(
+                        "Company status",
+                        COMPANY_STATUSES,
+                        index=status_index,
+                        key=f"db_active_company_status_{selected_active}",
+                    )
+                    if selected_status != current_status:
+                        registry.loc[registry["Company ID"].eq(selected_active), "Company Status"] = selected_status
+                        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+
+                    active_row = registry.loc[
+                        registry["Company ID"].eq(selected_active)
+                    ].iloc[0]
+                    current_website = str(active_row.get("Main Website", "")).strip()
+                    company_website = st.text_input(
+                        "Company website",
+                        value=current_website,
+                        placeholder="https://examplepropertycompany.ca",
+                        key=f"db_company_website_{selected_active}",
+                        help="This website will automatically populate the scanner for the active company.",
+                    )
+                    if company_website.strip() != current_website:
+                        registry.loc[
+                            registry["Company ID"].eq(selected_active),
+                            "Main Website",
+                        ] = company_website.strip()
+                        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+
+                    if st.button(
+                        "Start research for this company",
+                        type="primary",
+                        width="stretch",
+                        key=f"db_start_company_research_{selected_active}",
+                    ):
+                        go_to("Website scanner")
+                        st.rerun()
+
+            with st.form("db_add_company_form", clear_on_submit=True):
+                new_company_name = st.text_input("Add company or owner")
+                new_company_website = st.text_input("Main website (optional)")
+                new_scope_type = st.selectbox(
+                    "Scope type",
+                    ["Initial assignment", "Added later"],
+                )
+                new_company_notes = st.text_area("Notes (optional)", height=70)
+                add_company = st.form_submit_button("Add to project", width="stretch")
+            if add_company:
+                try:
+                    company_id, created = add_company_to_project(
+                        new_company_name,
+                        new_company_website,
+                        new_scope_type,
+                        new_company_notes,
+                    )
+                    st.session_state[S_FLASH] = (
+                        f"Added {new_company_name.strip()} as {company_id}."
+                        if created
+                        else f"{new_company_name.strip()} is already in the project and is now active."
+                    )
+                    st.rerun()
+                except Exception as error:
+                    st.error(str(error))
+
+            st.download_button(
+                "Save master project",
+                project_workbook_bytes(),
+                f"{safe_filename(st.session_state[S_PROJECT_NAME])}_datablix_project.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                width="stretch",
+                key="db_sidebar_save_project",
+            )
+
+        st.divider()
+        workspace_label = st.session_state.get(S_NAME, "workspace")
+        if st.session_state.get(S_SHEET):
+            workspace_label += f" · {st.session_state[S_SHEET]}"
+
+        st.caption("CURRENT WORKSPACE")
+        st.markdown(f"**{workspace_label}**")
+        sidebar_metrics = st.columns(2)
+        sidebar_metrics[0].metric("Records", f"{len(sidebar_working):,}")
+        sidebar_metrics[1].metric(
+            "Session edits",
+            f"{st.session_state.get(S_EDIT_COUNT, 0):,}",
+        )
+
+        quick_left, quick_right = st.columns(2)
+        if quick_left.button("Review records", width="stretch", key="sidebar_review"):
+            go_to("Overview")
+            st.rerun()
+        if quick_right.button("Download work", width="stretch", key="sidebar_download"):
+            go_to("Downloads")
             st.rerun()
 
-    required_review_columns = [
-        "approved",
-        "ontario_scope_status",
-        "ontario_scope_reason",
-        "building_name",
-        "street_address",
-        "city",
-        "province",
-        "postal_code",
-        "building_classification",
-        "number_of_apartments",
-        "management_owner",
-        "phone",
-        "primary_email",
-        "website",
-        "source_url",
-        "confidence",
-    ]
-    additional_review_columns = [
-        "approved",
-        "ontario_scope_status",
-        "ontario_scope_reason",
-        "address_line_2",
-        "country",
-        "source_page_title",
-        "extraction_method",
-        "review_status",
-        "evidence",
-        "source_url",
-        "confidence",
-    ]
-    preferred_all_order = [
-        "approved", "scan_id", "company_id", "assigned_company",
-        "building_name", "management_owner", "street_address",
-        "address_line_2", "city", "province", "postal_code", "country",
-        "phone", "primary_email", "website", "number_of_apartments",
-        "building_classification", "source_url", "source_page_title",
-        "extraction_method", "confidence", "review_status", "evidence",
-    ]
-    all_review_columns = [column for column in preferred_all_order if column in records_df.columns]
-    all_review_columns.extend(
-        column for column in records_df.columns if column not in all_review_columns
-    )
+        if str(st.session_state.get(S_SOURCE_TYPE, "")).startswith("Google Sheet"):
+            with st.expander("Reload Google Sheet"):
+                st.caption("Fetch the Sheet again to pick up changes made at the source.")
+                confirm_reload = (
+                    st.checkbox("Replace my session edits with the reloaded data")
+                    if st.session_state.get(S_EDIT_COUNT, 0)
+                    else True
+                )
+                if st.button(
+                    "Reload from source",
+                    disabled=not confirm_reload,
+                    width="stretch",
+                    key="db_reload_google",
+                ):
+                    load_google(
+                        st.session_state[S_SOURCE_REF],
+                        st.session_state[S_SELECTOR],
+                        force=True,
+                    )
+                    st.rerun()
 
-    for column in set(required_review_columns + additional_review_columns + all_review_columns):
-        if column not in records_df.columns:
-            records_df[column] = False if column == "approved" else ""
-
-    review_views = {
-        "Required listing information": required_review_columns,
-        "Additional findings and evidence": additional_review_columns,
-        "All detected fields": all_review_columns,
-    }
-    review_focus = st.selectbox(
-        "Review focus",
-        list(review_views),
-        help="Use a focused view to reduce horizontal scrolling. Every detected field remains available in All detected fields.",
-        key="full_scan_review_focus",
-    )
-    visible_review_columns = [
-        column for column in review_views[review_focus] if column in records_df.columns
-    ]
-
-    editor_key = "full_scan_record_editor_" + review_focus.lower().replace(" ", "_").replace("/", "_")
-    edited_review = st.data_editor(
-        records_df[visible_review_columns].copy(),
-        key=editor_key,
-        width="stretch",
-        hide_index=True,
-        num_rows="fixed",
-        disabled=[
-            column for column in [
-                "confidence", "source_page_title", "extraction_method",
-                "review_status", "ontario_scope_status", "ontario_scope_reason"
-            ] if column in visible_review_columns
-        ],
-        column_config={
-            "approved": st.column_config.CheckboxColumn(
-                "Approve candidate",
-                default=False,
-                help=(
-                    "Approve only after checking the source and confirming the "
-                    "candidate is in Ontario."
-                ),
-            ),
-            "ontario_scope_status": st.column_config.TextColumn(
-                "Ontario Scope Status",
-                width="medium",
-                help=(
-                    "Confirmed Ontario may be approved. Likely Ontario requires "
-                    "human review. Unclear and outside-Ontario records are excluded."
-                ),
-            ),
-            "ontario_scope_reason": st.column_config.TextColumn(
-                "Ontario Scope Reason",
-                width="large",
-            ),
-            "building_name": st.column_config.TextColumn("Apartment Building Name", width="large"),
-            "management_owner": st.column_config.TextColumn("Management / Owner", width="large"),
-            "street_address": st.column_config.TextColumn("Street Address"),
-            "address_line_2": st.column_config.TextColumn("Address Line 2"),
-            "city": st.column_config.TextColumn("City"),
-            "province": st.column_config.TextColumn("Province"),
-            "postal_code": st.column_config.TextColumn("Postal Code"),
-            "country": st.column_config.TextColumn("Country"),
-            "phone": st.column_config.TextColumn("Phone Number"),
-            "primary_email": st.column_config.TextColumn("Email Contact", width="large"),
-            "website": st.column_config.LinkColumn("Website", width="large"),
-            "number_of_apartments": st.column_config.TextColumn("Number of Apartments"),
-            "building_classification": st.column_config.TextColumn(
-                "Building Classification",
-                help="For example: High Rise, Low Rise, Townhome, or Duplex.",
-            ),
-            "source_url": st.column_config.LinkColumn("Official Source URL", width="large"),
-            "source_page_title": st.column_config.TextColumn("Source Page Title", width="large"),
-            "extraction_method": st.column_config.TextColumn("Extraction Method"),
-            "confidence": st.column_config.ProgressColumn(
-                "Detection Confidence",
-                min_value=0.0,
-                max_value=1.0,
-                format="percent",
-                help="Use confidence to prioritize review; it is not proof that a value is correct.",
-            ),
-            "review_status": st.column_config.TextColumn("Review Status"),
-            "evidence": st.column_config.TextColumn("Supporting Evidence", width="large"),
-        },
-    )
-
-    updated_records = records_df.copy()
-    for column in visible_review_columns:
-        updated_records.loc[edited_review.index, column] = edited_review[column]
-
-    updated_records = _apply_ontario_scope(updated_records)
-    st.session_state["website_scan_records"] = updated_records
-
-    requested_approval = updated_records["approved"].fillna(False)
-    eligible_approval = _ontario_eligible_mask(updated_records)
-    blocked_approval_count = int((requested_approval & ~eligible_approval).sum())
-
-    approved = updated_records.loc[
-        requested_approval & eligible_approval
-    ].copy()
-    approved["review_status"] = "Needs Review"
-
-    _persist_scan_evidence(
-        report=report,
-        records_df=updated_records,
-        pages_df=pages_df,
-        scan_id=scan_id,
-        company_id=scan_company_id,
-        company_name=scan_company_name,
-        website_url=scan_start_url,
-        scope=st.session_state.get("website_scan_scope", scope),
-        history_key=scan_history_key,
-        candidates_key=scan_candidates_key,
-        pages_key=scan_pages_key,
-    )
-
-    if blocked_approval_count:
-        st.warning(
-            f"{blocked_approval_count} selected candidate(s) were not approved because "
-            "their location is unclear or confirmed outside Ontario. Update the city, "
-            "province, street address, or postal code, then review again."
-        )
-
-    with st.container(border=True):
-        action_left, action_right = st.columns([2, 1], vertical_alignment="center")
-        with action_left:
-            st.subheader("Add approved records to project")
-            st.write(
-                f"{len(approved):,} Ontario-eligible candidate(s) are approved. "
-                "They will enter the workspace as Needs Review, not as verified records."
+        with st.expander("Reset workspace"):
+            st.caption("Return every record to the version first opened in this session.")
+            confirm_reset = st.checkbox(
+                "Discard my session edits",
+                key="db_confirm_reset",
             )
-        with action_right:
-            add_approved = st.button(
-                "Add approved records to project",
+            if st.button(
+                "Reset to original",
+                disabled=not confirm_reset,
+                width="stretch",
+                key="db_reset_workspace",
+            ):
+                st.session_state[S_WORKING] = st.session_state[S_ORIGINAL].copy()
+                st.session_state[S_EDIT_COUNT] = 0
+                st.session_state[S_FLASH] = "Workspace reset to the original version."
+                st.rerun()
+
+
+# -----------------------------
+# Landing screen
+# -----------------------------
+if S_WORKING not in st.session_state:
+    render_page_heading(
+        "GET STARTED",
+        "Build your rental property research project",
+        "Register the project first, then select one assigned company and begin its research.",
+    )
+
+    start_mode = st.radio(
+        "Choose a starting point",
+        ["Resume project", "Create project from file", "Google Sheet", "Blank project"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="db_landing_mode",
+    )
+
+    if start_mode == "Resume project":
+        st.subheader("Resume a saved Datablix project")
+        landing_project = st.file_uploader(
+            "Choose the saved project workbook",
+            type=["xlsx"],
+            key="db_landing_project_upload",
+        )
+        if landing_project is not None and st.button(
+            "Resume project",
+            type="primary",
+            width="stretch",
+            key="db_landing_resume_project",
+        ):
+            try:
+                load_project_workbook(landing_project)
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    elif start_mode == "Create project from file":
+        st.subheader("Create a project from an assignment or building-data file")
+        landing_upload = st.file_uploader(
+            "Choose a CSV or Excel file",
+            type=["csv", "xlsx"],
+            help="Datablix detects whether the worksheet contains assigned companies or apartment-building records.",
+            key="db_landing_upload",
+        )
+        landing_sheet = None
+        if landing_upload is not None:
+            if landing_upload.name.lower().endswith(".xlsx"):
+                landing_names = excel_sheet_names(landing_upload)
+                landing_sheet = st.selectbox(
+                    "Worksheet containing companies or records",
+                    landing_names,
+                    index=preferred_sheet(landing_names),
+                    key="db_landing_sheet",
+                )
+            try:
+                load_upload(landing_upload, landing_sheet)
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    elif start_mode == "Google Sheet":
+        st.subheader("Load a viewable Google Sheet")
+        with st.form("landing_google_form"):
+            landing_url = st.text_input(
+                "Google Sheets link",
+                placeholder="https://docs.google.com/spreadsheets/d/...",
+            )
+            landing_selector = st.text_input(
+                "Worksheet name or tab ID (optional)",
+                placeholder="Example: Apartment Buildings or 0",
+            )
+            landing_submit = st.form_submit_button(
+                "Open working copy",
                 type="primary",
-                disabled=approved.empty or not scan_company_id,
                 width="stretch",
-                key="add_approved_scan_records",
             )
-    if add_approved:
-        added, duplicates = _merge_into_working_data(
-            approved,
-            working_data_key=working_data_key,
-            company_id=scan_company_id,
-            company_name=scan_company_name,
+        if landing_submit:
+            try:
+                if load_google(landing_url, landing_selector):
+                    st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    else:
+        st.subheader("Start with an empty project")
+        st.write(
+            "Create the project, then add the first assigned company in the Master project panel before researching buildings."
         )
-        _persist_scan_evidence(
-            report=report,
-            records_df=updated_records,
-            pages_df=pages_df,
-            scan_id=scan_id,
-            company_id=scan_company_id,
-            company_name=scan_company_name,
-            website_url=scan_start_url,
-            scope=st.session_state.get("website_scan_scope", scope),
-            history_key=scan_history_key,
-            candidates_key=scan_candidates_key,
-            pages_key=scan_pages_key,
-            added_count=added,
-            duplicate_count=duplicates,
+        if st.button(
+            "Create blank project",
+            type="primary",
+            width="stretch",
+            key="landing_blank_workspace",
+        ):
+            blank_workspace()
+            go_to("Overview")
+            st.rerun()
+
+    with st.expander("How Datablix works", expanded=True):
+        flow_columns = st.columns(4)
+        flow_items = [
+            ("Collect", "Import, scan, or add listing candidates."),
+            ("Review", "Confirm fields and record human decisions."),
+            ("Verify", "Resolve quality flags, source questions, and research gaps."),
+            ("Download", "Save a complete workbook or a focused file."),
+        ]
+        for column, (heading, copy) in zip(flow_columns, flow_items):
+            with column:
+                st.markdown(f"**{heading}**")
+                st.caption(copy)
+    st.stop()
+
+
+if S_FLASH in st.session_state:
+    st.toast(st.session_state.pop(S_FLASH), icon="✅")
+
+working, project_registry = synchronize_company_registry(
+    st.session_state[S_WORKING].copy(),
+    st.session_state.get(S_COMPANIES),
+)
+st.session_state[S_WORKING] = working
+st.session_state[S_COMPANIES] = project_registry
+has_records = not working.empty
+qa = qa_checks(working) if has_records else None
+
+# -----------------------------
+# Primary navigation
+# -----------------------------
+sections = [
+    "Overview",
+    "Website scanner",
+    "Review records",
+    "Progress & quality",
+    "Analysis & report",
+    "Downloads",
+]
+NAV_LABELS = {
+    "Overview": "Overview",
+    "Website scanner": "Scan website",
+    "Review records": "Review records",
+    "Progress & quality": "Quality & progress",
+    "Analysis & report": "Analysis & report",
+    "Downloads": "Downloads",
+}
+legacy_sections = {
+    "Review & edit": "Review records",
+    "Research": "Progress & quality",
+    "Data quality": "Progress & quality",
+    "Export": "Downloads",
+    "Review and edit records": "Review records",
+    "Progress and data quality": "Progress & quality",
+    "Download your work": "Downloads",
+    "Analysis": "Analysis & report",
+    "Report": "Analysis & report",
+}
+current_section = st.session_state.get("db_section", "Overview")
+current_section = legacy_sections.get(current_section, current_section)
+if current_section not in sections:
+    current_section = "Overview"
+st.session_state["db_section"] = current_section
+
+workspace_source = st.session_state.get(S_SOURCE_TYPE, "Workspace")
+workspace_name = st.session_state.get(S_NAME, "workspace")
+workspace_sheet = st.session_state.get(S_SHEET, "")
+workspace_display = workspace_name + (f" · {workspace_sheet}" if workspace_sheet else "")
+
+st.markdown(
+    (
+        '<div class="db-workspace-strip">'
+        f'<span><strong>Workspace:</strong> {workspace_display}</span>'
+        f'<span><strong>Source:</strong> {workspace_source}</span>'
+        f'<span><strong>Companies:</strong> <span class="db-num">{len(project_registry):,}</span></span>'
+        f'<span><strong>Records:</strong> <span class="db-num">{len(working):,}</span></span>'
+        f'<span><strong>Session edits:</strong> <span class="db-num">{st.session_state.get(S_EDIT_COUNT, 0):,}</span></span>'
+        '</div>'
+    ),
+    unsafe_allow_html=True,
+)
+
+nav_columns = st.columns(len(sections))
+for nav_column, section_key in zip(nav_columns, sections):
+    with nav_column:
+        if st.button(
+            NAV_LABELS[section_key],
+            type="primary" if st.session_state["db_section"] == section_key else "secondary",
+            width="stretch",
+            key=f"db_nav_{norm_header(section_key)}",
+        ):
+            go_to(section_key)
+            st.rerun()
+
+section = st.session_state["db_section"]
+render_process_bar(section)
+
+if not has_records and section in ["Progress & quality", "Analysis & report", "Downloads"]:
+    st.info(
+        "This workspace has no records yet. Scan a website or add the first listing to begin."
+    )
+    action_a, action_b = st.columns(2)
+    if action_a.button("Open website scanner", type="primary", width="stretch"):
+        go_to("Website scanner")
+        st.rerun()
+    if action_b.button("Add record manually", width="stretch"):
+        go_to("Review records")
+        st.rerun()
+    st.stop()
+
+
+# -----------------------------
+# Overview
+# -----------------------------
+if section == "Overview":
+    render_page_heading(
+        "WORKSPACE",
+        "Workspace overview",
+        "See what has been collected, what needs attention, and what is ready to use.",
+    )
+
+    next_title, next_copy, next_section, next_button = recommended_next_action(qa)
+    with st.container(border=True):
+        next_left, next_right = st.columns([2.2, 1], vertical_alignment="center")
+        with next_left:
+            st.subheader(next_title)
+            st.write(next_copy)
+        with next_right:
+            if st.button(
+                next_button,
+                type="primary",
+                width="stretch",
+                key="db_overview_next",
+            ):
+                go_to(next_section)
+                st.rerun()
+
+    if not has_records:
+        st.info(
+            "This workspace is empty. Scan a public website or add a listing manually to begin."
         )
-        result = {
-            "scan_id": scan_id,
-            "company_id": scan_company_id,
-            "company_name": scan_company_name,
-            "start_url": scan_start_url,
-            "added": added,
-            "duplicates": duplicates,
-        }
-        st.success(
-            f"Added {added} record(s) to the master project for "
-            f"{scan_company_name}. Skipped {duplicates} record(s) already "
-            "saved for the same company, source, building name, and address."
+        quick_scan, quick_manual = st.columns(2)
+        if quick_scan.button(
+            "Scan website",
+            type="primary",
+            width="stretch",
+            key="overview_scan_empty",
+        ):
+            go_to("Website scanner")
+            st.rerun()
+        if quick_manual.button(
+            "Add record manually",
+            width="stretch",
+            key="overview_manual_empty",
+        ):
+            go_to("Review records")
+            st.rerun()
+    else:
+        metric_columns = st.columns(4)
+        metric_columns[0].metric("Records", f"{len(qa):,}")
+        metric_columns[1].metric("Listings ready to use", f"{int(ready_mask(qa).sum()):,}")
+        metric_columns[2].metric(
+            "Need attention",
+            f"{int((~ready_mask(qa) & ~qa['Record Readiness'].eq('Excluded from Listings')).sum()):,}",
+        )
+        metric_columns[3].metric(
+            "Human verified",
+            f"{int(qa['Verification Status'].eq('Verified').sum()):,}",
         )
 
-    with st.expander("Evidence, scan log, and downloads"):
+        completed = int(qa["Research Status"].eq("Completed").sum())
+        st.progress(
+            completed / len(qa),
+            text=f"Research complete: {completed:,} of {len(qa):,} records",
+        )
+
+        quick_1, quick_2, quick_3 = st.columns(3)
+        if quick_1.button("Scan another website", width="stretch"):
+            go_to("Website scanner")
+            st.rerun()
+        if quick_2.button("Review records", width="stretch"):
+            go_to("Review records")
+            st.rerun()
+        if quick_3.button("Download current work", width="stretch"):
+            go_to("Downloads")
+            st.rerun()
+
+        st.subheader("Listing preview")
         st.caption(
-            "Keep the source page, extraction details, confidence, and supporting text with the research trail."
+            "Each record follows the required field-and-value layout. Required listing fields appear first, followed by confirmed additional findings."
         )
-        evidence_columns = [
-            "ontario_scope_status",
-            "ontario_scope_reason",
-            "building_name",
-            "building_classification",
-            "number_of_apartments",
-            "source_url",
-            "source_page_title",
-            "extraction_method",
-            "confidence",
-            "evidence",
-        ]
-        available_evidence = [
-            column for column in evidence_columns if column in updated_records.columns
-        ]
-        if available_evidence:
+        render_listing_preview(qa, limit=5)
+
+        with st.expander("Workspace details and column matching"):
+            detail_columns = st.columns(3)
+            detail_columns[0].metric("Source type", workspace_source)
+            detail_columns[1].metric("Original columns", f"{len(working.columns):,}")
+            detail_columns[2].metric(
+                "Mapped fields",
+                f"{int(st.session_state[S_MAPPING]['Mapping Status'].ne('Not found').sum()):,}",
+            )
+            st.caption(
+                "Your original columns remain in the working data. This table shows how imported headings were matched to consistent rental property fields."
+            )
             st.dataframe(
-                updated_records[available_evidence],
+                st.session_state[S_MAPPING],
+                width="stretch",
+                hide_index=True,
+                height=360,
+            )
+
+
+# -----------------------------
+# Website scanner
+# -----------------------------
+elif section == "Website scanner":
+    active_company = active_company_row()
+    if active_company is None:
+        render_page_heading(
+            "COLLECT",
+            "Select a company before scanning",
+            "Every website scan must belong to one registered company in the active project.",
+        )
+        st.error(
+            "No active company is selected. Add or select a company in the "
+            "Master project panel, then choose Start research for this company."
+        )
+        st.stop()
+
+    company_id = str(active_company["Company ID"]).strip()
+    company_name = str(active_company["Management/Owner"]).strip()
+    company_website = str(active_company.get("Main Website", "")).strip()
+
+    scan_result = render_website_scanner_panel(
+        working_data_key=S_WORKING,
+        active_company_id=company_id,
+        active_company_name=company_name,
+        active_company_website=company_website,
+        scan_history_key=S_SCAN_HISTORY,
+        scan_candidates_key=S_SCAN_CANDIDATES,
+        scan_pages_key=S_SCAN_PAGES,
+    )
+
+    if scan_result:
+        merged = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
+        for column in INTERNAL_COLUMNS:
+            if column not in merged.columns:
+                merged[column] = pd.NA
+        merged = ensure_ids(normalize_workflow(prepare_data(merged)))
+        merged, registry = synchronize_company_registry(
+            merged,
+            st.session_state.get(S_COMPANIES),
+        )
+        registry.loc[
+            registry["Company ID"].eq(company_id), "Company Status"
+        ] = "Researching"
+        st.session_state[S_WORKING] = merged
+        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+        st.session_state[S_EDIT_COUNT] = (
+            st.session_state.get(S_EDIT_COUNT, 0)
+            + int(scan_result.get("added", 0))
+        )
+        st.session_state[S_FLASH] = (
+            f"Added {int(scan_result.get('added', 0))} approved record(s) for "
+            f"{company_name}. Review the extracted details and source evidence next."
+        )
+        go_to("Review records")
+        st.rerun()
+
+
+# -----------------------------
+# Review records
+# -----------------------------
+elif section == "Review records":
+    render_page_heading(
+        "REVIEW",
+        "Review and edit records",
+        "Correct listing information, complete research gaps, and record clear verification decisions.",
+    )
+    render_guidance(
+        "Blank values stay neutral.",
+        "A blank means the information has not been confirmed; it does not automatically mean the feature or detail is unavailable.",
+    )
+
+    filtered = qa.copy() if has_records else pd.DataFrame()
+
+    if has_records:
+        search_col, focus_col = st.columns([2, 1])
+        search_text = search_col.text_input(
+            "Search records",
+            placeholder="Rental property, owner, address, city, or record ID",
+            key="db_review_search",
+        )
+        focus = focus_col.selectbox(
+            "Focus",
+            ["Needs attention", "All records", "Ready for review", "Verified", "Ready to use"],
+            key="db_review_focus",
+        )
+
+        mask = pd.Series(True, index=qa.index)
+        if search_text.strip():
+            search_blob = (
+                qa[[
+                    "Record ID", "Building Name", "Management/Owner", "Street Address",
+                    "City", "Postal Code", "Primary Email", "Phone"
+                ]]
+                .astype("string")
+                .fillna("")
+                .agg(" ".join, axis=1)
+                .str.lower()
+            )
+            mask &= search_blob.str.contains(search_text.strip().lower(), regex=False)
+
+        if focus == "Needs attention":
+            mask &= ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
+        elif focus == "Ready for review":
+            mask &= qa["Research Status"].eq("Ready for Review") | qa["Verification Status"].eq("Needs Review")
+        elif focus == "Verified":
+            mask &= qa["Verification Status"].eq("Verified")
+        elif focus == "Ready to use":
+            mask &= ready_mask(qa)
+
+        with st.expander("More filters"):
+            filter_row1 = st.columns(3)
+            quality_filter = filter_row1[0].multiselect(
+                "Listing quality",
+                sorted(display_values(qa["QA Status"]).unique()),
+                help="Leave blank to include every quality status.",
+            )
+            owner_filter = filter_row1[1].multiselect(
+                "Management or owner",
+                sorted(display_values(qa["Management/Owner"]).unique()),
+                help="Leave blank to include every organization.",
+            )
+            research_filter = filter_row1[2].multiselect(
+                "Research status",
+                sorted(display_values(qa["Research Status"]).unique()),
+                help="Leave blank to include every research status.",
+            )
+            filter_row2 = st.columns(2)
+            verification_filter = filter_row2[0].multiselect(
+                "Verification status",
+                sorted(display_values(qa["Verification Status"]).unique()),
+                help="Leave blank to include every verification status.",
+            )
+            readiness_filter = filter_row2[1].multiselect(
+                "Record readiness",
+                sorted(display_values(qa["Record Readiness"]).unique()),
+                help="Leave blank to include every readiness status.",
+            )
+
+        if quality_filter:
+            mask &= display_values(qa["QA Status"]).isin(quality_filter)
+        if owner_filter:
+            mask &= display_values(qa["Management/Owner"]).isin(owner_filter)
+        if research_filter:
+            mask &= display_values(qa["Research Status"]).isin(research_filter)
+        if verification_filter:
+            mask &= display_values(qa["Verification Status"]).isin(verification_filter)
+        if readiness_filter:
+            mask &= display_values(qa["Record Readiness"]).isin(readiness_filter)
+
+        filtered = qa.loc[mask].copy()
+        st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
+
+        review_tabs = st.tabs(["Review queue", "Edit fields", "Summarize notes"])
+
+        with review_tabs[0]:
+            if filtered.empty:
+                st.info(
+                    "No records match this search and focus. Clear the search box or switch the focus to All records."
+                )
+            else:
+                st.caption(
+                    "Review the quality issue, research gap, source status, and readiness columns before changing a record."
+                )
+                inspect_columns = [
+                    "Record ID", "Working Record Label", "Management/Owner",
+                    "Street Address", "City", "Postal Code", "Research Status",
+                    "Verification Status", "QA Status", "QA Flags", "Research Gaps",
+                    "Follow-up Priority", "Record Readiness",
+                ]
+                inspect = filtered[inspect_columns].rename(
+                    columns={
+                        "Management/Owner": "Management / Owner",
+                        "Working Record Label": "Record",
+                    }
+                )
+                st.dataframe(
+                    inspect,
+                    width="stretch",
+                    hide_index=True,
+                    height=520,
+                )
+
+        with review_tabs[1]:
+            if filtered.empty:
+                st.info(
+                    "No records match this search and focus. Widen the filters to continue editing."
+                )
+            else:
+                edit_presets = {
+                    "Required listing information": [
+                        "Building Name", "Management/Owner", "Street Address", "Address Line 2",
+                        "City", "Province", "Postal Code", "Building Classification",
+                        "Number of Apartments", "Rental Rate Range",
+                    ],
+                    "Contact and source information": [
+                        "Phone", "Primary Email", "Secondary Email", "Website", "Source URL",
+                        "Date Researched", "Researcher", "Source Status",
+                    ],
+                    "Research and verification": [
+                        "Research Status", "Verification Status", "Record Decision",
+                        "Missing Information", "Reviewer Notes",
+                    ],
+                }
+                preset = st.selectbox(
+                    "Fields to review",
+                    [*edit_presets.keys(), "Custom fields"],
+                    help="Choose a focused field group or select Custom fields to review a different combination of listing information.",
+                    key="db_edit_preset",
+                )
+                if preset == "Custom fields":
+                    edit_fields = st.multiselect(
+                        "Fields to edit",
+                        [c for c in INTERNAL_COLUMNS if c != "Record ID"],
+                        default=[
+                            "Building Name", "Management/Owner", "Phone", "Primary Email",
+                            "Website", "Research Status", "Verification Status", "Record Decision",
+                        ],
+                        key="db_custom_edit_fields",
+                    )
+                else:
+                    edit_fields = edit_presets[preset]
+
+                context = ["Record ID", "Working Record Label"] + edit_fields + [
+                    "Research Gaps", "QA Status", "Record Readiness"
+                ]
+                context = list(dict.fromkeys(c for c in context if c in filtered.columns))
+                locked = [
+                    c for c in context
+                    if c in ["Record ID", "Working Record Label", "Research Gaps", "QA Status", "Record Readiness"]
+                ]
+                edited = st.data_editor(
+                    filtered[context],
+                    width="stretch",
+                    hide_index=True,
+                    height=520,
+                    num_rows="fixed",
+                    disabled=locked,
+                    column_config={
+                        "Building Name": st.column_config.TextColumn("Apartment Building Name"),
+                        "Management/Owner": st.column_config.TextColumn("Management / Owner", width="large"),
+                        "Phone": st.column_config.TextColumn("Phone Number"),
+                        "Primary Email": st.column_config.TextColumn("Email Contact", width="large"),
+                        "Website": st.column_config.TextColumn("Website", width="large"),
+                        "Source URL": st.column_config.LinkColumn("Source URL", width="large"),
+                        "Date Researched": st.column_config.DateColumn("Date Researched", format="YYYY-MM-DD"),
+                        "Research Status": st.column_config.SelectboxColumn(
+                            "Research Status", options=RESEARCH_STATUSES, required=True
+                        ),
+                        "Source Status": st.column_config.SelectboxColumn(
+                            "Source Status", options=SOURCE_STATUSES, required=True
+                        ),
+                        "Verification Status": st.column_config.SelectboxColumn(
+                            "Verification Status", options=VERIFICATION_STATUSES, required=True
+                        ),
+                        "Record Decision": st.column_config.SelectboxColumn(
+                            "Record Decision", options=RECORD_DECISIONS, required=True
+                        ),
+                    },
+                    key=(
+                        f"editor_{st.session_state.get(S_EDIT_COUNT, 0)}_"
+                        f"{hashlib.sha1('|'.join(edit_fields).encode()).hexdigest()[:8]}"
+                    ),
+                )
+                save_col, save_note = st.columns([1, 2])
+                with save_col:
+                    save_changes = st.button(
+                        "Save changes",
+                        type="primary",
+                        width="stretch",
+                        key="db_save_edits",
+                    )
+                with save_note:
+                    st.caption(
+                        "Saving updates the working copy and refreshes quality checks immediately."
+                    )
+                if save_changes:
+                    save_edits(edited, [c for c in edit_fields if c in edited.columns])
+                    st.rerun()
+
+        with review_tabs[2]:
+            if not ai_is_available():
+                st.info(
+                    "AI note assistance is unavailable in this deployment. All rental property collection, review, quality, and export tools remain available."
+                )
+                st.caption(
+                    "To switch it on, add `AI_ENABLED = true` and `OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
+                )
+            elif filtered.empty:
+                st.info("No records match this search and focus. Widen the filters to choose a record.")
+            else:
+                st.caption(
+                    "Turn detailed rental property research notes into a concise review summary. Nothing is saved until you approve it."
+                )
+                ai_options = filtered["Record ID"].astype(str).tolist()
+                selected_ai_id = st.selectbox(
+                    "Record",
+                    ai_options,
+                    format_func=lambda rid: (
+                        f"{rid} · {filtered.loc[filtered['Record ID'].astype(str).eq(rid), 'Working Record Label'].iloc[0]}"
+                    ),
+                    key="db_ai_record_id",
+                )
+
+                ai_row = filtered.loc[
+                    filtered["Record ID"].astype(str).eq(selected_ai_id)
+                ].iloc[0]
+                source_parts = []
+                if not is_unresolved(ai_row.get("Reviewer Notes")):
+                    source_parts.append(f"Reviewer notes: {ai_row['Reviewer Notes']}")
+                if not is_unresolved(ai_row.get("Missing Information")):
+                    source_parts.append(f"Missing information: {ai_row['Missing Information']}")
+                if (
+                    not is_unresolved(ai_row.get("Research Gaps"))
+                    and str(ai_row.get("Research Gaps")) != "None"
+                ):
+                    source_parts.append(f"Open research gaps: {ai_row['Research Gaps']}")
+                if not is_unresolved(ai_row.get("Source URL")):
+                    source_parts.append(f"Source recorded: {ai_row['Source URL']}")
+
+                source_text = "\n".join(source_parts)
+                notes_key = f"db_ai_notes_{selected_ai_id}"
+                summary_key = f"db_ai_summary_{selected_ai_id}"
+                loaded_key = f"db_ai_loaded_{selected_ai_id}"
+
+                if not st.session_state.get(loaded_key):
+                    st.session_state[notes_key] = source_text
+                    st.session_state.setdefault(summary_key, "")
+                    st.session_state[loaded_key] = True
+
+                ai_notes = st.text_area(
+                    "Notes to summarize",
+                    key=notes_key,
+                    height=180,
+                    placeholder="Record what was confirmed, which source was checked, and what still needs verification.",
+                )
+                generate_summary = st.button(
+                    "Prepare summary",
+                    type="primary",
+                    disabled=not ai_notes.strip() or not get_openai_api_key(),
+                    key=f"db_generate_ai_{selected_ai_id}",
+                )
+                if generate_summary:
+                    try:
+                        with st.spinner("Preparing a concise review summary..."):
+                            st.session_state[summary_key] = create_ai_summary(ai_notes)
+                    except Exception as error:
+                        st.error(str(error))
+
+                ai_summary = st.text_area(
+                    "Review and edit the summary",
+                    key=summary_key,
+                    height=160,
+                    placeholder="The prepared summary will appear here. Edit it freely before saving.",
+                )
+                if st.button(
+                    "Save to Reviewer Notes",
+                    disabled=not ai_summary.strip(),
+                    width="stretch",
+                    key=f"db_save_ai_{selected_ai_id}",
+                ):
+                    working_ai = st.session_state[S_WORKING].copy()
+                    target_mask = working_ai["Record ID"].astype(str).eq(selected_ai_id)
+                    working_ai.loc[target_mask, "Reviewer Notes"] = ai_summary.strip()
+                    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working_ai))
+                    st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+                    st.session_state[S_FLASH] = (
+                        f"Saved the summary to Reviewer Notes for {selected_ai_id}."
+                    )
+                    st.rerun()
+
+    st.divider()
+    with st.expander("Add record manually", expanded=not has_records):
+        st.caption(
+            "Enter confirmed information only. Leave unconfirmed values blank and record unresolved details in Missing Information."
+        )
+        suggested = generate_id(st.session_state[S_WORKING])
+        with st.form("add_record", clear_on_submit=True):
+            st.markdown("**Listing and location**")
+            p1, p2, p3 = st.columns(3)
+            record_id = p1.text_input(
+                "Record ID",
+                value=suggested,
+                help="A unique reference that keeps similar records separate.",
+            )
+            building_name = p1.text_input("Apartment Building Name")
+            manual_active_company = active_company_row()
+            owner = p1.text_input(
+                "Management / Owner",
+                value=(
+                    str(manual_active_company["Management/Owner"])
+                    if manual_active_company is not None
+                    else ""
+                ),
+            )
+            classification = p2.text_input(
+                "Building Classification",
+                placeholder="Example: High Rise or Townhome",
+            )
+            units = p2.text_input(
+                "Number of Apartments",
+                placeholder="Example: 120",
+            )
+            address = p2.text_input(
+                "Street Address",
+                placeholder="Example: 100 Main Street",
+            )
+            city = p3.text_input("City", placeholder="Example: Ottawa")
+            province = p3.text_input("Province", placeholder="Example: Ontario or ON")
+            pc = p3.text_input("Postal Code", placeholder="Example: K1A 1A1")
+
+            st.markdown("**Contact and source**")
+            c1, c2, c3 = st.columns(3)
+            phone = c1.text_input("Phone Number", placeholder="Example: 613-555-0199")
+            email = c1.text_input("Email Contact", placeholder="Example: leasing@example.ca")
+            website = c2.text_input("Website", placeholder="https://example.ca")
+            source_url = c2.text_input(
+                "Official Source URL",
+                placeholder="https://example.ca/property",
+                help="Paste the exact page where you checked the information.",
+            )
+            researcher = c3.text_input(
+                "Researcher",
+                placeholder="Name or initials",
+            )
+            no_date = c3.checkbox("Research date not recorded yet")
+            researched = c3.date_input(
+                "Date Researched",
+                value=date.today(),
+                disabled=no_date,
+            )
+
+            st.markdown("**Review and verification**")
+            w1, w2, w3 = st.columns(3)
+            research_status = w1.selectbox(
+                "Research Status",
+                RESEARCH_STATUSES,
+                index=1,
+            )
+            verification_status = w1.selectbox(
+                "Verification Status",
+                VERIFICATION_STATUSES,
+            )
+            source_status = w2.selectbox("Source Status", SOURCE_STATUSES)
+            decision = w2.selectbox("Record Decision", RECORD_DECISIONS)
+            missing = w3.text_area(
+                "Missing Information",
+                placeholder="Details that were unavailable or could not be confirmed.",
+            )
+            notes = w3.text_area(
+                "Reviewer Notes",
+                placeholder="Corrections, conflicts, decisions, or useful context.",
+            )
+            add = st.form_submit_button(
+                "Add record",
+                type="primary",
+                width="stretch",
+            )
+
+        if add:
+            current = st.session_state[S_WORKING].copy()
+            final_id = record_id.strip() or suggested
+            if final_id in set(resolved(current["Record ID"]).dropna().astype(str).str.strip()):
+                st.error(
+                    f"Record ID {final_id} is already in use. Enter a different ID, or clear the field to use the suggested one."
+                )
+            else:
+                record = {c: pd.NA for c in current.columns}
+                record.update({
+                    "Record ID": final_id,
+                    "Company ID": (
+                        manual_active_company["Company ID"]
+                        if manual_active_company is not None
+                        else pd.NA
+                    ),
+                    "Building Name": building_name,
+                    "Management/Owner": owner,
+                    "Street Address": address,
+                    "City": city,
+                    "Province": canonical_province(province),
+                    "Postal Code": postal_code(pc),
+                    "Phone": phone,
+                    "Primary Email": email,
+                    "Website": website,
+                    "Number of Apartments": units,
+                    "Building Classification": classification,
+                    "Source URL": source_url,
+                    "Date Researched": pd.NA if no_date else researched.isoformat(),
+                    "Researcher": researcher,
+                    "Research Status": research_status,
+                    "Source Status": source_status,
+                    "Verification Status": verification_status,
+                    "Missing Information": missing,
+                    "Reviewer Notes": notes,
+                    "Record Decision": decision,
+                })
+                st.session_state[S_WORKING] = normalize_workflow(
+                    pd.concat([current, pd.DataFrame([record])], ignore_index=True)
+                )
+                st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+                st.session_state[S_FLASH] = f"Added {final_id} to the workspace."
+                st.rerun()
+
+
+# -----------------------------
+# Progress and quality
+# -----------------------------
+elif section == "Progress & quality":
+    render_page_heading(
+        "VERIFY",
+        "Progress and data quality",
+        "Track research completion, missing information, possible duplicates, source status, and follow-up needs.",
+    )
+
+    top_metrics = st.columns(5)
+    top_metrics[0].metric("Completed", f"{int(qa['Research Status'].eq('Completed').sum()):,}")
+    top_metrics[1].metric("Ready for review", f"{int(qa['Research Status'].eq('Ready for Review').sum()):,}")
+    top_metrics[2].metric("Critical", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
+    top_metrics[3].metric("Quality warnings", f"{int(qa['Warning Count'].sum()):,}")
+    top_metrics[4].metric("Open field gaps", f"{int(qa['Research Gap Count'].sum()):,}")
+
+    progress_tabs = st.tabs([
+        "Research progress",
+        "Quality issues",
+        "Field coverage",
+        "Company progress",
+        "Draft profiles",
+    ])
+
+    with progress_tabs[0]:
+        st.caption(
+            "Review each record's source, research date, workflow status, and next action in one table."
+        )
+        st.dataframe(
+            research_log(qa).head(250),
+            width="stretch",
+            hide_index=True,
+            height=540,
+        )
+
+    with progress_tabs[1]:
+        issue_data = issue_summary(qa)
+        if issue_data.empty:
+            st.success("No data-quality issues are currently flagged.")
+        else:
+            st.caption("Review critical issues first, then work through the warnings.")
+            st.dataframe(
+                issue_data,
                 width="stretch",
                 hide_index=True,
             )
+        attention_columns = [
+            "Record ID", "Working Record Label", "QA Status", "QA Flags",
+            "Research Gaps", "Follow-up Priority", "Record Readiness",
+        ]
+        needs_attention = qa[
+            ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
+        ][attention_columns]
+        st.subheader("Records needing attention")
+        st.dataframe(
+            needs_attention,
+            width="stretch",
+            hide_index=True,
+            height=420,
+        )
 
-        csv_data = _approved_listing_table(approved).to_csv(index=False).encode("utf-8-sig")
-        excel_data = _excel_bytes(updated_records, pages_df, report)
-        d1, d2, d3 = st.columns(3)
-        d1.download_button(
-            "Download approved listings — CSV",
-            data=csv_data,
-            file_name="approved_website_records.csv",
-            mime="text/csv",
-            disabled=approved.empty,
+    with progress_tabs[2]:
+        st.caption(
+            "See how often each rental property field is completed. A blank value means the information has not yet been confirmed."
+        )
+        st.dataframe(
+            field_coverage(qa),
             width="stretch",
+            hide_index=True,
         )
-        d2.download_button(
-            "Download complete scan workbook",
-            data=excel_data,
-            file_name="website_scan_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+
+    with progress_tabs[3]:
+        st.caption(
+            "Track every assigned company, including companies that have not produced building records yet. The list expands when new companies are added."
+        )
+        st.dataframe(
+            company_progress_summary(qa, st.session_state.get(S_COMPANIES)),
             width="stretch",
+            hide_index=True,
+            height=500,
         )
-        reviewed_records_json = json.loads(
-            updated_records.to_json(orient="records", force_ascii=False)
+
+    with progress_tabs[4]:
+        st.caption(
+            "Draft descriptions are assembled from current rental property fields. Confirm every fact and refine the wording before use."
         )
-        d3.download_button(
-            "Download raw scan data — JSON",
-            data=json.dumps(
-                {
-                    "research_scope": "Ontario only",
-                    "scan_report": report.as_dict(),
-                    "reviewed_records": reviewed_records_json,
-                },
-                indent=2,
-                ensure_ascii=False,
+        st.dataframe(
+            draft_profiles(qa).head(100),
+            width="stretch",
+            hide_index=True,
+            height=520,
+        )
+
+
+# -----------------------------
+# Analysis and report
+# -----------------------------
+elif section == "Analysis & report":
+    render_page_heading(
+        "ANALYSE",
+        "Analyse and report",
+        "Review one company in depth or combine every company currently in scope for the final stakeholder report.",
+    )
+
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    scope_mode = st.radio(
+        "Analysis scope",
+        ["One company", "All companies"],
+        horizontal=True,
+        key="db_analysis_scope",
+    )
+
+    selected_company_id = None
+    scope_label = "All companies"
+    analysis_qa = qa.copy()
+    analysis_baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(analysis_baseline, pd.DataFrame):
+        analysis_baseline = pd.DataFrame()
+
+    if scope_mode == "One company":
+        available = registry.loc[
+            registry["Company ID"].astype(str).isin(set(qa["Company ID"].astype(str)))
+        ].copy()
+        if available.empty:
+            st.warning(
+                "No company-linked records are available yet. Select an active company before adding approved scanner findings."
+            )
+            st.stop()
+        company_ids = available["Company ID"].astype(str).tolist()
+        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        selected_index = company_ids.index(active_id) if active_id in company_ids else 0
+        selected_company_id = st.selectbox(
+            "Company",
+            company_ids,
+            index=selected_index,
+            format_func=lambda company_id: company_label(
+                available.loc[available["Company ID"].eq(company_id)].iloc[0]
             ),
-            file_name="website_scan_report_ontario.json",
-            mime="application/json",
+            key="db_analysis_company",
+        )
+        company_row = available.loc[available["Company ID"].eq(selected_company_id)].iloc[0]
+        scope_label = company_row["Management/Owner"]
+        analysis_qa = qa.loc[qa["Company ID"].astype(str).eq(selected_company_id)].copy()
+        if not analysis_baseline.empty and "Company ID" in analysis_baseline.columns:
+            analysis_baseline = analysis_baseline.loc[
+                analysis_baseline["Company ID"].astype(str).eq(selected_company_id)
+            ].copy()
+
+        with st.expander("Quality baseline", expanded=analysis_baseline.empty):
+            st.caption(
+                "Capture the baseline immediately after adding and reviewing the scan candidates, before correcting the QA findings. Datablix will preserve it in the saved project."
+            )
+            replace_baseline = st.checkbox(
+                "Replace the existing baseline for this company",
+                key="db_replace_company_baseline",
+            )
+            if st.button(
+                "Capture company quality baseline",
+                type="primary" if analysis_baseline.empty else "secondary",
+                width="stretch",
+                key="db_capture_company_baseline",
+            ):
+                captured = capture_quality_baseline(
+                    selected_company_id,
+                    replace=replace_baseline,
+                )
+                if captured == -1:
+                    st.warning(
+                        "A baseline already exists for this company. Select the replacement option only when you deliberately want to reset it."
+                    )
+                else:
+                    st.session_state[S_FLASH] = (
+                        f"Captured {captured:,} baseline quality issue(s) for {scope_label}."
+                    )
+                    st.rerun()
+
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("Companies", f"{analysis_qa['Company ID'].astype(str).replace('', pd.NA).dropna().nunique():,}")
+    metric_columns[1].metric("Building records", f"{len(analysis_qa):,}")
+    metric_columns[2].metric("Ready records", f"{int(ready_mask(analysis_qa).sum()):,}")
+    metric_columns[3].metric("Records passing QA", f"{int(analysis_qa['QA Status'].eq('Pass').sum()):,}")
+    metric_columns[4].metric("Open QA issues", f"{int(analysis_qa['QA Flag Count'].sum()):,}")
+
+    analysis_tabs = st.tabs([
+        "Company results",
+        "Quality impact",
+        "Coverage and gaps",
+        "Report summary",
+    ])
+
+    with analysis_tabs[0]:
+        company_table = company_progress_summary(
+            analysis_qa,
+            registry.loc[registry["Company ID"].astype(str).isin(set(analysis_qa["Company ID"].astype(str)))]
+            if not registry.empty
+            else registry,
+        )
+        st.dataframe(company_table, width="stretch", hide_index=True)
+        if scope_mode == "All companies" and not company_table.empty:
+            chart_data = company_table.set_index("Management/Owner")[["Building Records"]]
+            st.bar_chart(chart_data)
+
+    with analysis_tabs[1]:
+        impact = quality_impact_summary(analysis_qa, analysis_baseline)
+        st.dataframe(impact, width="stretch", hide_index=True)
+        impact_map = dict(zip(impact["Metric"], impact["Value"]))
+        impact_metrics = st.columns(4)
+        impact_metrics[0].metric("Baseline issues", f"{int(impact_map.get('Baseline issues', 0)):,}")
+        impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
+        impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
+        impact_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
+        if int(impact_map.get("Baseline issues", 0)) == 0:
+            st.info(
+                "No saved baseline is available for this scope. Current QA results are still valid, but a before-and-after issue-resolution rate cannot yet be claimed."
+            )
+
+    with analysis_tabs[2]:
+        coverage = field_coverage(analysis_qa)
+        st.dataframe(coverage, width="stretch", hide_index=True)
+        gaps_chart = coverage.set_index("Field")[["Missing Records"]]
+        st.bar_chart(gaps_chart)
+
+    with analysis_tabs[3]:
+        report = report_summary(
+            analysis_qa,
+            registry,
+            scope_label=scope_label,
+            baseline=analysis_baseline,
+        )
+        st.dataframe(report, width="stretch", hide_index=True)
+        analysis_export = excel_bytes({
+            "Report Summary": report,
+            "Company Analysis": company_progress_summary(
+                analysis_qa,
+                registry.loc[registry["Company ID"].astype(str).isin(set(analysis_qa["Company ID"].astype(str)))]
+                if scope_mode == "One company" and not registry.empty
+                else registry,
+            ),
+            "Quality Impact": quality_impact_summary(analysis_qa, analysis_baseline),
+            "Field Coverage": field_coverage(analysis_qa),
+            "Issue Summary": issue_summary(analysis_qa),
+            "Analysed Records": analysis_qa,
+        })
+        st.download_button(
+            "Download this analysis",
+            analysis_export,
+            f"{safe_filename(scope_label)}_datablix_analysis.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
             width="stretch",
         )
 
-        st.write("**Pages scanned**")
-        st.dataframe(pages_df, width="stretch", hide_index=True)
-        if report.blocked_urls:
-            st.write("**Skipped: blocked by robots.txt or scan policy**")
-            st.dataframe(
-                pd.DataFrame({"URL": report.blocked_urls}),
-                width="stretch",
-                hide_index=True,
-            )
-        if report.errors:
-            st.write("**Errors during the scan**")
-            st.dataframe(
-                pd.DataFrame({"Error": report.errors}),
-                width="stretch",
-                hide_index=True,
-            )
 
-    return result
+# -----------------------------
+# Downloads
+# -----------------------------
+elif section == "Downloads":
+    render_page_heading(
+        "EXPORT",
+        "Download your work",
+        "Export the complete workspace, formatted listings, research records, or focused review tables.",
+    )
+    st.warning(
+        "The browser session is temporary. Save the master project to preserve company assignments, working records, quality baselines, and report data for the next session."
+    )
+
+    listings = listing_export(qa)
+    follow_up = qa[
+        ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
+    ]
+    ready = qa[ready_mask(qa)]
+    quality = qa[qa["QA Status"].isin(["Critical", "Review"])]
+    baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = pd.DataFrame()
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    sheets = {
+        "Workspace Summary": project_summary(qa),
+        "Company Registry": registry,
+        "Company Analysis": company_progress_summary(qa, registry),
+        "Quality Baseline": baseline,
+        "Quality Impact": quality_impact_summary(qa, baseline),
+        "Report Summary": report_summary(qa, registry, baseline=baseline),
+        "Building Listings": listings,
+        "Owner Research List": owner_summary(qa),
+        "Draft Profiles": draft_profiles(qa),
+        "Source Verification": research_log(qa),
+        "Follow-up Queue": follow_up,
+        "Field Coverage": field_coverage(qa),
+        "Platform Field Recommendations": structure_recommendations(),
+        "Methodology & Limits": methodology(
+            qa,
+            st.session_state.get(S_NAME, "workspace"),
+            st.session_state.get(S_SHEET, ""),
+        ),
+        "Working Data": qa,
+    }
+    filename = safe_filename(st.session_state.get(S_NAME, "datablix"))
+
+    export_metrics = st.columns(4)
+    export_metrics[0].metric("All records", f"{len(qa):,}")
+    export_metrics[1].metric("Listings ready to use", f"{len(ready):,}")
+    export_metrics[2].metric("Follow-up records", f"{len(follow_up):,}")
+    export_metrics[3].metric("Quality review", f"{len(quality):,}")
+
+    st.subheader("Save and resume")
+    st.write(
+        "Save the master project after each company or major research session. Upload this file through Resume project to continue with the full company registry and quality history intact."
+    )
+    st.download_button(
+        "Save master project",
+        project_workbook_bytes(),
+        f"{safe_filename(st.session_state.get(S_PROJECT_NAME, 'datablix_master_project'))}_datablix_project.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        width="stretch",
+        key="db_download_save_project",
+    )
+
+    st.subheader("Complete reporting workbook")
+    st.write(
+        "The reporting workbook keeps rental property listings, company analysis, source evidence, quality impact, follow-ups, draft profiles, field coverage, and working data in separate sheets."
+    )
+    download_main, download_followup = st.columns([1.4, 1])
+    download_main.download_button(
+        "Download complete workbook",
+        excel_bytes(sheets),
+        f"{filename}_datablix_workbook.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        width="stretch",
+    )
+    download_followup.download_button(
+        "Download follow-up queue",
+        csv_bytes(follow_up),
+        f"{filename}_follow_up_queue.csv",
+        "text/csv",
+        disabled=follow_up.empty,
+        width="stretch",
+    )
+
+    with st.expander("Download a focused view"):
+        st.caption(
+            "Use the Excel version for the formatted rental property listing layout. The flat CSV keeps one rental property per row for sorting, filtering, or re-importing."
+        )
+        row1 = st.columns(3)
+        row1[0].download_button(
+            "Formatted rental property listings",
+            excel_bytes({"Building Listings": listings}),
+            f"{filename}_building_listings.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+        )
+        row1[1].download_button(
+            "Rental property listings — flat CSV",
+            csv_bytes(listings),
+            f"{filename}_building_listings_flat.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row1[2].download_button(
+            "Owner research list",
+            csv_bytes(owner_summary(qa)),
+            f"{filename}_owner_research_list.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row2 = st.columns(3)
+        row2[0].download_button(
+            "Draft profiles",
+            csv_bytes(draft_profiles(qa)),
+            f"{filename}_draft_profiles.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row2[1].download_button(
+            "Source verification tracker",
+            csv_bytes(research_log(qa)),
+            f"{filename}_source_verification.csv",
+            "text/csv",
+            width="stretch",
+        )
+        row2[2].download_button(
+            "Ready rental property listings — formatted",
+            excel_bytes({"Building Listings": listing_export(ready)}),
+            f"{filename}_ready_rental_property_listings.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            disabled=ready.empty,
+            width="stretch",
+        )
+        row3 = st.columns(3)
+        row3[0].download_button(
+            "Rental property quality review queue",
+            csv_bytes(quality),
+            f"{filename}_quality_review_queue.csv",
+            "text/csv",
+            disabled=quality.empty,
+            width="stretch",
+        )
