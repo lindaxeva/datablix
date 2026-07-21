@@ -264,6 +264,8 @@ S_AUTH_REFRESH_TOKEN = "db_auth_refresh_token"
 S_PROJECT_ROLE = "db_project_role"
 S_CLOUD_STATE_HASH = "db_cloud_state_hash"
 S_SKIP_CLOUD_RESTORE = "db_skip_cloud_restore"
+S_DEMO_MODE = "db_demo_mode"
+S_SHOW_AUTH = "db_show_auth"
 
 AUTOSAVE_DIRECTORY = Path(
     os.environ.get("DATABLIX_AUTOSAVE_DIRECTORY", "/tmp/datablix_autosave")
@@ -313,7 +315,7 @@ def cloud_persistence_available() -> bool:
 
 
 def get_supabase_auth_client():
-    """Create a session-local Supabase client for email/password authentication."""
+    """Create a session-local Supabase client for email-and-password authentication."""
     if create_client is None:
         return None
     url = _secret_value("SUPABASE_URL")
@@ -364,55 +366,99 @@ def sign_out_datablix() -> None:
             st.session_state.pop(key, None)
 
 
-def render_auth_gate() -> None:
-    """Require a Supabase account before any project data is loaded."""
-    if user_is_authenticated():
+def _valid_email(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(value or "").strip()))
+
+
+def sign_in_with_password(email: str, password: str) -> tuple[bool, str]:
+    """Sign an approved Datablix user into a private workspace."""
+    clean_email = str(email or "").strip().lower()
+    if not _valid_email(clean_email):
+        return False, "Enter a valid email address."
+    if not str(password or ""):
+        return False, "Enter your password."
+    client = get_supabase_auth_client()
+    if client is None:
+        return False, "Workspace sign-in is not configured."
+    try:
+        response = client.auth.sign_in_with_password(
+            {"email": clean_email, "password": password}
+        )
+        if _remember_auth_response(response):
+            st.session_state.pop(S_SHOW_AUTH, None)
+            return True, "Signed in."
+        return False, "The workspace could not be opened."
+    except Exception:
+        return False, "Sign-in failed. Check your email and password, then try again."
+
+
+def render_public_entry_gate() -> None:
+    """Show a short public landing page before demo access or private sign-in."""
+    if user_is_authenticated() or st.session_state.get(S_DEMO_MODE):
         return
+    if st.session_state.get(S_SHOW_AUTH):
+        return
+
     render_brand_header()
-    st.markdown("### Sign in to Datablix")
-    st.write("Each team member uses their own account. Shared projects appear after the project owner adds their email.")
+    st.markdown("## Your Rental Property Research & Data Audit Platform")
+    st.write("Turn rental property research into clear, reliable, and review-ready information.")
+    st.write(
+        "Organize projects, research apartment buildings and property management companies, "
+        "check every finding against its public source, and follow progress through simple analytics."
+    )
+    st.markdown("### Choose how you’d like to begin")
+
+    demo_col, access_col = st.columns(2)
+    with demo_col:
+        with st.container(border=True):
+            st.markdown("#### Explore the Demo")
+            st.write("Try Datablix using realistic sample rental property information.")
+            if st.button("Explore Demo", type="primary", width="stretch", key="db_public_demo"):
+                start_demo_workspace()
+                st.rerun()
+            st.caption("No account required.")
+
+    with access_col:
+        with st.container(border=True):
+            st.markdown("#### Access Your Workspace")
+            st.write("Sign in to open your saved projects and collaborate with your team.")
+            if st.button("Continue", width="stretch", key="db_public_continue"):
+                st.session_state[S_SHOW_AUTH] = True
+                st.rerun()
+            st.caption("Authorized users only.")
+
+    if not st.session_state.get(S_SHOW_AUTH):
+        st.stop()
+
+
+def render_auth_gate() -> None:
+    """Require email-and-password authentication for private Datablix workspaces."""
+    if user_is_authenticated() or st.session_state.get(S_DEMO_MODE):
+        return
+
+    render_brand_header()
+    if st.button("Back", key="db_auth_back"):
+        st.session_state.pop(S_SHOW_AUTH, None)
+        st.rerun()
+
+    st.markdown("### Access Your Workspace")
+    st.write("Sign in with the email and password assigned to your Datablix account.")
     if get_supabase_auth_client() is None:
         st.error("Authentication is not configured. Add SUPABASE_PUBLISHABLE_KEY to Streamlit Secrets.")
         st.stop()
 
-    sign_in_tab, create_tab = st.tabs(["Sign in", "Create account"])
-    with sign_in_tab:
-        with st.form("db_sign_in_form"):
-            email = st.text_input("Email address", key="db_login_email")
-            password = st.text_input("Password", type="password", key="db_login_password")
-            submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
-        if submitted:
-            try:
-                response = get_supabase_auth_client().auth.sign_in_with_password(
-                    {"email": email.strip().lower(), "password": password}
-                )
-                if _remember_auth_response(response):
-                    st.rerun()
-                st.error("The account could not be signed in.")
-            except Exception as exc:
-                st.error("Sign-in failed. Check the email and password, then try again.")
+    with st.form("db_sign_in_form"):
+        email = st.text_input("Email address", placeholder="name@example.com")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Access Workspace", type="primary", use_container_width=True)
 
-    with create_tab:
-        with st.form("db_create_account_form"):
-            new_email = st.text_input("Work email", key="db_signup_email")
-            new_password = st.text_input("Create password", type="password", key="db_signup_password")
-            confirm_password = st.text_input("Confirm password", type="password", key="db_signup_confirm")
-            create_submitted = st.form_submit_button("Create account", type="primary", use_container_width=True)
-        if create_submitted:
-            if len(new_password) < 8:
-                st.error("Use a password with at least 8 characters.")
-            elif new_password != confirm_password:
-                st.error("The passwords do not match.")
-            else:
-                try:
-                    response = get_supabase_auth_client().auth.sign_up(
-                        {"email": new_email.strip().lower(), "password": new_password}
-                    )
-                    if _remember_auth_response(response):
-                        st.rerun()
-                    st.success("Account created. Check your email to confirm it, then sign in.")
-                except Exception:
-                    st.error("The account could not be created. It may already exist.")
+    if submitted:
+        ok, message = sign_in_with_password(email, password)
+        if ok:
+            st.rerun()
+        st.error(message)
+
+    st.caption("Only authorized users with an existing account can sign in.")
     st.stop()
 
 
@@ -450,6 +496,8 @@ def project_access_role(project_id: str) -> str:
 
 
 def user_can_edit_project(project_id: str | None = None) -> bool:
+    if st.session_state.get(S_DEMO_MODE):
+        return True
     target = str(project_id or st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
     role = str(st.session_state.get(S_PROJECT_ROLE, "") or project_access_role(target)).lower()
     return role in {"owner", "editor"}
@@ -758,6 +806,8 @@ def save_cloud_project() -> bool:
 
 def restore_autosaved_project() -> bool:
     """Restore cloud state first, then use the local refresh fallback."""
+    if st.session_state.get(S_DEMO_MODE) or not user_is_authenticated():
+        return False
     if restore_cloud_project():
         return True
     if S_WORKING in st.session_state or not _autosave_file().exists():
@@ -780,6 +830,8 @@ def restore_autosaved_project() -> bool:
 
 def autosave_current_project() -> bool:
     """Save to permanent cloud storage and retain a local refresh fallback."""
+    if st.session_state.get(S_DEMO_MODE) or not user_is_authenticated():
+        return False
     if S_WORKING not in st.session_state:
         return False
     cloud_saved = save_cloud_project()
@@ -2542,14 +2594,56 @@ def create_manual_project(
     return company_id
 
 
+def start_demo_workspace() -> None:
+    """Load an editable, session-only rental property demonstration."""
+    create_manual_project("Ottawa Rental Property Research Demo")
+    st.session_state[S_DEMO_MODE] = True
+    st.session_state[S_PROJECT_ROLE] = "owner"
+    st.session_state.pop(S_CLOUD_PROJECT_ID, None)
+    st.session_state.pop(S_CLOUD_STATE_HASH, None)
+
+    companies = [
+        ("North River Property Management", "https://example.com/north-river", "Initial assignment"),
+        ("Capital Key Apartments", "https://example.com/capital-key", "Initial assignment"),
+        ("Maple Court Residential", "https://example.com/maple-court", "Added later"),
+    ]
+    company_ids = {}
+    for name, website, scope in companies:
+        cid, _ = add_company_to_project(name, website, scope, "Fictional company used for the Datablix demonstration.")
+        company_ids[name] = cid
+
+    today = date.today().isoformat()
+    rows = [
+        {"Building Name":"Riverside Place", "Street Address":"120 Demo Street", "City":"Ottawa", "Province":"Ontario", "Postal Code":"K1A 0A1", "Management/Owner":"North River Property Management", "Company ID":company_ids["North River Property Management"], "Phone":"613-555-0101", "Primary Email":"leasing@example.com", "Website":"https://example.com/north-river/riverside", "Number of Apartments":84, "Source URL":"https://example.com/north-river/riverside", "Date Researched":today, "Researcher":"Demo Researcher", "Verification Status":"Verified", "Research Status":"Completed", "Record Decision":"Keep"},
+        {"Building Name":"Capital View Apartments", "Street Address":"245 Sample Avenue", "City":"Ottawa", "Province":"Ontario", "Postal Code":"K1B 2B2", "Management/Owner":"Capital Key Apartments", "Company ID":company_ids["Capital Key Apartments"], "Phone":"613-555-0112", "Website":"https://example.com/capital-key/capital-view", "Number of Apartments":126, "Source URL":"https://example.com/capital-key/capital-view", "Date Researched":today, "Researcher":"Demo Researcher", "Verification Status":"Needs Review", "Research Status":"In Progress", "Record Decision":"Needs Review"},
+        {"Building Name":"Maple Court", "Street Address":"88 Research Road", "City":"Ottawa", "Province":"Ontario", "Postal Code":"K1C 3C3", "Management/Owner":"Maple Court Residential", "Company ID":company_ids["Maple Court Residential"], "Phone":"613-555-0124", "Primary Email":"contact@example.com", "Website":"https://example.com/maple-court", "Number of Apartments":48, "Source URL":"https://example.com/maple-court", "Date Researched":today, "Researcher":"Demo Researcher", "Verification Status":"Verified", "Research Status":"Completed", "Record Decision":"Keep"},
+        {"Building Name":"Capital View Apartments", "Street Address":"245 Sample Ave", "City":"Ottawa", "Province":"ON", "Postal Code":"K1B2B2", "Management/Owner":"Capital Key Apartments", "Company ID":company_ids["Capital Key Apartments"], "Website":"https://example.com/capital-key", "Source URL":"", "Date Researched":today, "Researcher":"Demo Researcher", "Verification Status":"Not Verified", "Research Status":"Needs Follow-up", "Record Decision":"Possible Duplicate"},
+    ]
+    frame = prepare_data(pd.DataFrame(rows))
+    for column in INTERNAL_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    frame = ensure_ids(normalize_workflow(frame))
+    st.session_state[S_WORKING] = frame
+    st.session_state[S_ORIGINAL] = frame.copy()
+    st.session_state[S_QA_BASELINE] = qa_issue_rows(qa_checks(frame))
+    st.session_state[S_ACTIVE_COMPANY] = company_ids["North River Property Management"]
+    st.session_state[S_SOURCE_TYPE] = "Demo workspace"
+    st.session_state[S_SOURCE_REF] = "Fictional sample rental property information"
+    st.session_state[S_FLASH] = "Demo workspace opened. Changes are temporary and are not saved."
+    st.session_state["db_section"] = "Research projects & companies"
+
+
 def return_to_project_start() -> None:
     """Leave the active project without deleting its permanent cloud copy."""
+    was_authenticated = user_is_authenticated()
     clear_autosaved_project()
     prefixes = ("db_", "website_scan", "full_scan")
     for key in list(st.session_state.keys()):
         if str(key).startswith(prefixes):
             st.session_state.pop(key, None)
-    st.session_state[S_SKIP_CLOUD_RESTORE] = True
+    if was_authenticated:
+        st.session_state[S_SKIP_CLOUD_RESTORE] = True
 
 
 def generate_id(df):
@@ -3004,6 +3098,143 @@ def _sidebar_company_rows(company_rows: list[dict], active_company_id: str) -> s
     return "".join(blocks)
 
 
+def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFrame) -> None:
+    """Render project-wide and company-level rental-property research analytics."""
+    registry = normalize_company_registry(registry)
+    records = normalize_internal(records) if isinstance(records, pd.DataFrame) else empty_internal()
+    project = project_progress_snapshot(registry, records)
+
+    st.subheader("Analytics dashboard")
+    st.write(
+        "Track rental-property research coverage, verification progress, unresolved quality issues, "
+        "and company performance across the current project."
+    )
+
+    project_tab, company_tab = st.tabs(["Project analytics", "Company analytics"])
+
+    with project_tab:
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("Companies", f"{project['companies']:,}")
+        metric_cols[1].metric("Buildings researched", f"{project['buildings']:,}")
+        metric_cols[2].metric("Verified records", f"{project['verified_records']:,}")
+        metric_cols[3].metric("Companies complete", f"{project['completed']:,}")
+        metric_cols[4].metric("Records needing attention", f"{project['attention_records']:,}")
+
+        if project["companies"]:
+            project_chart = company_progress_table(registry, records, project)
+            chart_data = project_chart.set_index("Company")[["Buildings", "Reviewed", "Verified", "Needs attention"]]
+            st.caption("Research and review coverage by company")
+            st.bar_chart(chart_data, width="stretch")
+
+            status_counts = (
+                project_chart["Status"]
+                .value_counts()
+                .rename_axis("Company status")
+                .reset_index(name="Companies")
+            )
+            left, right = st.columns([1.5, 1])
+            with left:
+                st.caption("Company progress table")
+                st.dataframe(
+                    project_chart[["Company", "Buildings", "Verified", "Needs attention", "Progress", "Status"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+            with right:
+                st.caption("Companies by status")
+                st.dataframe(status_counts, width="stretch", hide_index=True)
+        else:
+            st.info("Add companies to the project to activate project-level analytics.")
+
+    with company_tab:
+        if registry.empty:
+            st.info("Add a company to see company-level analytics.")
+            return
+
+        company_ids = registry["Company ID"].astype(str).tolist()
+        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        company_index = company_ids.index(active_id) if active_id in company_ids else 0
+        selected_id = st.selectbox(
+            "Company",
+            company_ids,
+            index=company_index,
+            format_func=lambda company_id: company_label(
+                registry.loc[registry["Company ID"].eq(company_id)].iloc[0]
+            ),
+            key="db_analytics_company_selector",
+        )
+        selected_row = registry.loc[registry["Company ID"].eq(selected_id)].iloc[0]
+        snapshot = company_progress_snapshot(selected_row, records)
+
+        company_metrics = st.columns(5)
+        company_metrics[0].metric("Buildings collected", f"{snapshot['collected']:,}")
+        company_metrics[1].metric("Reviewed", f"{snapshot['reviewed']:,}")
+        company_metrics[2].metric("Verified", f"{snapshot['verified']:,}")
+        company_metrics[3].metric("Need attention", f"{snapshot['attention']:,}")
+        company_metrics[4].metric("Verification progress", f"{snapshot['progress_percent']:,}%")
+
+        company_records = records.loc[records["Company ID"].astype(str).eq(selected_id)].copy()
+        if company_records.empty:
+            st.info("No building records have been added for this company yet.")
+        else:
+            company_qa = qa_results(company_records)
+            coverage = pd.DataFrame({
+                "Stage": ["Collected", "Reviewed", "Verified", "Need attention"],
+                "Records": [snapshot["collected"], snapshot["reviewed"], snapshot["verified"], snapshot["attention"]],
+            }).set_index("Stage")
+            st.caption("Company research funnel")
+            st.bar_chart(coverage, width="stretch")
+
+            source_links = int(company_qa["Source URL"].fillna("").astype(str).str.strip().ne("").sum())
+            source_rate = round((source_links / len(company_qa)) * 100) if len(company_qa) else 0
+            passing = int(company_qa["QA Status"].eq("Pass").sum())
+            critical = int(company_qa["QA Status"].eq("Critical").sum())
+
+            quality_cols = st.columns(4)
+            quality_cols[0].metric("Records with source links", f"{source_links:,}")
+            quality_cols[1].metric("Source coverage", f"{source_rate}%")
+            quality_cols[2].metric("Passing QA", f"{passing:,}")
+            quality_cols[3].metric("Critical records", f"{critical:,}")
+
+            quality_summary = (
+                company_qa["QA Status"]
+                .value_counts()
+                .rename_axis("QA status")
+                .reset_index(name="Records")
+            )
+            verification_summary = (
+                company_qa["Verification Status"]
+                .value_counts()
+                .rename_axis("Verification status")
+                .reset_index(name="Records")
+            )
+            q_left, q_right = st.columns(2)
+            with q_left:
+                st.caption("Quality status")
+                st.dataframe(quality_summary, width="stretch", hide_index=True)
+            with q_right:
+                st.caption("Verification status")
+                st.dataframe(verification_summary, width="stretch", hide_index=True)
+
+        st.markdown(
+            f'<div class="db-next-action">'
+            f'<div class="db-next-action-label">NEXT RECOMMENDED ACTION</div>'
+            f'<strong>{escape(snapshot["next_title"])}</strong>'
+            f'<span>{escape(snapshot["next_copy"])}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            snapshot["next_button"],
+            type="primary",
+            width="stretch",
+            key=f"db_analytics_next_{selected_id}",
+        ):
+            st.session_state[S_ACTIVE_COMPANY] = selected_id
+            go_to(snapshot["next_section"])
+            st.rerun()
+
+
 def render_project_progress_sidebar() -> None:
     """Keep the sidebar focused on context, progress, and one next action."""
     st.markdown("## Research progress")
@@ -3113,15 +3344,23 @@ def render_project_progress_sidebar() -> None:
             st.caption("Choose or change the active company from the Project page.")
 
     st.divider()
-    st.caption("SIGNED IN")
-    st.write(current_user_email())
-    account_cols = st.columns(2)
-    if account_cols[0].button("Sign out", width="stretch", key="db_sidebar_sign_out"):
-        sign_out_datablix()
-        st.rerun()
-    account_cols[1].caption(f"Role: {st.session_state.get(S_PROJECT_ROLE, 'owner').title()}")
+    if st.session_state.get(S_DEMO_MODE):
+        st.caption("DEMO WORKSPACE")
+        st.write("Sample rental property information")
+        if st.button("Leave Demo", width="stretch", key="db_sidebar_leave_demo"):
+            return_to_project_start()
+            st.rerun()
+        project_id = ""
+    else:
+        st.caption("SIGNED IN")
+        st.write(current_user_email())
+        account_cols = st.columns(2)
+        if account_cols[0].button("Sign out", width="stretch", key="db_sidebar_sign_out"):
+            sign_out_datablix()
+            st.rerun()
+        account_cols[1].caption(f"Role: {st.session_state.get(S_PROJECT_ROLE, 'owner').title()}")
+        project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
 
-    project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
     if project_id and st.session_state.get(S_PROJECT_ROLE) == "owner":
         with st.expander("Share project", expanded=False):
             st.caption("Add a team member by the same email they use for Datablix.")
@@ -3529,9 +3768,13 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 }
 </style>
 """)
+render_public_entry_gate()
 render_auth_gate()
-restore_autosaved_project()
+if user_is_authenticated():
+    restore_autosaved_project()
 render_brand_header()
+if st.session_state.get(S_DEMO_MODE):
+    st.info("Demo workspace: sample information only. Changes are temporary and will not be saved.")
 
 
 # -----------------------------
@@ -3546,13 +3789,13 @@ with st.sidebar:
 # -----------------------------
 if S_WORKING not in st.session_state:
     render_page_heading(
-        "GET STARTED",
-        "Organize your research by project",
-        "Create or continue one project first. Each company is registered inside that project, and every building finding stays attached to its company.",
+        "DATABLIX",
+        "Your Rental Property Research & Data Audit Platform",
+        "Transform public rental property research into clear, reliable, and review-ready information. Organize projects, research apartment buildings and property companies, check every finding against its public source, and generate clear analytics and reports for decision-making.",
     )
     render_guidance(
-        "The Datablix structure",
-        "Project → Company → Building records. You will always know where your research is being saved and what to do next.",
+        "From public-source research to trusted property records",
+        "Create a project, save each owner or management company under it, collect building observations, verify source evidence, resolve data-quality issues, and track progress through project and company analytics.",
     )
 
     journey = st.radio(
@@ -3915,6 +4158,9 @@ if section == "Research projects & companies":
             f"{project_snapshot['not_started']:,} not started · "
             f"{project_snapshot['verified_records']:,} building records verified"
         )
+
+    with st.container(border=True):
+        render_project_company_analytics(project_registry, working)
 
     with st.expander("Edit project name", expanded=False):
         with st.form(f"db_project_name_form_{project_context_token}"):
