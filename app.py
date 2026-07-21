@@ -1,7 +1,11 @@
 import base64
 import hashlib
 import io
+import json
+import os
+import pickle
 import re
+import uuid
 from html import escape
 from datetime import date, datetime
 from pathlib import Path
@@ -12,6 +16,12 @@ import pandas as pd
 import streamlit as st
 from openpyxl.styles import Alignment, Border, Font, Side
 from datablix_scanner_panel import render_website_scanner_panel
+
+try:
+    from supabase import Client, create_client
+except ImportError:  # Cloud persistence remains optional until dependencies are installed.
+    Client = object
+    create_client = None
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
@@ -246,6 +256,287 @@ S_SCAN_CANDIDATES = "db_scan_candidates_history"
 S_SCAN_PAGES = "db_scan_pages_history"
 S_MANUAL_ENTRY_OPEN = "db_manual_entry_open"
 S_PENDING_ACTIVE_COMPANY = "db_pending_active_company"
+S_CLOUD_PROJECT_ID = "db_cloud_project_id"
+S_CLOUD_STATE_HASH = "db_cloud_state_hash"
+S_SKIP_CLOUD_RESTORE = "db_skip_cloud_restore"
+
+AUTOSAVE_DIRECTORY = Path(
+    os.environ.get("DATABLIX_AUTOSAVE_DIRECTORY", "/tmp/datablix_autosave")
+)
+AUTOSAVE_FILE = AUTOSAVE_DIRECTORY / "current_project.pkl"
+AUTOSAVE_STATE_KEYS = [
+    S_FILE, S_ORIGINAL, S_WORKING, S_NAME, S_SHEET, S_MAPPING,
+    S_SOURCE_TYPE, S_SOURCE_REF, S_SELECTOR, S_EDIT_COUNT,
+    S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY, S_QA_BASELINE,
+    S_PROJECT_LOADED, S_SCAN_HISTORY, S_SCAN_CANDIDATES, S_SCAN_PAGES,
+    S_CLOUD_PROJECT_ID, "db_section",
+]
+
+
+def _secret_value(name: str, default: str = "") -> str:
+    """Read a Streamlit secret or environment variable without exposing it."""
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        value = default
+    return str(value or os.environ.get(name, default)).strip()
+
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_client():
+    """Create the server-side Supabase client when cloud saving is configured."""
+    if create_client is None:
+        return None
+    url = _secret_value("SUPABASE_URL")
+    key = _secret_value("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def cloud_persistence_available() -> bool:
+    return get_supabase_client() is not None
+
+
+def _json_safe(value):
+    """Convert Streamlit and pandas state into JSON-safe structures."""
+    if isinstance(value, pd.DataFrame):
+        return {
+            "__datablix_type__": "dataframe",
+            "value": json.loads(value.to_json(orient="split", date_format="iso")),
+        }
+    if isinstance(value, pd.Series):
+        return {
+            "__datablix_type__": "series",
+            "value": json.loads(value.to_json(date_format="iso")),
+        }
+    if isinstance(value, (datetime, date, pd.Timestamp)):
+        return {"__datablix_type__": "datetime", "value": value.isoformat()}
+    if isinstance(value, Path):
+        return {"__datablix_type__": "path", "value": str(value)}
+    if isinstance(value, tuple):
+        return {"__datablix_type__": "tuple", "value": [_json_safe(v) for v in value]}
+    if isinstance(value, set):
+        return {"__datablix_type__": "set", "value": [_json_safe(v) for v in value]}
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if value is pd.NA:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _from_json_safe(value):
+    if isinstance(value, list):
+        return [_from_json_safe(v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    marker = value.get("__datablix_type__")
+    if marker == "dataframe":
+        payload = value.get("value", {})
+        return pd.DataFrame(
+            data=payload.get("data", []),
+            columns=payload.get("columns", []),
+            index=payload.get("index", None),
+        )
+    if marker == "series":
+        return pd.Series(value.get("value", {}))
+    if marker == "datetime":
+        raw = value.get("value", "")
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return raw
+    if marker == "path":
+        return Path(value.get("value", ""))
+    if marker == "tuple":
+        return tuple(_from_json_safe(v) for v in value.get("value", []))
+    if marker == "set":
+        return set(_from_json_safe(v) for v in value.get("value", []))
+    return {k: _from_json_safe(v) for k, v in value.items()}
+
+
+def _current_state_payload() -> dict:
+    state = {
+        key: st.session_state[key]
+        for key in AUTOSAVE_STATE_KEYS
+        if key in st.session_state
+    }
+    return {
+        "schema_version": 1,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "state": _json_safe(state),
+    }
+
+
+def _state_hash(payload: dict) -> str:
+    stable = json.dumps(payload.get("state", {}), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+
+def list_cloud_projects() -> list[dict]:
+    client = get_supabase_client()
+    if client is None:
+        return []
+    workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
+    try:
+        response = (
+            client.table("datablix_project_state")
+            .select("project_id,project_name,updated_at")
+            .eq("workspace_key", workspace_key)
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        return list(response.data or [])
+    except Exception:
+        return []
+
+
+def restore_cloud_project(project_id: str | None = None) -> bool:
+    """Restore a selected cloud project, or the most recently updated one."""
+    if S_WORKING in st.session_state or st.session_state.get(S_SKIP_CLOUD_RESTORE):
+        return False
+    client = get_supabase_client()
+    if client is None:
+        return False
+    workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
+    try:
+        query = (
+            client.table("datablix_project_state")
+            .select("project_id,project_name,state_json,state_hash,updated_at")
+            .eq("workspace_key", workspace_key)
+        )
+        if project_id:
+            query = query.eq("project_id", project_id).limit(1)
+        else:
+            query = query.order("updated_at", desc=True).limit(1)
+        response = query.execute()
+        rows = list(response.data or [])
+        if not rows:
+            return False
+        row = rows[0]
+        payload = row.get("state_json") or {}
+        state = _from_json_safe(payload.get("state", {}))
+        if not isinstance(state, dict) or S_WORKING not in state:
+            return False
+        for key, value in state.items():
+            if key in AUTOSAVE_STATE_KEYS:
+                st.session_state[key] = value
+        st.session_state[S_CLOUD_PROJECT_ID] = str(row.get("project_id", ""))
+        st.session_state[S_CLOUD_STATE_HASH] = str(row.get("state_hash", ""))
+        st.session_state[S_FLASH] = "Your project was restored from permanent cloud storage."
+        return True
+    except Exception:
+        return False
+
+
+def save_cloud_project() -> bool:
+    """Upsert the active project into Supabase only when its state changed."""
+    if S_WORKING not in st.session_state:
+        return False
+    client = get_supabase_client()
+    if client is None:
+        return False
+    project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
+    if not project_id:
+        project_id = str(uuid.uuid4())
+        st.session_state[S_CLOUD_PROJECT_ID] = project_id
+    payload = _current_state_payload()
+    fingerprint = _state_hash(payload)
+    if fingerprint == st.session_state.get(S_CLOUD_STATE_HASH):
+        return True
+    workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
+    project_name = str(st.session_state.get(S_PROJECT_NAME, "Datablix project")).strip() or "Datablix project"
+    row = {
+        "workspace_key": workspace_key,
+        "project_id": project_id,
+        "project_name": project_name,
+        "state_json": payload,
+        "state_hash": fingerprint,
+        "updated_at": datetime.now().astimezone().isoformat(),
+    }
+    try:
+        (
+            client.table("datablix_project_state")
+            .upsert(row, on_conflict="workspace_key,project_id")
+            .execute()
+        )
+        st.session_state[S_CLOUD_STATE_HASH] = fingerprint
+        return True
+    except Exception:
+        return False
+
+
+def restore_autosaved_project() -> bool:
+    """Restore cloud state first, then use the local refresh fallback."""
+    if restore_cloud_project():
+        return True
+    if S_WORKING in st.session_state or not AUTOSAVE_FILE.exists():
+        return False
+    try:
+        payload = pickle.loads(AUTOSAVE_FILE.read_bytes())
+        if not isinstance(payload, dict):
+            return False
+        state = payload.get("state", {})
+        if not isinstance(state, dict) or S_WORKING not in state:
+            return False
+        for key, value in state.items():
+            if key in AUTOSAVE_STATE_KEYS:
+                st.session_state[key] = value
+        st.session_state[S_FLASH] = "Your last local project was restored automatically."
+        return True
+    except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError, TypeError):
+        return False
+
+
+def autosave_current_project() -> bool:
+    """Save to permanent cloud storage and retain a local refresh fallback."""
+    if S_WORKING not in st.session_state:
+        return False
+    cloud_saved = save_cloud_project()
+    state = {
+        key: st.session_state[key]
+        for key in AUTOSAVE_STATE_KEYS
+        if key in st.session_state
+    }
+    payload = {
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "state": state,
+    }
+    local_saved = False
+    try:
+        AUTOSAVE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        temporary = AUTOSAVE_FILE.with_suffix(".tmp")
+        temporary.write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+        os.replace(temporary, AUTOSAVE_FILE)
+        local_saved = True
+    except (OSError, pickle.PickleError, TypeError, AttributeError):
+        pass
+    return cloud_saved or local_saved
+
+
+def clear_autosaved_project() -> None:
+    """Clear only the temporary local copy; permanent cloud projects remain available."""
+    try:
+        AUTOSAVE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # =========================================================
@@ -1650,6 +1941,8 @@ def load_project_workbook(uploaded):
     st.session_state[S_SCAN_CANDIDATES] = scan_candidates
     st.session_state[S_SCAN_PAGES] = scan_pages
     st.session_state[S_PROJECT_LOADED] = True
+    st.session_state[S_CLOUD_PROJECT_ID] = str(uuid.uuid4())
+    st.session_state.pop(S_CLOUD_STATE_HASH, None)
     if not registry.empty:
         active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
         if active_id not in set(registry["Company ID"].astype(str)):
@@ -1702,6 +1995,8 @@ def open_workspace(
         st.session_state[S_SCAN_CANDIDATES] = pd.DataFrame()
         st.session_state[S_SCAN_PAGES] = pd.DataFrame()
         st.session_state[S_PROJECT_LOADED] = True
+        st.session_state[S_CLOUD_PROJECT_ID] = str(uuid.uuid4())
+        st.session_state.pop(S_CLOUD_STATE_HASH, None)
         st.session_state[S_ACTIVE_COMPANY] = (
             registry.iloc[0]["Company ID"] if not registry.empty else ""
         )
@@ -1975,11 +2270,13 @@ def create_manual_project(
 
 
 def return_to_project_start() -> None:
-    """Clear the active project and return to the main onboarding screen."""
+    """Leave the active project without deleting its permanent cloud copy."""
+    clear_autosaved_project()
     prefixes = ("db_", "website_scan", "full_scan")
     for key in list(st.session_state.keys()):
         if str(key).startswith(prefixes):
             st.session_state.pop(key, None)
+    st.session_state[S_SKIP_CLOUD_RESTORE] = True
 
 
 def generate_id(df):
@@ -2929,6 +3226,7 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 }
 </style>
 """)
+restore_autosaved_project()
 render_brand_header()
 
 
@@ -2963,8 +3261,33 @@ if S_WORKING not in st.session_state:
     if journey == "Continue an existing project":
         with st.container(border=True):
             st.subheader("Continue a saved Datablix project")
+            cloud_projects = list_cloud_projects()
+            if cloud_projects:
+                project_labels = {
+                    f"{row.get('project_name', 'Datablix project')} — {str(row.get('updated_at', ''))[:16].replace('T', ' ')}": str(row.get('project_id', ''))
+                    for row in cloud_projects
+                }
+                selected_cloud_label = st.selectbox(
+                    "Projects saved permanently",
+                    list(project_labels.keys()),
+                    key="db_cloud_project_selector",
+                )
+                if st.button(
+                    "Open selected project",
+                    type="primary",
+                    width="stretch",
+                    key="db_open_cloud_project",
+                ):
+                    st.session_state.pop(S_SKIP_CLOUD_RESTORE, None)
+                    if restore_cloud_project(project_labels[selected_cloud_label]):
+                        st.rerun()
+                    else:
+                        st.error("The cloud project could not be opened.")
+                st.divider()
+            elif not cloud_persistence_available():
+                st.info("Permanent cloud saving will activate after Supabase secrets are added.")
             st.write(
-                "Open the master project workbook to restore its companies, building records, scan history, quality baseline, and progress."
+                "You can also open a master project workbook to restore its companies, building records, scan history, quality baseline, and progress."
             )
             landing_project = st.file_uploader(
                 "Saved Datablix project",
@@ -4646,3 +4969,6 @@ elif section == "Downloads":
             disabled=quality.empty,
             width="stretch",
         )
+
+# Persist the latest completed state after every Streamlit rerun.
+autosave_current_project()
