@@ -242,7 +242,6 @@ PROVINCES = {
 }
 
 FRESHNESS_DAYS = 180
-WORKFLOW_BUILD = "Project Dashboard Workflow 2026.07.21-r4"
 
 S_FILE = "db_file_signature"
 S_ORIGINAL = "db_original"
@@ -2280,11 +2279,6 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 """)
 render_brand_header()
 
-st.markdown(
-    f'''<div style="display:inline-block;margin:.15rem 0 1rem;padding:.32rem .65rem;border:1px solid rgba(49,130,206,.35);border-radius:999px;background:rgba(49,130,206,.08);font-size:.78rem;font-weight:700;">Interface build: {WORKFLOW_BUILD}</div>''',
-    unsafe_allow_html=True,
-)
-
 
 # -----------------------------
 # Sidebar: project research dashboard
@@ -2292,7 +2286,7 @@ st.markdown(
 with st.sidebar:
     st.markdown("## Project research dashboard")
     st.caption(
-        f"Context and progress only · {WORKFLOW_BUILD}. Start and manage work from the main page."
+        "Context and progress only. Start and manage work from the main page."
     )
 
     if S_WORKING not in st.session_state:
@@ -2670,7 +2664,6 @@ if section == "Project & companies":
         "Project and company registry",
         "Register the project, add or select assigned companies, then choose whether to scan a company website or enter a building manually.",
     )
-    st.caption(f"Workflow build: **{WORKFLOW_BUILD}**")
     render_guidance(
         "One project, many companies, many buildings.",
         "Each website scan and every building record must remain attached to the selected company inside the active project.",
