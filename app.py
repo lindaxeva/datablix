@@ -15,6 +15,7 @@ from datablix_scanner_panel import render_website_scanner_panel
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
+DATABLIX_BUILD = "Prompt-First Company Workspace 2026.07.21-v2"
 
 # =========================================================
 # Configuration
@@ -1211,6 +1212,17 @@ def render_listing_preview(df, limit=5):
             f"Apartment Building {listing_number}: {name}",
             expanded=listing_number == 1,
         ):
+            source_url = _excel_display_value(row.get("Source URL"))
+            if source_url.startswith(("http://", "https://")):
+                st.link_button(
+                    "Open supporting source",
+                    source_url,
+                    type="secondary",
+                    use_container_width=False,
+                )
+            else:
+                st.caption("No supporting source link has been recorded for this listing.")
+
             st.dataframe(
                 listing_block_dataframe(row),
                 width="stretch",
@@ -3709,6 +3721,7 @@ elif section == "Website scanner":
         "Company website research",
         "Generate one strong editable prompt, use it with the AI tool of your choice, and import the completed spreadsheet into Datablix for validation and human review.",
     )
+    st.caption(f"Workspace build: {DATABLIX_BUILD}")
 
     st.subheader("Company workspace")
     with st.container(border=True):
@@ -4151,13 +4164,25 @@ elif section == "Review records":
                 else:
                     edit_fields = edit_presets[preset]
 
+                # Keep the exact supporting source visible for every observation row,
+                # regardless of the selected review preset. The editable Source URL
+                # stores the evidence link; Check Source provides a consistent,
+                # one-click link for verification.
+                filtered = filtered.copy()
+                filtered["Check Source"] = filtered["Source URL"].where(
+                    ~unresolved_mask(filtered["Source URL"]),
+                    pd.NA,
+                )
                 context = ["Record ID", "Working Record Label"] + edit_fields + [
-                    "Research Gaps", "QA Status", "Record Readiness"
+                    "Source URL", "Check Source", "Research Gaps", "QA Status", "Record Readiness"
                 ]
                 context = list(dict.fromkeys(c for c in context if c in filtered.columns))
                 locked = [
                     c for c in context
-                    if c in ["Record ID", "Working Record Label", "Research Gaps", "QA Status", "Record Readiness"]
+                    if c in [
+                        "Record ID", "Working Record Label", "Check Source",
+                        "Research Gaps", "QA Status", "Record Readiness"
+                    ]
                 ]
                 edited = st.data_editor(
                     filtered[context],
@@ -4172,7 +4197,17 @@ elif section == "Review records":
                         "Phone": st.column_config.TextColumn("Phone Number"),
                         "Primary Email": st.column_config.TextColumn("Email Contact", width="large"),
                         "Website": st.column_config.TextColumn("Website", width="large"),
-                        "Source URL": st.column_config.LinkColumn("Source URL", width="large"),
+                        "Source URL": st.column_config.LinkColumn(
+                            "Source URL",
+                            width="large",
+                            help="Exact official page supporting this observation. You can edit the URL and open it directly.",
+                        ),
+                        "Check Source": st.column_config.LinkColumn(
+                            "Check Source",
+                            width="medium",
+                            display_text="Open source",
+                            help="Open the supporting page for this observation in a new tab.",
+                        ),
                         "Date Researched": st.column_config.DateColumn("Date Researched", format="YYYY-MM-DD"),
                         "Research Status": st.column_config.SelectboxColumn(
                             "Research Status", options=RESEARCH_STATUSES, required=True
