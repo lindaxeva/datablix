@@ -259,6 +259,9 @@ S_COMPANIES = "db_company_registry"
 S_ACTIVE_COMPANY = "db_active_company_id"
 S_QA_BASELINE = "db_quality_baseline"
 S_PROJECT_LOADED = "db_project_loaded"
+S_SCAN_HISTORY = "db_scan_history"
+S_SCAN_CANDIDATES = "db_scan_candidates_history"
+S_SCAN_PAGES = "db_scan_pages_history"
 
 
 # =========================================================
@@ -1422,6 +1425,9 @@ def project_workbook_bytes():
         "Quality Baseline": baseline,
         "Quality Impact": quality_impact_summary(qa_frame, baseline),
         "Report Summary": report_summary(qa_frame, registry, baseline=baseline),
+        "Scan History": st.session_state.get(S_SCAN_HISTORY, pd.DataFrame()),
+        "Scan Candidates": st.session_state.get(S_SCAN_CANDIDATES, pd.DataFrame()),
+        "Scan Pages": st.session_state.get(S_SCAN_PAGES, pd.DataFrame()),
     }
     return excel_bytes(sheets)
 
@@ -1446,6 +1452,21 @@ def load_project_workbook(uploaded):
         baseline = (
             pd.read_excel(workbook, sheet_name="Quality Baseline")
             if "Quality Baseline" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        scan_history = (
+            pd.read_excel(workbook, sheet_name="Scan History")
+            if "Scan History" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        scan_candidates = (
+            pd.read_excel(workbook, sheet_name="Scan Candidates")
+            if "Scan Candidates" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        scan_pages = (
+            pd.read_excel(workbook, sheet_name="Scan Pages")
+            if "Scan Pages" in workbook.sheet_names
             else pd.DataFrame()
         )
         project_name = safe_filename(uploaded.name).replace("_", " ").title()
@@ -1473,10 +1494,14 @@ def load_project_workbook(uploaded):
         "Saved Datablix project",
         uploaded.name,
         message=f"Resumed {project_name} with {len(working):,} building record(s).",
+        registry=registry,
     )
     st.session_state[S_PROJECT_NAME] = project_name
     st.session_state[S_COMPANIES] = registry
     st.session_state[S_QA_BASELINE] = baseline
+    st.session_state[S_SCAN_HISTORY] = scan_history
+    st.session_state[S_SCAN_CANDIDATES] = scan_candidates
+    st.session_state[S_SCAN_PAGES] = scan_pages
     st.session_state[S_PROJECT_LOADED] = True
     if not registry.empty:
         active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
@@ -1488,12 +1513,28 @@ def load_project_workbook(uploaded):
 # Session operations
 # =========================================================
 
-def open_workspace(mapped, mapping, signature, name, sheet, source_type, source_ref="", selector="", message="Rental property workspace opened."):
+def open_workspace(
+    mapped,
+    mapping,
+    signature,
+    name,
+    sheet,
+    source_type,
+    source_ref="",
+    selector="",
+    message="Rental property workspace opened.",
+    registry=None,
+):
     if st.session_state.get(S_FILE) != signature:
-        mapped, registry = synchronize_company_registry(
-            mapped,
-            st.session_state.get(S_COMPANIES),
+        starting_registry = (
+            normalize_company_registry(registry)
+            if isinstance(registry, pd.DataFrame)
+            else empty_company_registry()
         )
+        mapped, registry = synchronize_company_registry(mapped, starting_registry)
+
+        # A newly opened source is a new project context. Do not silently carry
+        # companies, scan results, or QA baselines from the previous project.
         st.session_state[S_FILE] = signature
         st.session_state[S_ORIGINAL] = mapped.copy()
         st.session_state[S_WORKING] = mapped.copy()
@@ -1505,32 +1546,228 @@ def open_workspace(mapped, mapping, signature, name, sheet, source_type, source_
         st.session_state[S_SELECTOR] = selector
         st.session_state[S_EDIT_COUNT] = 0
         st.session_state[S_COMPANIES] = registry
-        st.session_state.setdefault(S_PROJECT_NAME, safe_filename(name).replace("_", " ").title())
-        st.session_state.setdefault(S_QA_BASELINE, pd.DataFrame())
-        if not registry.empty and not str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip():
-            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
+        st.session_state[S_PROJECT_NAME] = (
+            safe_filename(name).replace("_", " ").title()
+            or "Datablix master project"
+        )
+        st.session_state[S_QA_BASELINE] = pd.DataFrame()
+        st.session_state[S_SCAN_HISTORY] = pd.DataFrame()
+        st.session_state[S_SCAN_CANDIDATES] = pd.DataFrame()
+        st.session_state[S_SCAN_PAGES] = pd.DataFrame()
+        st.session_state[S_PROJECT_LOADED] = True
+        st.session_state[S_ACTIVE_COMPANY] = (
+            registry.iloc[0]["Company ID"] if not registry.empty else ""
+        )
+
+        # Clear only the current scanner UI/session cache. Historical scan logs
+        # remain in the project tables above.
+        for key in list(st.session_state):
+            if (
+                key.startswith("website_scan_")
+                or key.startswith("full_scan_")
+                or key.startswith("_db_company_scan_")
+                or key in {"confirm_clear_full_scan", "_db_active_scan_company"}
+            ):
+                st.session_state.pop(key, None)
+
         st.session_state[S_FLASH] = message
+
+
+def looks_like_company_assignment(df):
+    """Return True when rows describe assigned companies rather than buildings."""
+    imported = prepare_data(df)
+    has_company = bool(source_columns(imported, ALIASES["Management/Owner"]))
+    if not has_company:
+        return False
+
+    # City, province, or postal columns may describe a company's office and do
+    # not prove that each row is an apartment building. Treat strong property
+    # identity fields as the deciding signal.
+    has_building_name = bool(source_columns(imported, ALIASES["Building Name"]))
+    has_street_address = bool(source_columns(imported, ALIASES["Street Address"]))
+    has_apartment_count = bool(
+        source_columns(imported, ALIASES["Number of Apartments"])
+    )
+    has_building_records = (
+        has_building_name or has_street_address or has_apartment_count
+    )
+    return not has_building_records
+
+
+def company_registry_from_assignment(df):
+    """Build the company registry from an assignment/company-list worksheet."""
+    imported = prepare_data(df)
+    owner_columns = source_columns(imported, ALIASES["Management/Owner"])
+    if not owner_columns:
+        raise ValueError(
+            "Datablix could not find a company or management-owner column. "
+            "Use a heading such as Assigned Company, Management Company, Owner, or Company."
+        )
+
+    def values_for(aliases):
+        columns = source_columns(imported, aliases)
+        return (
+            combine_columns(imported, columns)
+            if columns
+            else pd.Series(pd.NA, index=imported.index, dtype="object")
+        )
+
+    owners = combine_columns(imported, owner_columns)
+    company_ids = values_for(ALIASES["Company ID"])
+    websites = values_for([
+        "Main Website", "Company Website", "Portfolio Website",
+        "Website", "WebSite", "Website / Source URL",
+    ])
+    scope_types = values_for(["Scope Type", "Assignment Type"])
+    assigned_dates = values_for(["Date Assigned", "Assignment Date"])
+    statuses = values_for(["Company Status", "Status"])
+    notes = values_for(["Company Notes", "Assignment Notes", "Notes", "Reviewer Notes"])
+
+    rows_by_name = {}
+    for index in imported.index:
+        owner = "" if is_unresolved(owners.loc[index]) else re.sub(
+            r"\s+", " ", str(owners.loc[index])
+        ).strip()
+        if not owner:
+            continue
+        key = company_name_key(owner)
+        row = rows_by_name.setdefault(key, {
+            "Company ID": "",
+            "Management/Owner": owner,
+            "Main Website": "",
+            "Scope Type": "Initial assignment",
+            "Date Assigned": date.today().isoformat(),
+            "Company Status": "Not started",
+            "Notes": "",
+        })
+
+        candidates = {
+            "Company ID": company_ids.loc[index],
+            "Main Website": websites.loc[index],
+            "Scope Type": scope_types.loc[index],
+            "Date Assigned": assigned_dates.loc[index],
+            "Company Status": statuses.loc[index],
+            "Notes": notes.loc[index],
+        }
+        for field, value in candidates.items():
+            if is_unresolved(value):
+                continue
+            clean = str(value).strip()
+            if field == "Notes" and row[field] and clean not in row[field]:
+                row[field] = f"{row[field]} | {clean}"
+            elif not row[field] or field in {"Scope Type", "Company Status"}:
+                row[field] = clean
+
+    if not rows_by_name:
+        raise ValueError("No company names were found in the selected worksheet.")
+
+    registry = pd.DataFrame(list(rows_by_name.values()))
+    registry["Scope Type"] = normalize_choice(
+        registry["Scope Type"], COMPANY_SCOPE_TYPES, "Initial assignment"
+    )
+    registry["Company Status"] = normalize_choice(
+        registry["Company Status"], COMPANY_STATUSES, "Not started"
+    )
+    return normalize_company_registry(registry)
+
+
+def open_assignment_project(
+    df,
+    data,
+    name,
+    sheet,
+    source_type,
+    source_ref="",
+    selector="",
+):
+    registry = company_registry_from_assignment(df)
+    working = normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
+    mapping = pd.DataFrame({
+        "Datablix Field": COMPANY_COLUMNS,
+        "Imported Column(s)": COMPANY_COLUMNS,
+        "Mapping Status": "Company assignment field",
+    })
+    signature = f"assignment:{name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
+    open_workspace(
+        working,
+        mapping,
+        signature,
+        name,
+        sheet,
+        source_type,
+        source_ref,
+        selector,
+        message=(
+            f"Project registered with {len(registry):,} assigned company or owner "
+            "record(s). Select a company and start its website research."
+        ),
+        registry=registry,
+    )
 
 
 def load_upload(uploaded, sheet=None):
     df, data = read_upload(uploaded, sheet)
+    if looks_like_company_assignment(df):
+        open_assignment_project(
+            df, data, uploaded.name, sheet, "Uploaded assignment file", uploaded.name
+        )
+        return "company_assignment"
+
     validate_input(df)
     mapped, mapping = map_schema(df)
     signature = f"{uploaded.name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
-    open_workspace(mapped, mapping, signature, uploaded.name, sheet, "Uploaded file", uploaded.name, message=f"Opened {uploaded.name} as a rental property working copy.")
+    open_workspace(
+        mapped,
+        mapping,
+        signature,
+        uploaded.name,
+        sheet,
+        "Uploaded building file",
+        uploaded.name,
+        message=(
+            f"Opened {uploaded.name} with {len(mapped):,} building record(s). "
+            "Companies were registered from the management-owner fields."
+        ),
+    )
+    return "building_records"
 
 
 def load_google(url, selector="", force=False):
     df, data, name, sheet = read_google_sheet(url, selector)
-    validate_input(df)
-    mapped, mapping = map_schema(df)
     signature = f"{name}:{sheet}:{hashlib.sha256(data).hexdigest()}"
     if not force and st.session_state.get(S_FILE) == signature:
         st.session_state[S_FLASH] = "This Google Sheet is already open. Your session edits were kept."
         return False
     if force:
         st.session_state.pop(S_FILE, None)
-    open_workspace(mapped, mapping, signature, name, sheet, "Google Sheet", str(url).strip(), str(selector).strip(), "Opened the Google Sheet as a rental property working copy. The original Sheet is never edited.")
+
+    if looks_like_company_assignment(df):
+        open_assignment_project(
+            df,
+            data,
+            name,
+            sheet,
+            "Google Sheet assignment",
+            str(url).strip(),
+            str(selector).strip(),
+        )
+    else:
+        validate_input(df)
+        mapped, mapping = map_schema(df)
+        open_workspace(
+            mapped,
+            mapping,
+            signature,
+            name,
+            sheet,
+            "Google Sheet building file",
+            str(url).strip(),
+            str(selector).strip(),
+            (
+                "Opened the Google Sheet as a building-record working copy. "
+                "The original Sheet is never edited."
+            ),
+        )
     return True
 
 
@@ -1542,7 +1779,11 @@ def blank_workspace():
     st.session_state[S_QA_BASELINE] = pd.DataFrame()
     st.session_state[S_ACTIVE_COMPANY] = ""
     st.session_state[S_PROJECT_NAME] = "Datablix master project"
-    open_workspace(df, mapping, "blank-workspace", "datablix_rental_property_research.csv", "", "Blank workspace", message="Created a blank rental property workspace.")
+    open_workspace(
+        df, mapping, "blank-workspace", "datablix_rental_property_research.csv",
+        "", "Blank project", message="Created a blank Datablix project. Add a company before starting research.",
+        registry=empty_company_registry(),
+    )
 
 
 def generate_id(df):
@@ -1989,25 +2230,25 @@ render_brand_header()
 # Sidebar: start or switch work
 # -----------------------------
 with st.sidebar:
-    st.subheader("Start or switch workspace")
+    st.subheader("Open or create project")
     st.caption(
-        "Choose how to bring rental property records into Datablix. A temporary working copy protects the original source."
+        "Start with a saved Datablix project, an assignment/company file, a building-record file, a Google Sheet, or a blank project."
     )
 
-    current = st.session_state.get(S_SOURCE_TYPE, "Uploaded file")
+    current = st.session_state.get(S_SOURCE_TYPE, "Uploaded assignment file")
     start_options = [
         "Resume project",
-        "Open file",
+        "Create project from file",
         "Google Sheet",
-        "Scan website",
-        "Blank workspace",
+        "Blank project",
     ]
     start_default = {
         "Saved Datablix project": 0,
-        "Uploaded file": 1,
-        "Google Sheet": 2,
-        "Website scan": 3,
-        "Blank workspace": 4,
+        "Uploaded assignment file": 1,
+        "Uploaded building file": 1,
+        "Google Sheet assignment": 2,
+        "Google Sheet building file": 2,
+        "Blank project": 3,
     }.get(current, 0)
 
     source = st.radio(
@@ -2035,11 +2276,11 @@ with st.sidebar:
                     load_project_workbook(project_upload)
                     st.rerun()
 
-        elif source == "Open file":
+        elif source == "Create project from file":
             uploaded = st.file_uploader(
-                "CSV or Excel file",
+                "Assignment or building-data file",
                 type=["csv", "xlsx"],
-                help="Each row should represent one rental property or apartment building, with column names in the first row.",
+                help=("Datablix detects whether the selected worksheet contains assigned companies or apartment-building records."),
                 key="db_sidebar_upload",
             )
             selected = None
@@ -2050,7 +2291,7 @@ with st.sidebar:
                         "Worksheet",
                         names,
                         index=preferred_sheet(names),
-                        help="Choose the worksheet where row 1 contains the headings and each row below represents one record.",
+                        help="Choose the worksheet containing either the assigned companies or the building records.",
                         key="db_sidebar_sheet",
                     )
                 load_upload(uploaded, selected)
@@ -2074,26 +2315,9 @@ with st.sidebar:
             if submit and load_google(url, selector):
                 st.rerun()
 
-        elif source == "Scan website":
-            st.caption(
-                "Detected listings stay in a review queue. Only approved records are added to the workspace."
-            )
-            if st.button(
-                "Open website scanner",
-                type="primary",
-                width="stretch",
-                key="sidebar_open_scanner",
-            ):
-                if S_WORKING not in st.session_state:
-                    blank_workspace()
-                    st.session_state[S_SOURCE_TYPE] = "Website scan"
-                    st.session_state[S_NAME] = "website_scan_workspace"
-                go_to("Website scanner")
-                st.rerun()
-
         else:
             if st.button(
-                "Create blank workspace",
+                "Create blank project",
                 width="stretch",
                 key="db_sidebar_blank",
             ):
@@ -2160,11 +2384,38 @@ with st.sidebar:
                         "Company status",
                         COMPANY_STATUSES,
                         index=status_index,
-                        key="db_active_company_status",
+                        key=f"db_active_company_status_{selected_active}",
                     )
                     if selected_status != current_status:
                         registry.loc[registry["Company ID"].eq(selected_active), "Company Status"] = selected_status
                         st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+
+                    active_row = registry.loc[
+                        registry["Company ID"].eq(selected_active)
+                    ].iloc[0]
+                    current_website = str(active_row.get("Main Website", "")).strip()
+                    company_website = st.text_input(
+                        "Company website",
+                        value=current_website,
+                        placeholder="https://examplepropertycompany.ca",
+                        key=f"db_company_website_{selected_active}",
+                        help="This website will automatically populate the scanner for the active company.",
+                    )
+                    if company_website.strip() != current_website:
+                        registry.loc[
+                            registry["Company ID"].eq(selected_active),
+                            "Main Website",
+                        ] = company_website.strip()
+                        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+
+                    if st.button(
+                        "Start research for this company",
+                        type="primary",
+                        width="stretch",
+                        key=f"db_start_company_research_{selected_active}",
+                    ):
+                        go_to("Website scanner")
+                        st.rerun()
 
             with st.form("db_add_company_form", clear_on_submit=True):
                 new_company_name = st.text_input("Add company or owner")
@@ -2218,13 +2469,13 @@ with st.sidebar:
 
         quick_left, quick_right = st.columns(2)
         if quick_left.button("Review records", width="stretch", key="sidebar_review"):
-            go_to("Review records")
+            go_to("Overview")
             st.rerun()
         if quick_right.button("Download work", width="stretch", key="sidebar_download"):
             go_to("Downloads")
             st.rerun()
 
-        if st.session_state.get(S_SOURCE_TYPE) == "Google Sheet":
+        if str(st.session_state.get(S_SOURCE_TYPE, "")).startswith("Google Sheet"):
             with st.expander("Reload Google Sheet"):
                 st.caption("Fetch the Sheet again to pick up changes made at the source.")
                 confirm_reload = (
@@ -2269,13 +2520,13 @@ with st.sidebar:
 if S_WORKING not in st.session_state:
     render_page_heading(
         "GET STARTED",
-        "Build your rental property research workspace",
-        "Start with a file, a Google Sheet, a permitted public website, or a blank workspace.",
+        "Build your rental property research project",
+        "Register the project first, then select one assigned company and begin its research.",
     )
 
     start_mode = st.radio(
         "Choose a starting point",
-        ["Resume project", "Scan website", "Open file", "Google Sheet", "Blank workspace"],
+        ["Resume project", "Create project from file", "Google Sheet", "Blank project"],
         horizontal=True,
         label_visibility="collapsed",
         key="db_landing_mode",
@@ -2300,30 +2551,12 @@ if S_WORKING not in st.session_state:
             except Exception as error:
                 st.error(str(error))
 
-    elif start_mode == "Scan website":
-        st.subheader("Scan a public website")
-        st.write(
-            "Datablix searches permitted public pages for rental property listings and holds every finding for review. "
-            "Nothing is added until you approve it."
-        )
-        if st.button(
-            "Open website scanner",
-            type="primary",
-            width="stretch",
-            key="landing_open_scanner",
-        ):
-            blank_workspace()
-            st.session_state[S_SOURCE_TYPE] = "Website scan"
-            st.session_state[S_NAME] = "website_scan_workspace"
-            go_to("Website scanner")
-            st.rerun()
-
-    elif start_mode == "Open file":
-        st.subheader("Open a rental property data file")
+    elif start_mode == "Create project from file":
+        st.subheader("Create a project from an assignment or building-data file")
         landing_upload = st.file_uploader(
             "Choose a CSV or Excel file",
             type=["csv", "xlsx"],
-            help="Each row should represent one rental property or apartment building, with column names in the first row.",
+            help="Datablix detects whether the worksheet contains assigned companies or apartment-building records.",
             key="db_landing_upload",
         )
         landing_sheet = None
@@ -2331,7 +2564,7 @@ if S_WORKING not in st.session_state:
             if landing_upload.name.lower().endswith(".xlsx"):
                 landing_names = excel_sheet_names(landing_upload)
                 landing_sheet = st.selectbox(
-                    "Worksheet containing records",
+                    "Worksheet containing companies or records",
                     landing_names,
                     index=preferred_sheet(landing_names),
                     key="db_landing_sheet",
@@ -2366,18 +2599,18 @@ if S_WORKING not in st.session_state:
                 st.error(str(error))
 
     else:
-        st.subheader("Start with an empty workspace")
+        st.subheader("Start with an empty project")
         st.write(
-            "Add records by hand and use the same review, quality, and export tools available for imported records."
+            "Create the project, then add the first assigned company in the Master project panel before researching buildings."
         )
         if st.button(
-            "Create blank workspace",
+            "Create blank project",
             type="primary",
             width="stretch",
             key="landing_blank_workspace",
         ):
             blank_workspace()
-            go_to("Review records")
+            go_to("Overview")
             st.rerun()
 
     with st.expander("How Datablix works", expanded=True):
@@ -2597,46 +2830,53 @@ if section == "Overview":
 elif section == "Website scanner":
     active_company = active_company_row()
     if active_company is None:
-        st.warning(
-            "Add and select the company being scanned in the Master project panel. This keeps every approved record attached to the correct company."
+        render_page_heading(
+            "COLLECT",
+            "Select a company before scanning",
+            "Every website scan must belong to one registered company in the active project.",
         )
-    else:
-        st.info(f"Approved findings from this scan will be assigned to **{active_company['Management/Owner']}**.")
-    scanner_start_count = len(st.session_state[S_WORKING])
-    render_website_scanner_panel(working_data_key=S_WORKING)
+        st.error(
+            "No active company is selected. Add or select a company in the "
+            "Master project panel, then choose Start research for this company."
+        )
+        st.stop()
 
-    scanner_working = st.session_state.get(S_WORKING)
-    if (
-        isinstance(scanner_working, pd.DataFrame)
-        and len(scanner_working) > scanner_start_count
-    ):
-        merged = scanner_working.copy()
+    company_id = str(active_company["Company ID"]).strip()
+    company_name = str(active_company["Management/Owner"]).strip()
+    company_website = str(active_company.get("Main Website", "")).strip()
 
+    scan_result = render_website_scanner_panel(
+        working_data_key=S_WORKING,
+        active_company_id=company_id,
+        active_company_name=company_name,
+        active_company_website=company_website,
+        scan_history_key=S_SCAN_HISTORY,
+        scan_candidates_key=S_SCAN_CANDIDATES,
+        scan_pages_key=S_SCAN_PAGES,
+    )
+
+    if scan_result:
+        merged = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
         for column in INTERNAL_COLUMNS:
             if column not in merged.columns:
                 merged[column] = pd.NA
-
-        new_row_mask = pd.Series(False, index=merged.index)
-        new_row_mask.iloc[scanner_start_count:] = True
-        today_text = date.today().isoformat()
-
-        merged.loc[new_row_mask, "Research Status"] = "Ready for Review"
-        merged.loc[new_row_mask, "Source Status"] = "Active"
-        merged.loc[new_row_mask, "Verification Status"] = "Needs Review"
-        merged.loc[new_row_mask, "Record Decision"] = "Undecided"
-        merged.loc[new_row_mask, "Date Researched"] = today_text
-        merged.loc[new_row_mask, "Missing Information"] = (
-            "Website-scanned rental property candidate. Confirm every extracted detail and supporting source before final use."
+        merged = ensure_ids(normalize_workflow(prepare_data(merged)))
+        merged, registry = synchronize_company_registry(
+            merged,
+            st.session_state.get(S_COMPANIES),
         )
-        merged = assign_active_company(merged, new_row_mask)
-
-        merged = ensure_ids(merged)
-        merged = normalize_workflow(prepare_data(merged))
+        registry.loc[
+            registry["Company ID"].eq(company_id), "Company Status"
+        ] = "Researching"
         st.session_state[S_WORKING] = merged
-        st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-        added_count = len(merged) - scanner_start_count
+        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+        st.session_state[S_EDIT_COUNT] = (
+            st.session_state.get(S_EDIT_COUNT, 0)
+            + int(scan_result.get("added", 0))
+        )
         st.session_state[S_FLASH] = (
-            f"Added {added_count} approved record(s) from the website scan. Review the details and evidence before marking them verified."
+            f"Added {int(scan_result.get('added', 0))} approved record(s) for "
+            f"{company_name}. Review the extracted details and source evidence next."
         )
         go_to("Review records")
         st.rerun()
