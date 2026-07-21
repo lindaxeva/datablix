@@ -257,6 +257,11 @@ S_SCAN_PAGES = "db_scan_pages_history"
 S_MANUAL_ENTRY_OPEN = "db_manual_entry_open"
 S_PENDING_ACTIVE_COMPANY = "db_pending_active_company"
 S_CLOUD_PROJECT_ID = "db_cloud_project_id"
+S_AUTH_USER_ID = "db_auth_user_id"
+S_AUTH_EMAIL = "db_auth_email"
+S_AUTH_ACCESS_TOKEN = "db_auth_access_token"
+S_AUTH_REFRESH_TOKEN = "db_auth_refresh_token"
+S_PROJECT_ROLE = "db_project_role"
 S_CLOUD_STATE_HASH = "db_cloud_state_hash"
 S_SKIP_CLOUD_RESTORE = "db_skip_cloud_restore"
 
@@ -264,6 +269,12 @@ AUTOSAVE_DIRECTORY = Path(
     os.environ.get("DATABLIX_AUTOSAVE_DIRECTORY", "/tmp/datablix_autosave")
 )
 AUTOSAVE_FILE = AUTOSAVE_DIRECTORY / "current_project.pkl"
+
+def _autosave_file() -> Path:
+    """Use a separate local fallback file for each signed-in account."""
+    email = str(st.session_state.get(S_AUTH_EMAIL, "anonymous")).strip().lower() or "anonymous"
+    identity = hashlib.sha256(email.encode("utf-8")).hexdigest()[:20]
+    return AUTOSAVE_DIRECTORY / f"current_project_{identity}.pkl"
 AUTOSAVE_STATE_KEYS = [
     S_FILE, S_ORIGINAL, S_WORKING, S_NAME, S_SHEET, S_MAPPING,
     S_SOURCE_TYPE, S_SOURCE_REF, S_SELECTOR, S_EDIT_COUNT,
@@ -299,6 +310,201 @@ def get_supabase_client():
 
 def cloud_persistence_available() -> bool:
     return get_supabase_client() is not None
+
+
+def get_supabase_auth_client():
+    """Create a session-local Supabase client for email/password authentication."""
+    if create_client is None:
+        return None
+    url = _secret_value("SUPABASE_URL")
+    key = _secret_value("SUPABASE_PUBLISHABLE_KEY")
+    if not url or not key:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def current_user_email() -> str:
+    return str(st.session_state.get(S_AUTH_EMAIL, "")).strip().lower()
+
+
+def current_user_id() -> str:
+    return str(st.session_state.get(S_AUTH_USER_ID, "")).strip()
+
+
+def user_is_authenticated() -> bool:
+    return bool(current_user_email() and current_user_id())
+
+
+def _remember_auth_response(response) -> bool:
+    user = getattr(response, "user", None)
+    session = getattr(response, "session", None)
+    if user is None:
+        return False
+    if session is None:
+        return False
+    st.session_state[S_AUTH_USER_ID] = str(getattr(user, "id", "") or "")
+    st.session_state[S_AUTH_EMAIL] = str(getattr(user, "email", "") or "").strip().lower()
+    st.session_state[S_AUTH_ACCESS_TOKEN] = str(getattr(session, "access_token", "") or "")
+    st.session_state[S_AUTH_REFRESH_TOKEN] = str(getattr(session, "refresh_token", "") or "")
+    return user_is_authenticated()
+
+
+def sign_out_datablix() -> None:
+    client = get_supabase_auth_client()
+    if client is not None:
+        try:
+            client.auth.sign_out()
+        except Exception:
+            pass
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(("db_", "website_scan", "full_scan")):
+            st.session_state.pop(key, None)
+
+
+def render_auth_gate() -> None:
+    """Require a Supabase account before any project data is loaded."""
+    if user_is_authenticated():
+        return
+    render_brand_header()
+    st.markdown("### Sign in to Datablix")
+    st.write("Each team member uses their own account. Shared projects appear after the project owner adds their email.")
+    if get_supabase_auth_client() is None:
+        st.error("Authentication is not configured. Add SUPABASE_PUBLISHABLE_KEY to Streamlit Secrets.")
+        st.stop()
+
+    sign_in_tab, create_tab = st.tabs(["Sign in", "Create account"])
+    with sign_in_tab:
+        with st.form("db_sign_in_form"):
+            email = st.text_input("Email address", key="db_login_email")
+            password = st.text_input("Password", type="password", key="db_login_password")
+            submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+        if submitted:
+            try:
+                response = get_supabase_auth_client().auth.sign_in_with_password(
+                    {"email": email.strip().lower(), "password": password}
+                )
+                if _remember_auth_response(response):
+                    st.rerun()
+                st.error("The account could not be signed in.")
+            except Exception as exc:
+                st.error("Sign-in failed. Check the email and password, then try again.")
+
+    with create_tab:
+        with st.form("db_create_account_form"):
+            new_email = st.text_input("Work email", key="db_signup_email")
+            new_password = st.text_input("Create password", type="password", key="db_signup_password")
+            confirm_password = st.text_input("Confirm password", type="password", key="db_signup_confirm")
+            create_submitted = st.form_submit_button("Create account", type="primary", use_container_width=True)
+        if create_submitted:
+            if len(new_password) < 8:
+                st.error("Use a password with at least 8 characters.")
+            elif new_password != confirm_password:
+                st.error("The passwords do not match.")
+            else:
+                try:
+                    response = get_supabase_auth_client().auth.sign_up(
+                        {"email": new_email.strip().lower(), "password": new_password}
+                    )
+                    if _remember_auth_response(response):
+                        st.rerun()
+                    st.success("Account created. Check your email to confirm it, then sign in.")
+                except Exception:
+                    st.error("The account could not be created. It may already exist.")
+    st.stop()
+
+
+def project_access_role(project_id: str) -> str:
+    """Return owner, editor, viewer, or an empty string for no access."""
+    email = current_user_email()
+    if not email or not project_id:
+        return ""
+    client = get_supabase_client()
+    if client is None:
+        return ""
+    try:
+        project = (
+            client.table("datablix_project_state")
+            .select("owner_email")
+            .eq("project_id", project_id)
+            .limit(1)
+            .execute()
+        )
+        rows = list(project.data or [])
+        if rows and str(rows[0].get("owner_email", "")).strip().lower() == email:
+            return "owner"
+        membership = (
+            client.table("datablix_project_members")
+            .select("role")
+            .eq("project_id", project_id)
+            .eq("member_email", email)
+            .limit(1)
+            .execute()
+        )
+        members = list(membership.data or [])
+        return str(members[0].get("role", "")) if members else ""
+    except Exception:
+        return ""
+
+
+def user_can_edit_project(project_id: str | None = None) -> bool:
+    target = str(project_id or st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
+    role = str(st.session_state.get(S_PROJECT_ROLE, "") or project_access_role(target)).lower()
+    return role in {"owner", "editor"}
+
+
+def list_project_members(project_id: str) -> list[dict]:
+    if not project_id or st.session_state.get(S_PROJECT_ROLE) != "owner":
+        return []
+    try:
+        response = (
+            get_supabase_client().table("datablix_project_members")
+            .select("member_email,role,added_at")
+            .eq("project_id", project_id)
+            .order("added_at")
+            .execute()
+        )
+        return list(response.data or [])
+    except Exception:
+        return []
+
+
+def add_project_member(project_id: str, email: str, role: str) -> tuple[bool, str]:
+    if st.session_state.get(S_PROJECT_ROLE) != "owner":
+        return False, "Only the project owner can manage access."
+    clean_email = str(email).strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", clean_email):
+        return False, "Enter a valid email address."
+    if clean_email == current_user_email():
+        return False, "You already own this project."
+    try:
+        get_supabase_client().table("datablix_project_members").upsert(
+            {
+                "project_id": project_id,
+                "member_email": clean_email,
+                "role": role if role in {"editor", "viewer"} else "editor",
+                "added_by": current_user_email(),
+                "added_at": datetime.now().astimezone().isoformat(),
+            },
+            on_conflict="project_id,member_email",
+        ).execute()
+        return True, f"Access saved for {clean_email}."
+    except Exception:
+        return False, "Access could not be saved. Run the updated Supabase SQL first."
+
+
+def remove_project_member(project_id: str, email: str) -> bool:
+    if st.session_state.get(S_PROJECT_ROLE) != "owner":
+        return False
+    try:
+        get_supabase_client().table("datablix_project_members").delete().eq(
+            "project_id", project_id
+        ).eq("member_email", str(email).strip().lower()).execute()
+        return True
+    except Exception:
+        return False
 
 
 def _json_safe(value):
@@ -390,23 +596,69 @@ def _state_hash(payload: dict) -> str:
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
 
-def list_cloud_projects() -> list[dict]:
+def claim_legacy_projects() -> None:
+    """Attach projects created before multi-user support to the first signed-in owner."""
     client = get_supabase_client()
-    if client is None:
-        return []
+    email = current_user_email()
+    if client is None or not email or st.session_state.get("db_legacy_claim_checked"):
+        return
+    st.session_state["db_legacy_claim_checked"] = True
     workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
     try:
-        response = (
+        client.table("datablix_project_state").update(
+            {"owner_email": email}
+        ).eq("workspace_key", workspace_key).is_("owner_email", "null").execute()
+    except Exception:
+        pass
+
+
+def list_cloud_projects() -> list[dict]:
+    client = get_supabase_client()
+    email = current_user_email()
+    if client is None or not email:
+        return []
+    workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
+    claim_legacy_projects()
+    try:
+        owned_response = (
             client.table("datablix_project_state")
-            .select("project_id,project_name,updated_at")
+            .select("project_id,project_name,updated_at,owner_email")
             .eq("workspace_key", workspace_key)
+            .eq("owner_email", email)
             .order("updated_at", desc=True)
             .execute()
         )
-        return list(response.data or [])
+        membership_response = (
+            client.table("datablix_project_members")
+            .select("project_id,role")
+            .eq("member_email", email)
+            .execute()
+        )
+        membership_roles = {
+            str(row.get("project_id", "")): str(row.get("role", "viewer"))
+            for row in list(membership_response.data or [])
+        }
+        shared_rows = []
+        if membership_roles:
+            shared_response = (
+                client.table("datablix_project_state")
+                .select("project_id,project_name,updated_at,owner_email")
+                .eq("workspace_key", workspace_key)
+                .in_("project_id", list(membership_roles))
+                .execute()
+            )
+            shared_rows = list(shared_response.data or [])
+        combined = {}
+        for row in list(owned_response.data or []):
+            row["role"] = "owner"
+            combined[str(row.get("project_id", ""))] = row
+        for row in shared_rows:
+            pid = str(row.get("project_id", ""))
+            row["role"] = membership_roles.get(pid, "viewer")
+            combined[pid] = row
+        return sorted(combined.values(), key=lambda r: str(r.get("updated_at", "")), reverse=True)
     except Exception:
         return []
-
 
 def restore_cloud_project(project_id: str | None = None) -> bool:
     """Restore a selected cloud project, or the most recently updated one."""
@@ -416,11 +668,18 @@ def restore_cloud_project(project_id: str | None = None) -> bool:
     if client is None:
         return False
     workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
+    email = current_user_email()
     try:
+        accessible = {str(row.get("project_id", "")): str(row.get("role", "")) for row in list_cloud_projects()}
+        if project_id and str(project_id) not in accessible:
+            return False
+        if not project_id and not accessible:
+            return False
         query = (
             client.table("datablix_project_state")
-            .select("project_id,project_name,state_json,state_hash,updated_at")
+            .select("project_id,project_name,state_json,state_hash,updated_at,owner_email")
             .eq("workspace_key", workspace_key)
+            .in_("project_id", list(accessible))
         )
         if project_id:
             query = query.eq("project_id", project_id).limit(1)
@@ -439,6 +698,7 @@ def restore_cloud_project(project_id: str | None = None) -> bool:
             if key in AUTOSAVE_STATE_KEYS:
                 st.session_state[key] = value
         st.session_state[S_CLOUD_PROJECT_ID] = str(row.get("project_id", ""))
+        st.session_state[S_PROJECT_ROLE] = accessible.get(str(row.get("project_id", "")), "viewer")
         st.session_state[S_CLOUD_STATE_HASH] = str(row.get("state_hash", ""))
         st.session_state[S_FLASH] = "Your project was restored from permanent cloud storage."
         return True
@@ -451,21 +711,34 @@ def save_cloud_project() -> bool:
     if S_WORKING not in st.session_state:
         return False
     client = get_supabase_client()
-    if client is None:
+    if client is None or not user_is_authenticated():
         return False
     project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
     if not project_id:
         project_id = str(uuid.uuid4())
         st.session_state[S_CLOUD_PROJECT_ID] = project_id
+        st.session_state[S_PROJECT_ROLE] = "owner"
+    elif not user_can_edit_project(project_id):
+        return False
     payload = _current_state_payload()
     fingerprint = _state_hash(payload)
     if fingerprint == st.session_state.get(S_CLOUD_STATE_HASH):
         return True
     workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
     project_name = str(st.session_state.get(S_PROJECT_NAME, "Datablix project")).strip() or "Datablix project"
+    owner_email = current_user_email()
+    if st.session_state.get(S_PROJECT_ROLE) != "owner":
+        try:
+            existing = client.table("datablix_project_state").select("owner_email").eq("project_id", project_id).limit(1).execute()
+            existing_rows = list(existing.data or [])
+            if existing_rows:
+                owner_email = str(existing_rows[0].get("owner_email", owner_email))
+        except Exception:
+            pass
     row = {
         "workspace_key": workspace_key,
         "project_id": project_id,
+        "owner_email": owner_email,
         "project_name": project_name,
         "state_json": payload,
         "state_hash": fingerprint,
@@ -487,10 +760,10 @@ def restore_autosaved_project() -> bool:
     """Restore cloud state first, then use the local refresh fallback."""
     if restore_cloud_project():
         return True
-    if S_WORKING in st.session_state or not AUTOSAVE_FILE.exists():
+    if S_WORKING in st.session_state or not _autosave_file().exists():
         return False
     try:
-        payload = pickle.loads(AUTOSAVE_FILE.read_bytes())
+        payload = pickle.loads(_autosave_file().read_bytes())
         if not isinstance(payload, dict):
             return False
         state = payload.get("state", {})
@@ -522,9 +795,9 @@ def autosave_current_project() -> bool:
     local_saved = False
     try:
         AUTOSAVE_DIRECTORY.mkdir(parents=True, exist_ok=True)
-        temporary = AUTOSAVE_FILE.with_suffix(".tmp")
+        temporary = _autosave_file().with_suffix(".tmp")
         temporary.write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
-        os.replace(temporary, AUTOSAVE_FILE)
+        os.replace(temporary, _autosave_file())
         local_saved = True
     except (OSError, pickle.PickleError, TypeError, AttributeError):
         pass
@@ -532,9 +805,9 @@ def autosave_current_project() -> bool:
 
 
 def clear_autosaved_project() -> None:
-    """Clear only the temporary local copy; permanent cloud projects remain available."""
+    """Clear only this user's temporary local copy; cloud projects remain available."""
     try:
-        AUTOSAVE_FILE.unlink(missing_ok=True)
+        _autosave_file().unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -2840,6 +3113,36 @@ def render_project_progress_sidebar() -> None:
             st.caption("Choose or change the active company from the Project page.")
 
     st.divider()
+    st.caption("SIGNED IN")
+    st.write(current_user_email())
+    account_cols = st.columns(2)
+    if account_cols[0].button("Sign out", width="stretch", key="db_sidebar_sign_out"):
+        sign_out_datablix()
+        st.rerun()
+    account_cols[1].caption(f"Role: {st.session_state.get(S_PROJECT_ROLE, 'owner').title()}")
+
+    project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
+    if project_id and st.session_state.get(S_PROJECT_ROLE) == "owner":
+        with st.expander("Share project", expanded=False):
+            st.caption("Add a team member by the same email they use for Datablix.")
+            member_email = st.text_input("Team member email", key="db_share_member_email")
+            member_role = st.selectbox("Access", ["editor", "viewer"], format_func=str.title, key="db_share_member_role")
+            if st.button("Save access", type="primary", width="stretch", key="db_save_member_access"):
+                ok, message = add_project_member(project_id, member_email, member_role)
+                (st.success if ok else st.error)(message)
+            members = list_project_members(project_id)
+            if members:
+                st.caption("CURRENT MEMBERS")
+                for member in members:
+                    email = str(member.get("member_email", ""))
+                    role = str(member.get("role", "viewer")).title()
+                    cols = st.columns([3, 1])
+                    cols[0].write(f"{email} · {role}")
+                    if cols[1].button("Remove", key=f"db_remove_member_{hashlib.md5(email.encode()).hexdigest()[:8]}"):
+                        if remove_project_member(project_id, email):
+                            st.rerun()
+
+    st.divider()
     utility_columns = st.columns(2)
     if utility_columns[0].button("Project", width="stretch", key="db_sidebar_project"):
         go_to("Research projects & companies")
@@ -3226,6 +3529,7 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 }
 </style>
 """)
+render_auth_gate()
 restore_autosaved_project()
 render_brand_header()
 
@@ -3539,6 +3843,8 @@ for nav_column, section_key in zip(nav_columns, primary_sections):
             st.rerun()
 
 section = st.session_state["db_section"]
+if st.session_state.get(S_PROJECT_ROLE) == "viewer":
+    st.info("You have view-only access to this project. Ask the owner for Editor access to make changes.")
 render_process_bar(section)
 
 
