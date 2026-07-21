@@ -242,6 +242,7 @@ PROVINCES = {
 }
 
 FRESHNESS_DAYS = 180
+WORKFLOW_BUILD = "Project Dashboard Workflow 2026.07.21-r4"
 
 S_FILE = "db_file_signature"
 S_ORIGINAL = "db_original"
@@ -262,6 +263,8 @@ S_PROJECT_LOADED = "db_project_loaded"
 S_SCAN_HISTORY = "db_scan_history"
 S_SCAN_CANDIDATES = "db_scan_candidates_history"
 S_SCAN_PAGES = "db_scan_pages_history"
+S_MANUAL_ENTRY_OPEN = "db_manual_entry_open"
+S_PENDING_ACTIVE_COMPANY = "db_pending_active_company"
 
 
 # =========================================================
@@ -666,6 +669,7 @@ def add_company_to_project(name, website="", scope_type="Added later", notes="")
     if not existing.empty:
         company_id = existing.iloc[0]["Company ID"]
         st.session_state[S_ACTIVE_COMPANY] = company_id
+        st.session_state[S_PENDING_ACTIVE_COMPANY] = company_id
         return company_id, False
     company_id = next_company_id(registry)
     new_row = {
@@ -681,6 +685,7 @@ def add_company_to_project(name, website="", scope_type="Added later", notes="")
         pd.concat([registry, pd.DataFrame([new_row])], ignore_index=True)
     )
     st.session_state[S_ACTIVE_COMPANY] = company_id
+    st.session_state[S_PENDING_ACTIVE_COMPANY] = company_id
     return company_id, True
 
 
@@ -1786,6 +1791,55 @@ def blank_workspace():
     )
 
 
+def create_manual_project(
+    project_name: str,
+    first_company: str = "",
+    company_website: str = "",
+    company_notes: str = "",
+):
+    """Register a project manually and optionally add its first company."""
+    clean_project_name = re.sub(r"\s+", " ", str(project_name or "")).strip()
+    if not clean_project_name:
+        raise ValueError("Enter a project name.")
+
+    blank_workspace()
+    st.session_state[S_PROJECT_NAME] = clean_project_name
+    st.session_state[S_NAME] = clean_project_name
+    st.session_state[S_SOURCE_TYPE] = "Manually registered project"
+    st.session_state[S_FILE] = (
+        "manual-project:"
+        + hashlib.sha256(
+            f"{clean_project_name}|{datetime.now().isoformat()}".encode("utf-8")
+        ).hexdigest()
+    )
+
+    company_id = ""
+    created = False
+    clean_company = re.sub(r"\s+", " ", str(first_company or "")).strip()
+    if clean_company:
+        company_id, created = add_company_to_project(
+            clean_company,
+            str(company_website or "").strip(),
+            "Initial assignment",
+            str(company_notes or "").strip(),
+        )
+
+    st.session_state[S_FLASH] = (
+        f"Registered {clean_project_name} and added {clean_company} as {company_id}."
+        if clean_company and created
+        else f"Registered {clean_project_name}. Add or select a company to begin research."
+    )
+    return company_id
+
+
+def return_to_project_start() -> None:
+    """Clear the active project and return to the main onboarding screen."""
+    prefixes = ("db_", "website_scan", "full_scan")
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(prefixes):
+            st.session_state.pop(key, None)
+
+
 def generate_id(df):
     existing = set(resolved(df["Record ID"]).dropna().astype(str).str.strip())
     n = 1
@@ -1832,7 +1886,8 @@ def render_page_heading(label: str, title: str, description: str) -> None:
 def render_process_bar(active_section: str) -> None:
     """Keep the collect-review-verify-download mental model visible."""
     stages = [
-        ("Collect", "Website scanner"),
+        ("Set up", "Project & companies"),
+        ("Research", "Website scanner"),
         ("Review", "Review records"),
         ("Verify", "Progress & quality"),
         ("Analyse", "Analysis & report"),
@@ -1872,10 +1927,10 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
     """Return a practical next action based on the current workspace."""
     if qa_frame is None or qa_frame.empty:
         return (
-            "Add your first records",
-            "Scan a permitted public website or add a listing manually to start the workspace.",
-            "Website scanner",
-            "Open website scanner",
+            "Begin company research",
+            "Select a registered company, scan its permitted public website, or add a building manually.",
+            "Project & companies",
+            "Choose company and method",
         )
 
     critical_count = int(qa_frame["QA Status"].eq("Critical").sum())
@@ -2157,7 +2212,7 @@ button[data-testid="stSidebarCollapseButton"]::after{
 /* Persistent mental model without numbering or dense instructions. */
 .db-process{
     display:grid;
-    grid-template-columns:repeat(5,minmax(0,1fr));
+    grid-template-columns:repeat(6,minmax(0,1fr));
     gap:.55rem;
     margin:.1rem 0 1.25rem;
 }
@@ -2225,293 +2280,139 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 """)
 render_brand_header()
 
+st.markdown(
+    f'''<div style="display:inline-block;margin:.15rem 0 1rem;padding:.32rem .65rem;border:1px solid rgba(49,130,206,.35);border-radius:999px;background:rgba(49,130,206,.08);font-size:.78rem;font-weight:700;">Interface build: {WORKFLOW_BUILD}</div>''',
+    unsafe_allow_html=True,
+)
+
 
 # -----------------------------
-# Sidebar: start or switch work
+# Sidebar: project research dashboard
 # -----------------------------
 with st.sidebar:
-    st.subheader("Open or create project")
+    st.markdown("## Project research dashboard")
     st.caption(
-        "Start with a saved Datablix project, an assignment/company file, a building-record file, a Google Sheet, or a blank project."
+        f"Context and progress only · {WORKFLOW_BUILD}. Start and manage work from the main page."
     )
 
-    current = st.session_state.get(S_SOURCE_TYPE, "Uploaded assignment file")
-    start_options = [
-        "Resume project",
-        "Create project from file",
-        "Google Sheet",
-        "Blank project",
-    ]
-    start_default = {
-        "Saved Datablix project": 0,
-        "Uploaded assignment file": 1,
-        "Uploaded building file": 1,
-        "Google Sheet assignment": 2,
-        "Google Sheet building file": 2,
-        "Blank project": 3,
-    }.get(current, 0)
-
-    source = st.radio(
-        "Starting point",
-        start_options,
-        index=start_default,
-        key="db_start_source",
-    )
-
-    try:
-        if source == "Resume project":
-            project_upload = st.file_uploader(
-                "Saved Datablix project",
-                type=["xlsx"],
-                help="Open a workbook previously downloaded with Save master project.",
-                key="db_sidebar_project_upload",
-            )
-            if project_upload is not None:
-                if st.button(
-                    "Resume project",
-                    type="primary",
-                    width="stretch",
-                    key="db_sidebar_resume_project",
-                ):
-                    load_project_workbook(project_upload)
-                    st.rerun()
-
-        elif source == "Create project from file":
-            uploaded = st.file_uploader(
-                "Assignment or building-data file",
-                type=["csv", "xlsx"],
-                help=("Datablix detects whether the selected worksheet contains assigned companies or apartment-building records."),
-                key="db_sidebar_upload",
-            )
-            selected = None
-            if uploaded is not None:
-                if uploaded.name.lower().endswith(".xlsx"):
-                    names = excel_sheet_names(uploaded)
-                    selected = st.selectbox(
-                        "Worksheet",
-                        names,
-                        index=preferred_sheet(names),
-                        help="Choose the worksheet containing either the assigned companies or the building records.",
-                        key="db_sidebar_sheet",
-                    )
-                load_upload(uploaded, selected)
-
-        elif source == "Google Sheet":
-            with st.form("google_form"):
-                url = st.text_input(
-                    "Google Sheets link",
-                    placeholder="https://docs.google.com/spreadsheets/d/...",
-                    help="The Sheet must be viewable by anyone with the link. Datablix reads a copy and never edits the original.",
-                )
-                selector = st.text_input(
-                    "Worksheet name or tab ID (optional)",
-                    placeholder="Example: Apartment Buildings or 0",
-                )
-                submit = st.form_submit_button(
-                    "Open working copy",
-                    type="primary",
-                    width="stretch",
-                )
-            if submit and load_google(url, selector):
-                st.rerun()
-
-        else:
-            if st.button(
-                "Create blank project",
-                width="stretch",
-                key="db_sidebar_blank",
-            ):
-                blank_workspace()
-                st.rerun()
-
-    except Exception as error:
-        st.error(str(error))
-
-    with st.expander("Blank listing template"):
-        st.caption(
-            "A starter CSV with listing, contact, source, and review columns already in place."
-        )
-        st.download_button(
-            "Download blank template",
-            csv_bytes(pd.DataFrame(columns=TEMPLATE_COLUMNS)),
-            "datablix_building_listing_template.csv",
-            "text/csv",
-            width="stretch",
-        )
-
-    if S_WORKING in st.session_state:
-        st.divider()
-        sidebar_working = st.session_state[S_WORKING]
-        synchronized_working, synchronized_registry = synchronize_company_registry(
-            sidebar_working,
+    if S_WORKING not in st.session_state:
+        st.info("No project is open yet.")
+        st.markdown("**Start in the main page:**")
+        st.caption("1. Open, import, or register a project.")
+        st.caption("2. Register or select a company.")
+        st.caption("3. Scan its website or enter a building manually.")
+    else:
+        dashboard_working, dashboard_registry = synchronize_company_registry(
+            st.session_state[S_WORKING],
             st.session_state.get(S_COMPANIES),
         )
-        st.session_state[S_WORKING] = synchronized_working
-        st.session_state[S_COMPANIES] = synchronized_registry
-        sidebar_working = synchronized_working
+        st.session_state[S_WORKING] = dashboard_working
+        st.session_state[S_COMPANIES] = dashboard_registry
 
-        with st.expander("Master project", expanded=True):
-            project_name = st.text_input(
-                "Project name",
-                value=st.session_state.get(S_PROJECT_NAME, "Datablix master project"),
-                key="db_project_name_input",
-            )
-            st.session_state[S_PROJECT_NAME] = project_name.strip() or "Datablix master project"
-
-            registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
-            if registry.empty:
-                st.caption("Add the company you are about to scan or research.")
-            else:
-                active_ids = registry["Company ID"].astype(str).tolist()
-                current_active = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
-                active_index = active_ids.index(current_active) if current_active in active_ids else 0
-                selected_active = st.selectbox(
-                    "Active company",
-                    active_ids,
-                    index=active_index,
-                    format_func=lambda company_id: company_label(
-                        registry.loc[registry["Company ID"].eq(company_id)].iloc[0]
-                    ),
-                    key="db_active_company_selector",
-                )
-                st.session_state[S_ACTIVE_COMPANY] = selected_active
-
-                active_match = registry.loc[registry["Company ID"].eq(selected_active)]
-                if not active_match.empty:
-                    current_status = active_match.iloc[0]["Company Status"]
-                    status_index = COMPANY_STATUSES.index(current_status) if current_status in COMPANY_STATUSES else 0
-                    selected_status = st.selectbox(
-                        "Company status",
-                        COMPANY_STATUSES,
-                        index=status_index,
-                        key=f"db_active_company_status_{selected_active}",
-                    )
-                    if selected_status != current_status:
-                        registry.loc[registry["Company ID"].eq(selected_active), "Company Status"] = selected_status
-                        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
-
-                    active_row = registry.loc[
-                        registry["Company ID"].eq(selected_active)
-                    ].iloc[0]
-                    current_website = str(active_row.get("Main Website", "")).strip()
-                    company_website = st.text_input(
-                        "Company website",
-                        value=current_website,
-                        placeholder="https://examplepropertycompany.ca",
-                        key=f"db_company_website_{selected_active}",
-                        help="This website will automatically populate the scanner for the active company.",
-                    )
-                    if company_website.strip() != current_website:
-                        registry.loc[
-                            registry["Company ID"].eq(selected_active),
-                            "Main Website",
-                        ] = company_website.strip()
-                        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
-
-                    if st.button(
-                        "Start research for this company",
-                        type="primary",
-                        width="stretch",
-                        key=f"db_start_company_research_{selected_active}",
-                    ):
-                        go_to("Website scanner")
-                        st.rerun()
-
-            with st.form("db_add_company_form", clear_on_submit=True):
-                new_company_name = st.text_input("Add company or owner")
-                new_company_website = st.text_input("Main website (optional)")
-                new_scope_type = st.selectbox(
-                    "Scope type",
-                    ["Initial assignment", "Added later"],
-                )
-                new_company_notes = st.text_area("Notes (optional)", height=70)
-                add_company = st.form_submit_button("Add to project", width="stretch")
-            if add_company:
-                try:
-                    company_id, created = add_company_to_project(
-                        new_company_name,
-                        new_company_website,
-                        new_scope_type,
-                        new_company_notes,
-                    )
-                    st.session_state[S_FLASH] = (
-                        f"Added {new_company_name.strip()} as {company_id}."
-                        if created
-                        else f"{new_company_name.strip()} is already in the project and is now active."
-                    )
-                    st.rerun()
-                except Exception as error:
-                    st.error(str(error))
-
-            st.download_button(
-                "Save master project",
-                project_workbook_bytes(),
-                f"{safe_filename(st.session_state[S_PROJECT_NAME])}_datablix_project.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                width="stretch",
-                key="db_sidebar_save_project",
-            )
-
-        st.divider()
-        workspace_label = st.session_state.get(S_NAME, "workspace")
-        if st.session_state.get(S_SHEET):
-            workspace_label += f" · {st.session_state[S_SHEET]}"
-
-        st.caption("CURRENT WORKSPACE")
-        st.markdown(f"**{workspace_label}**")
-        sidebar_metrics = st.columns(2)
-        sidebar_metrics[0].metric("Records", f"{len(sidebar_working):,}")
-        sidebar_metrics[1].metric(
-            "Session edits",
-            f"{st.session_state.get(S_EDIT_COUNT, 0):,}",
+        project_name = st.session_state.get(
+            S_PROJECT_NAME,
+            "Datablix master project",
+        )
+        st.caption("ACTIVE PROJECT")
+        st.markdown(f"**{project_name}**")
+        st.caption(
+            f"{len(dashboard_registry):,} companies · "
+            f"{len(dashboard_working):,} building records"
         )
 
-        quick_left, quick_right = st.columns(2)
-        if quick_left.button("Review records", width="stretch", key="sidebar_review"):
-            go_to("Overview")
-            st.rerun()
-        if quick_right.button("Download work", width="stretch", key="sidebar_download"):
-            go_to("Downloads")
-            st.rerun()
-
-        if str(st.session_state.get(S_SOURCE_TYPE, "")).startswith("Google Sheet"):
-            with st.expander("Reload Google Sheet"):
-                st.caption("Fetch the Sheet again to pick up changes made at the source.")
-                confirm_reload = (
-                    st.checkbox("Replace my session edits with the reloaded data")
-                    if st.session_state.get(S_EDIT_COUNT, 0)
-                    else True
-                )
-                if st.button(
-                    "Reload from source",
-                    disabled=not confirm_reload,
-                    width="stretch",
-                    key="db_reload_google",
-                ):
-                    load_google(
-                        st.session_state[S_SOURCE_REF],
-                        st.session_state[S_SELECTOR],
-                        force=True,
-                    )
-                    st.rerun()
-
-        with st.expander("Reset workspace"):
-            st.caption("Return every record to the version first opened in this session.")
-            confirm_reset = st.checkbox(
-                "Discard my session edits",
-                key="db_confirm_reset",
+        active_dashboard_company = active_company_row()
+        if active_dashboard_company is None:
+            st.warning("No company is selected.")
+            st.caption(
+                "Open Project in the main navigation to register or select the company you want to research."
             )
-            if st.button(
-                "Reset to original",
-                disabled=not confirm_reset,
-                width="stretch",
-                key="db_reset_workspace",
-            ):
-                st.session_state[S_WORKING] = st.session_state[S_ORIGINAL].copy()
-                st.session_state[S_EDIT_COUNT] = 0
-                st.session_state[S_FLASH] = "Workspace reset to the original version."
-                st.rerun()
+        else:
+            dashboard_company_id = str(
+                active_dashboard_company.get("Company ID", "")
+            ).strip()
+            dashboard_company_name = str(
+                active_dashboard_company.get("Management/Owner", "")
+            ).strip()
+            dashboard_company_status = str(
+                active_dashboard_company.get("Company Status", "Not started")
+            ).strip()
+            dashboard_company_website = str(
+                active_dashboard_company.get("Main Website", "")
+            ).strip()
+
+            st.divider()
+            st.caption("ACTIVE COMPANY")
+            st.markdown(f"**{dashboard_company_name or 'Unnamed company'}**")
+            st.caption(f"{dashboard_company_id} · {dashboard_company_status}")
+            st.caption(
+                f"Website: {dashboard_company_website or 'Not registered yet'}"
+            )
+
+            company_records = dashboard_working.loc[
+                dashboard_working["Company ID"].astype(str).eq(
+                    dashboard_company_id
+                )
+            ].copy()
+
+            if company_records.empty:
+                st.metric("Buildings collected", "0")
+                st.progress(0.0, text="Research completion: 0%")
+                st.info(
+                    "Next: open Research and choose Website scan or Manual entry."
+                )
+            else:
+                company_qa = qa_checks(company_records)
+                completed_count = int(
+                    company_qa["Research Status"].eq("Completed").sum()
+                )
+                verified_count = int(
+                    company_qa["Verification Status"].eq("Verified").sum()
+                )
+                ready_count = int(ready_mask(company_qa).sum())
+                attention_count = int(
+                    (
+                        ~ready_mask(company_qa)
+                        & ~company_qa["Record Readiness"].eq(
+                            "Excluded from Listings"
+                        )
+                    ).sum()
+                )
+                completion_rate = completed_count / len(company_qa)
+
+                metric_left, metric_right = st.columns(2)
+                metric_left.metric("Buildings", f"{len(company_qa):,}")
+                metric_right.metric("Ready", f"{ready_count:,}")
+                metric_left.metric("Verified", f"{verified_count:,}")
+                metric_right.metric("Need attention", f"{attention_count:,}")
+                st.progress(
+                    completion_rate,
+                    text=(
+                        f"Research complete: {completed_count:,} of "
+                        f"{len(company_qa):,}"
+                    ),
+                )
+
+                if attention_count:
+                    st.info(
+                        "Next: open Review to resolve missing details, evidence, or decisions."
+                    )
+                elif ready_count < len(company_qa):
+                    st.info(
+                        "Next: open Quality to check remaining research gaps."
+                    )
+                else:
+                    st.success(
+                        "This company's current records are ready. Save a fresh project copy before leaving."
+                    )
+
+        st.divider()
+        st.caption("WORKSPACE")
+        st.caption(
+            f"Source: {st.session_state.get(S_SOURCE_TYPE, 'Workspace')}"
+        )
+        st.caption(
+            f"Session edits: {st.session_state.get(S_EDIT_COUNT, 0):,}"
+        )
 
 
 # -----------------------------
@@ -2526,7 +2427,12 @@ if S_WORKING not in st.session_state:
 
     start_mode = st.radio(
         "Choose a starting point",
-        ["Resume project", "Create project from file", "Google Sheet", "Blank project"],
+        [
+            "Resume project",
+            "Import project file",
+            "Register manually",
+            "Google Sheet",
+        ],
         horizontal=True,
         label_visibility="collapsed",
         key="db_landing_mode",
@@ -2551,7 +2457,7 @@ if S_WORKING not in st.session_state:
             except Exception as error:
                 st.error(str(error))
 
-    elif start_mode == "Create project from file":
+    elif start_mode == "Import project file":
         st.subheader("Create a project from an assignment or building-data file")
         landing_upload = st.file_uploader(
             "Choose a CSV or Excel file",
@@ -2571,11 +2477,52 @@ if S_WORKING not in st.session_state:
                 )
             try:
                 load_upload(landing_upload, landing_sheet)
+                go_to("Project & companies")
                 st.rerun()
             except Exception as error:
                 st.error(str(error))
 
-    elif start_mode == "Google Sheet":
+    elif start_mode == "Register manually":
+        st.subheader("Register a project manually")
+        st.write(
+            "Create the project first. You can add the first company now or register more companies from the project page later."
+        )
+        with st.form("db_landing_manual_project_form"):
+            landing_manual_project = st.text_input(
+                "Project name",
+                placeholder="Example: Ontario Senior Living Directory Stage 3",
+            )
+            landing_manual_company = st.text_input(
+                "First company or owner (optional)",
+                placeholder="Example: ABC Property Management",
+            )
+            landing_manual_website = st.text_input(
+                "Company website (optional)",
+                placeholder="https://example.ca",
+            )
+            landing_manual_notes = st.text_area(
+                "Project or company notes (optional)",
+                height=90,
+            )
+            landing_manual_submit = st.form_submit_button(
+                "Register project",
+                type="primary",
+                width="stretch",
+            )
+        if landing_manual_submit:
+            try:
+                create_manual_project(
+                    landing_manual_project,
+                    landing_manual_company,
+                    landing_manual_website,
+                    landing_manual_notes,
+                )
+                go_to("Project & companies")
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    else:
         st.subheader("Load a viewable Google Sheet")
         with st.form("landing_google_form"):
             landing_url = st.text_input(
@@ -2594,32 +2541,18 @@ if S_WORKING not in st.session_state:
         if landing_submit:
             try:
                 if load_google(landing_url, landing_selector):
+                    go_to("Project & companies")
                     st.rerun()
             except Exception as error:
                 st.error(str(error))
 
-    else:
-        st.subheader("Start with an empty project")
-        st.write(
-            "Create the project, then add the first assigned company in the Master project panel before researching buildings."
-        )
-        if st.button(
-            "Create blank project",
-            type="primary",
-            width="stretch",
-            key="landing_blank_workspace",
-        ):
-            blank_workspace()
-            go_to("Overview")
-            st.rerun()
-
     with st.expander("How Datablix works", expanded=True):
         flow_columns = st.columns(4)
         flow_items = [
-            ("Collect", "Import, scan, or add listing candidates."),
-            ("Review", "Confirm fields and record human decisions."),
-            ("Verify", "Resolve quality flags, source questions, and research gaps."),
-            ("Download", "Save a complete workbook or a focused file."),
+            ("Register", "Create or open the project and register its companies."),
+            ("Research", "Select one company, scan its website, or add a building manually."),
+            ("Review", "Confirm fields, evidence, quality flags, and human decisions."),
+            ("Save", "Download the resumable master project and reporting outputs."),
         ]
         for column, (heading, copy) in zip(flow_columns, flow_items):
             with column:
@@ -2644,7 +2577,7 @@ qa = qa_checks(working) if has_records else None
 # Primary navigation
 # -----------------------------
 sections = [
-    "Overview",
+    "Project & companies",
     "Website scanner",
     "Review records",
     "Progress & quality",
@@ -2652,16 +2585,16 @@ sections = [
     "Downloads",
 ]
 NAV_LABELS = {
-    "Overview": "Overview",
-    "Website scanner": "Scan website",
-    "Review records": "Review records",
-    "Progress & quality": "Quality & progress",
-    "Analysis & report": "Analysis & report",
-    "Downloads": "Downloads",
+    "Project & companies": "1 · Project",
+    "Website scanner": "2 · Research",
+    "Review records": "3 · Review",
+    "Progress & quality": "4 · Quality",
+    "Analysis & report": "5 · Report",
+    "Downloads": "6 · Save",
 }
 legacy_sections = {
     "Review & edit": "Review records",
-    "Research": "Progress & quality",
+    "Research": "Website scanner",
     "Data quality": "Progress & quality",
     "Export": "Downloads",
     "Review and edit records": "Review records",
@@ -2669,11 +2602,12 @@ legacy_sections = {
     "Download your work": "Downloads",
     "Analysis": "Analysis & report",
     "Report": "Analysis & report",
+    "Overview": "Project & companies",
 }
-current_section = st.session_state.get("db_section", "Overview")
+current_section = st.session_state.get("db_section", "Project & companies")
 current_section = legacy_sections.get(current_section, current_section)
 if current_section not in sections:
-    current_section = "Overview"
+    current_section = "Project & companies"
 st.session_state["db_section"] = current_section
 
 workspace_source = st.session_state.get(S_SOURCE_TYPE, "Workspace")
@@ -2717,16 +2651,243 @@ if not has_records and section in ["Progress & quality", "Analysis & report", "D
     if action_a.button("Open website scanner", type="primary", width="stretch"):
         go_to("Website scanner")
         st.rerun()
-    if action_b.button("Add record manually", width="stretch"):
+    if action_b.button("Add building manually", width="stretch"):
+        st.session_state[S_MANUAL_ENTRY_OPEN] = True
         go_to("Review records")
         st.rerun()
     st.stop()
 
 
 # -----------------------------
+# Project and company setup
+# -----------------------------
+if section == "Project & companies":
+    project_context_token = hashlib.sha256(
+        str(st.session_state.get(S_FILE, "project")).encode("utf-8")
+    ).hexdigest()[:10]
+    render_page_heading(
+        "SET UP",
+        "Project and company registry",
+        "Register the project, add or select assigned companies, then choose whether to scan a company website or enter a building manually.",
+    )
+    st.caption(f"Workflow build: **{WORKFLOW_BUILD}**")
+    render_guidance(
+        "One project, many companies, many buildings.",
+        "Each website scan and every building record must remain attached to the selected company inside the active project.",
+    )
+
+    active_setup_company = active_company_row()
+    setup_steps = st.columns(3)
+    with setup_steps[0]:
+        with st.container(border=True):
+            st.caption("STEP 1 · PROJECT")
+            st.markdown("**Project is open**")
+            st.caption("Rename it below or start a different project from the final expander.")
+    with setup_steps[1]:
+        with st.container(border=True):
+            st.caption("STEP 2 · COMPANY")
+            if active_setup_company is None:
+                st.markdown("**Register or select a company**")
+                st.caption("Research cannot begin until one company is active.")
+            else:
+                st.markdown(
+                    f"**{str(active_setup_company['Management/Owner']).strip()}**"
+                )
+                st.caption("This is the company that new research will belong to.")
+    with setup_steps[2]:
+        with st.container(border=True):
+            st.caption("STEP 3 · RESEARCH")
+            st.markdown("**Choose one method**")
+            st.caption("Scan the public website or register a building manually.")
+
+    with st.container(border=True):
+        project_name_main = st.text_input(
+            "Project name",
+            value=st.session_state.get(S_PROJECT_NAME, "Datablix master project"),
+            key=f"db_main_project_name_{project_context_token}",
+        )
+        st.session_state[S_PROJECT_NAME] = (
+            project_name_main.strip() or "Datablix master project"
+        )
+        setup_metrics = st.columns(3)
+        setup_metrics[0].metric("Registered companies", f"{len(project_registry):,}")
+        setup_metrics[1].metric("Building records", f"{len(working):,}")
+        setup_metrics[2].metric(
+            "Active company",
+            (
+                str(active_company_row()["Management/Owner"])
+                if active_company_row() is not None
+                else "None selected"
+            ),
+        )
+        st.caption("The project name and company registry are saved in the master project workbook.")
+
+    st.subheader("Select a company to research")
+    registry_main = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    if registry_main.empty:
+        st.warning(
+            "No company is registered yet. Use Register company manually below, or return to the landing page to import an assignment file."
+        )
+    else:
+        main_ids = registry_main["Company ID"].astype(str).tolist()
+        main_selector_key = f"db_main_active_company_{project_context_token}"
+        pending_main_id = str(
+            st.session_state.pop(S_PENDING_ACTIVE_COMPANY, "")
+        ).strip()
+        if pending_main_id in main_ids:
+            st.session_state[S_ACTIVE_COMPANY] = pending_main_id
+            st.session_state.pop(main_selector_key, None)
+
+        current_main_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        main_index = main_ids.index(current_main_id) if current_main_id in main_ids else 0
+        selected_main_id = st.selectbox(
+            "Active company",
+            main_ids,
+            index=main_index,
+            format_func=lambda company_id: company_label(
+                registry_main.loc[registry_main["Company ID"].eq(company_id)].iloc[0]
+            ),
+            key=main_selector_key,
+        )
+        st.session_state[S_ACTIVE_COMPANY] = selected_main_id
+        selected_company_row = registry_main.loc[
+            registry_main["Company ID"].eq(selected_main_id)
+        ].iloc[0]
+
+        with st.form(f"db_main_company_details_{project_context_token}_{selected_main_id}"):
+            detail_left, detail_right = st.columns(2)
+            selected_website = detail_left.text_input(
+                "Company website",
+                value=str(selected_company_row.get("Main Website", "")).strip(),
+                placeholder="https://example.ca",
+            )
+            selected_status_value = str(selected_company_row.get("Company Status", "Not started"))
+            selected_status_index = (
+                COMPANY_STATUSES.index(selected_status_value)
+                if selected_status_value in COMPANY_STATUSES
+                else 0
+            )
+            selected_company_status = detail_right.selectbox(
+                "Company status",
+                COMPANY_STATUSES,
+                index=selected_status_index,
+            )
+            selected_company_notes = st.text_area(
+                "Company notes",
+                value=str(selected_company_row.get("Notes", "")),
+                height=90,
+            )
+            save_company_details = st.form_submit_button(
+                "Save company details",
+                width="stretch",
+            )
+        if save_company_details:
+            registry_main.loc[
+                registry_main["Company ID"].eq(selected_main_id),
+                ["Main Website", "Company Status", "Notes"],
+            ] = [
+                selected_website.strip(),
+                selected_company_status,
+                selected_company_notes.strip(),
+            ]
+            st.session_state[S_COMPANIES] = normalize_company_registry(registry_main)
+            st.session_state[S_FLASH] = "Company details saved."
+            st.rerun()
+
+        scan_company_col, add_building_col = st.columns(2)
+        if scan_company_col.button(
+            "Scan selected company website",
+            type="primary",
+            width="stretch",
+            key="db_main_scan_selected_company",
+        ):
+            go_to("Website scanner")
+            st.rerun()
+        if add_building_col.button(
+            "Add a building manually",
+            width="stretch",
+            key="db_main_add_building",
+        ):
+            st.session_state[S_MANUAL_ENTRY_OPEN] = True
+            go_to("Review records")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Register company manually")
+    st.caption(
+        "Use this when the company was assigned outside the imported file, or when you are building the project without an assignment spreadsheet."
+    )
+    with st.form("db_main_add_company_form", clear_on_submit=True):
+        company_form_left, company_form_right = st.columns(2)
+        main_new_company = company_form_left.text_input(
+            "Company or owner name",
+            placeholder="Example: ABC Property Management",
+        )
+        main_new_website = company_form_right.text_input(
+            "Main website (optional)",
+            placeholder="https://example.ca",
+        )
+        main_new_scope = company_form_left.selectbox(
+            "Scope type",
+            ["Initial assignment", "Added later"],
+        )
+        main_new_notes = company_form_right.text_area(
+            "Notes (optional)",
+            height=75,
+        )
+        main_add_company = st.form_submit_button(
+            "Register company in project",
+            type="primary",
+            width="stretch",
+        )
+    if main_add_company:
+        try:
+            new_company_id, company_created = add_company_to_project(
+                main_new_company,
+                main_new_website,
+                main_new_scope,
+                main_new_notes,
+            )
+            st.session_state[S_FLASH] = (
+                f"Registered {main_new_company.strip()} as {new_company_id}."
+                if company_created
+                else f"{main_new_company.strip()} was already registered and is now active."
+            )
+            st.rerun()
+        except Exception as error:
+            st.error(str(error))
+
+    with st.expander("Open, import, or register a different project"):
+        st.warning(
+            "Save the current master project first. Starting again clears this browser session's current project."
+        )
+        confirm_new_project = st.checkbox(
+            "I have saved my current work and want to return to project setup",
+            key="db_confirm_return_to_project_start",
+        )
+        if st.button(
+            "Return to project setup",
+            disabled=not confirm_new_project,
+            width="stretch",
+            key="db_return_to_project_start",
+        ):
+            return_to_project_start()
+            st.rerun()
+
+    registry_display = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    if not registry_display.empty:
+        st.subheader("Company registry")
+        st.dataframe(
+            registry_display,
+            width="stretch",
+            hide_index=True,
+        )
+
+
+# -----------------------------
 # Overview
 # -----------------------------
-if section == "Overview":
+elif section == "Overview":
     render_page_heading(
         "WORKSPACE",
         "Workspace overview",
@@ -2753,9 +2914,16 @@ if section == "Overview":
         st.info(
             "This workspace is empty. Scan a public website or add a listing manually to begin."
         )
-        quick_scan, quick_manual = st.columns(2)
+        quick_project, quick_scan, quick_manual = st.columns(3)
+        if quick_project.button(
+            "Manage project & companies",
+            width="stretch",
+            key="overview_project_empty",
+        ):
+            go_to("Project & companies")
+            st.rerun()
         if quick_scan.button(
-            "Scan website",
+            "Scan company website",
             type="primary",
             width="stretch",
             key="overview_scan_empty",
@@ -2763,10 +2931,11 @@ if section == "Overview":
             go_to("Website scanner")
             st.rerun()
         if quick_manual.button(
-            "Add record manually",
+            "Add building manually",
             width="stretch",
             key="overview_manual_empty",
         ):
+            st.session_state[S_MANUAL_ENTRY_OPEN] = True
             go_to("Review records")
             st.rerun()
     else:
@@ -2788,15 +2957,19 @@ if section == "Overview":
             text=f"Research complete: {completed:,} of {len(qa):,} records",
         )
 
-        quick_1, quick_2, quick_3 = st.columns(3)
-        if quick_1.button("Scan another website", width="stretch"):
+        quick_1, quick_2, quick_3, quick_4 = st.columns(4)
+        if quick_1.button("Manage companies", width="stretch"):
+            go_to("Project & companies")
+            st.rerun()
+        if quick_2.button("Scan website", width="stretch"):
             go_to("Website scanner")
             st.rerun()
-        if quick_2.button("Review records", width="stretch"):
+        if quick_3.button("Add building manually", width="stretch"):
+            st.session_state[S_MANUAL_ENTRY_OPEN] = True
             go_to("Review records")
             st.rerun()
-        if quick_3.button("Download current work", width="stretch"):
-            go_to("Downloads")
+        if quick_4.button("Review records", width="stretch"):
+            go_to("Review records")
             st.rerun()
 
         st.subheader("Listing preview")
@@ -2836,14 +3009,51 @@ elif section == "Website scanner":
             "Every website scan must belong to one registered company in the active project.",
         )
         st.error(
-            "No active company is selected. Add or select a company in the "
-            "Master project panel, then choose Start research for this company."
+            "No company is selected. Register or select a company before scanning so every finding is attached to the correct organization."
         )
+        missing_company_setup, missing_company_manual = st.columns(2)
+        if missing_company_setup.button(
+            "Register or select company",
+            type="primary",
+            width="stretch",
+            key="db_scanner_missing_company_setup",
+        ):
+            go_to("Project & companies")
+            st.rerun()
+        if missing_company_manual.button(
+            "Add building manually instead",
+            width="stretch",
+            key="db_scanner_missing_company_manual",
+        ):
+            st.session_state[S_MANUAL_ENTRY_OPEN] = True
+            go_to("Review records")
+            st.rerun()
         st.stop()
 
     company_id = str(active_company["Company ID"]).strip()
     company_name = str(active_company["Management/Owner"]).strip()
     company_website = str(active_company.get("Main Website", "")).strip()
+
+    with st.container(border=True):
+        research_context, research_manual = st.columns([2.2, 1], vertical_alignment="center")
+        with research_context:
+            st.caption("ACTIVE RESEARCH CONTEXT")
+            st.markdown(f"**{company_name}** · {company_id}")
+            st.caption(
+                f"Website: {company_website or 'Enter the website in the scanner below'}"
+            )
+            st.caption(
+                "Choose website scanning below, or open the manual form when the building is not available through a usable public webpage."
+            )
+        with research_manual:
+            if st.button(
+                "Register building manually",
+                width="stretch",
+                key=f"db_research_manual_{company_id}",
+            ):
+                st.session_state[S_MANUAL_ENTRY_OPEN] = True
+                go_to("Review records")
+                st.rerun()
 
     scan_result = render_website_scanner_panel(
         working_data_key=S_WORKING,
@@ -3196,10 +3406,30 @@ elif section == "Review records":
                     st.rerun()
 
     st.divider()
-    with st.expander("Add record manually", expanded=not has_records):
+    manual_entry_requested = bool(
+        st.session_state.pop(S_MANUAL_ENTRY_OPEN, False)
+    )
+    with st.expander(
+        "Add building manually",
+        expanded=manual_entry_requested or not has_records,
+    ):
         st.caption(
             "Enter confirmed information only. Leave unconfirmed values blank and record unresolved details in Missing Information."
         )
+        manual_active_company = active_company_row()
+        if manual_active_company is None:
+            st.warning(
+                "Select or register a company first. Manual building records must belong to a company in the active project."
+            )
+            if st.button(
+                "Register or select company",
+                type="primary",
+                width="stretch",
+                key="db_manual_missing_company_setup",
+            ):
+                go_to("Project & companies")
+                st.rerun()
+
         suggested = generate_id(st.session_state[S_WORKING])
         with st.form("add_record", clear_on_submit=True):
             st.markdown("**Listing and location**")
@@ -3210,14 +3440,15 @@ elif section == "Review records":
                 help="A unique reference that keeps similar records separate.",
             )
             building_name = p1.text_input("Apartment Building Name")
-            manual_active_company = active_company_row()
             owner = p1.text_input(
                 "Management / Owner",
                 value=(
                     str(manual_active_company["Management/Owner"])
                     if manual_active_company is not None
-                    else ""
+                    else "Select a company first"
                 ),
+                disabled=True,
+                help="The building is attached to the active company. Change the active company from the Project page.",
             )
             classification = p2.text_input(
                 "Building Classification",
@@ -3278,9 +3509,10 @@ elif section == "Review records":
                 placeholder="Corrections, conflicts, decisions, or useful context.",
             )
             add = st.form_submit_button(
-                "Add record",
+                "Register building",
                 type="primary",
                 width="stretch",
+                disabled=manual_active_company is None,
             )
 
         if add:
@@ -3324,7 +3556,7 @@ elif section == "Review records":
                     pd.concat([current, pd.DataFrame([record])], ignore_index=True)
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-                st.session_state[S_FLASH] = f"Added {final_id} to the workspace."
+                st.session_state[S_FLASH] = f"Registered {final_id} in the project workspace."
                 st.rerun()
 
 
