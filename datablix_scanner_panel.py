@@ -880,7 +880,6 @@ def render_website_scanner_panel(
         """,
         unsafe_allow_html=True,
     )
-    st.caption(f"Scanner build: **{SCANNER_BUILD}**")
     st.markdown(
         '<div class="db-guidance"><strong>Ontario-only research scope.</strong>'
         '<span>The scanner may read a broader company website, but only Ontario properties can be approved, added, or exported. Confirmed non-Ontario records remain in the scan log.</span></div>',
@@ -1474,7 +1473,7 @@ def render_website_scanner_panel(
     s4.metric("Outside Ontario", int(scope_counts.get(ONTARIO_SCOPE_OUTSIDE, 0)))
     st.caption(
         "Only Confirmed Ontario and human-approved Likely Ontario candidates can "
-        "move into the workspace. Location Unclear and Outside Ontario records are "
+        "move into the selected company records. Location Unclear and Outside Ontario records are "
         "kept for traceability but excluded automatically."
     )
 
@@ -1692,7 +1691,7 @@ def render_website_scanner_panel(
             st.subheader("Add approved records to project")
             st.write(
                 f"{len(approved):,} Ontario-eligible candidate(s) are approved. "
-                "They will enter the workspace as Needs Review, not as verified records."
+                "They will enter the selected company records as Needs Review, not as verified records."
             )
         with action_right:
             add_approved = st.button(
