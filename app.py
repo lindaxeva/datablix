@@ -400,19 +400,13 @@ def render_public_entry_gate() -> None:
         return
 
     render_brand_header()
-    st.markdown("## Your Rental Property Research & Data Audit Platform")
-    st.write("Turn rental property research into clear, reliable, and review-ready information.")
-    st.write(
-        "Organize projects, research apartment buildings and property management companies, "
-        "check every finding against its public source, and follow progress through simple analytics."
-    )
     st.markdown("### Choose how you’d like to begin")
 
     demo_col, access_col = st.columns(2)
     with demo_col:
         with st.container(border=True):
-            st.markdown("#### Explore the Demo")
-            st.write("Try Datablix using realistic sample rental property information.")
+            st.markdown("#### Explore Your Demo")
+            st.write("Explore your rental property research workflow using realistic sample information.")
             if st.button("Explore Demo", type="primary", width="stretch", key="db_public_demo"):
                 start_demo_workspace()
                 st.rerun()
@@ -421,7 +415,7 @@ def render_public_entry_gate() -> None:
     with access_col:
         with st.container(border=True):
             st.markdown("#### Access Your Workspace")
-            st.write("Sign in to open your saved projects and collaborate with your team.")
+            st.write("Sign in to open your saved projects and continue your work with your team.")
             if st.button("Continue", width="stretch", key="db_public_continue"):
                 st.session_state[S_SHOW_AUTH] = True
                 st.rerun()
@@ -3098,10 +3092,34 @@ def _sidebar_company_rows(company_rows: list[dict], active_company_id: str) -> s
     return "".join(blocks)
 
 
+def _normalize_analytics_records(records) -> pd.DataFrame:
+    """Return analytics-ready records regardless of how project data was restored."""
+    if records is None:
+        frame = pd.DataFrame(columns=INTERNAL_COLUMNS)
+    elif isinstance(records, pd.DataFrame):
+        frame = records.copy()
+    elif isinstance(records, list):
+        frame = pd.DataFrame(records)
+    elif isinstance(records, dict):
+        # A column-oriented dictionary and a single-record dictionary both occur
+        # in saved project payloads, so support both forms safely.
+        try:
+            frame = pd.DataFrame(records)
+        except ValueError:
+            frame = pd.DataFrame([records])
+    else:
+        frame = pd.DataFrame(columns=INTERNAL_COLUMNS)
+
+    if frame.empty and len(frame.columns) == 0:
+        frame = pd.DataFrame(columns=INTERNAL_COLUMNS)
+
+    return normalize_workflow(frame)
+
+
 def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFrame) -> None:
     """Render project-wide and company-level rental-property research analytics."""
     registry = normalize_company_registry(registry)
-    records = normalize_internal(records) if isinstance(records, pd.DataFrame) else empty_internal()
+    records = _normalize_analytics_records(records)
     project = project_progress_snapshot(registry, records)
 
     st.subheader("Analytics dashboard")
