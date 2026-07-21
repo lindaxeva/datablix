@@ -15,6 +15,7 @@ from datablix_scanner_panel import render_website_scanner_panel
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
+
 # =========================================================
 # Configuration
 # =========================================================
@@ -2015,7 +2016,7 @@ def render_page_heading(label: str, title: str, description: str) -> None:
 def render_process_bar(active_section: str) -> None:
     """Keep the project-research-review-report mental model visible."""
     stage_map = {
-        "Project & companies": "Project & companies",
+        "Research projects & companies": "Research projects & companies",
         "Website scanner": "Website scanner",
         "Review records": "Review records",
         "Progress & quality": "Review records",
@@ -2023,7 +2024,7 @@ def render_process_bar(active_section: str) -> None:
         "Downloads": "Analysis & report",
     }
     stages = [
-        ("Project", "Project & companies"),
+        ("Project", "Research projects & companies"),
         ("Research", "Website scanner"),
         ("Review", "Review records"),
         ("Report & save", "Analysis & report"),
@@ -2115,7 +2116,7 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
         return (
             "Begin company research",
             "Select a registered company, scan its permitted public website, or add a building manually.",
-            "Project & companies",
+            "Research projects & companies",
             "Choose company and method",
         )
 
@@ -2236,7 +2237,7 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
     if not website and collected == 0:
         next_title = "Add the company website"
         next_copy = "Register the official website, or add a known building manually."
-        next_section = "Project & companies"
+        next_section = "Research projects & companies"
         next_button = "Add website"
     elif collected == 0:
         next_title = "Start company research"
@@ -2476,7 +2477,7 @@ def render_project_progress_sidebar() -> None:
         st.warning("No company is selected.")
         st.caption("Open Project to add or choose the company you want to research.")
         if st.button("Open project", type="primary", width="stretch", key="db_sidebar_open_project"):
-            go_to("Project & companies")
+            go_to("Research projects & companies")
             st.rerun()
     else:
         company = company_progress_snapshot(active, records)
@@ -2532,7 +2533,7 @@ def render_project_progress_sidebar() -> None:
     st.divider()
     utility_columns = st.columns(2)
     if utility_columns[0].button("Project", width="stretch", key="db_sidebar_project"):
-        go_to("Project & companies")
+        go_to("Research projects & companies")
         st.rerun()
     if utility_columns[1].button("Save", width="stretch", key="db_sidebar_save"):
         go_to("Downloads")
@@ -3010,7 +3011,7 @@ if S_WORKING not in st.session_state:
                     ):
                         try:
                             load_upload(landing_upload, landing_sheet)
-                            go_to("Project & companies")
+                            go_to("Research projects & companies")
                             st.rerun()
                         except Exception as error:
                             st.error(str(error))
@@ -3051,7 +3052,7 @@ if S_WORKING not in st.session_state:
                             landing_manual_website,
                             landing_manual_notes,
                         )
-                        go_to("Project & companies")
+                        go_to("Research projects & companies")
                         st.rerun()
                     except Exception as error:
                         st.error(str(error))
@@ -3079,7 +3080,7 @@ if S_WORKING not in st.session_state:
                 if landing_submit:
                     try:
                         if load_google(landing_url, landing_selector):
-                            go_to("Project & companies")
+                            go_to("Research projects & companies")
                             st.rerun()
                     except Exception as error:
                         st.error(str(error))
@@ -3116,7 +3117,7 @@ qa = qa_checks(working) if has_records else None
 # Primary navigation
 # -----------------------------
 all_sections = [
-    "Project & companies",
+    "Research projects & companies",
     "Website scanner",
     "Review records",
     "Progress & quality",
@@ -3124,19 +3125,19 @@ all_sections = [
     "Downloads",
 ]
 primary_sections = [
-    "Project & companies",
+    "Research projects & companies",
     "Website scanner",
     "Review records",
     "Analysis & report",
 ]
 NAV_LABELS = {
-    "Project & companies": "Project",
+    "Research projects & companies": "Project",
     "Website scanner": "Research",
     "Review records": "Review",
     "Analysis & report": "Report & save",
 }
 PRIMARY_ACTIVE_SECTION = {
-    "Project & companies": "Project & companies",
+    "Research projects & companies": "Research projects & companies",
     "Website scanner": "Website scanner",
     "Review records": "Review records",
     "Progress & quality": "Review records",
@@ -3153,12 +3154,12 @@ legacy_sections = {
     "Download your work": "Downloads",
     "Analysis": "Analysis & report",
     "Report": "Analysis & report",
-    "Overview": "Project & companies",
+    "Overview": "Research projects & companies",
 }
-current_section = st.session_state.get("db_section", "Project & companies")
+current_section = st.session_state.get("db_section", "Research projects & companies")
 current_section = legacy_sections.get(current_section, current_section)
 if current_section not in all_sections:
-    current_section = "Project & companies"
+    current_section = "Research projects & companies"
 st.session_state["db_section"] = current_section
 
 project_name_display = str(
@@ -3224,7 +3225,7 @@ if not has_records and section in ["Progress & quality", "Analysis & report", "D
 # -----------------------------
 # Project and company setup
 # -----------------------------
-if section == "Project & companies":
+if section == "Research projects & companies":
     project_context_token = hashlib.sha256(
         str(st.session_state.get(S_FILE, "project")).encode("utf-8")
     ).hexdigest()[:10]
@@ -3589,7 +3590,7 @@ elif section == "Overview":
             width="stretch",
             key="overview_project_empty",
         ):
-            go_to("Project & companies")
+            go_to("Research projects & companies")
             st.rerun()
         if quick_scan.button(
             "Open company research",
@@ -3628,7 +3629,7 @@ elif section == "Overview":
 
         quick_1, quick_2, quick_3, quick_4 = st.columns(4)
         if quick_1.button("Manage companies", width="stretch"):
-            go_to("Project & companies")
+            go_to("Research projects & companies")
             st.rerun()
         if quick_2.button("Company research", width="stretch"):
             go_to("Website scanner")
@@ -3687,7 +3688,7 @@ elif section == "Website scanner":
             width="stretch",
             key="db_research_missing_company_setup",
         ):
-            go_to("Project & companies")
+            go_to("Research projects & companies")
             st.rerun()
         if missing_company_manual.button(
             "Add building manually instead",
@@ -3709,6 +3710,7 @@ elif section == "Website scanner":
         "Generate one strong editable prompt, use it with the AI tool of your choice, and import the completed spreadsheet into Datablix for validation and human review.",
     )
 
+    st.subheader("Company workspace")
     with st.container(border=True):
         context_left, context_right = st.columns([2.3, 1], vertical_alignment="center")
         with context_left:
@@ -3721,7 +3723,7 @@ elif section == "Website scanner":
                 width="stretch",
                 key=f"db_research_edit_company_{company_id}",
             ):
-                go_to("Project & companies")
+                go_to("Research projects & companies")
                 st.rerun()
 
     st.subheader("1. Prepare the website research prompt")
