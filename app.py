@@ -10,58 +10,10 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
-from openai import OpenAI
 from openpyxl.styles import Alignment, Border, Font, Side
 from datablix_scanner_panel import render_website_scanner_panel
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
-
-def get_openai_api_key() -> str:
-    """Return the configured API key without exposing it in the interface."""
-    try:
-        return str(st.secrets.get("OPENAI_API_KEY", "")).strip()
-    except (FileNotFoundError, KeyError):
-        return ""
-
-
-def ai_is_available() -> bool:
-    """Enable AI only when it has been deliberately switched on and configured."""
-    try:
-        enabled = bool(st.secrets.get("AI_ENABLED", False))
-    except (FileNotFoundError, KeyError):
-        enabled = False
-
-    return enabled and bool(get_openai_api_key())
-
-
-def create_ai_summary(notes: str) -> str:
-    """Create a reviewable summary without changing the original notes."""
-    clean_notes = str(notes or "").strip()
-    if not clean_notes:
-        raise ValueError("Add notes before creating a summary.")
-
-    api_key = get_openai_api_key()
-    if not api_key:
-        raise RuntimeError(
-            "AI assistance is not configured. Add OPENAI_API_KEY to Streamlit Secrets."
-        )
-
-    client = OpenAI(api_key=api_key)
-    response = client.responses.create(
-        model="gpt-5-mini",
-        instructions=(
-            "Summarize the supplied rental property research notes in plain English. "
-            "Use only the information provided and never invent details. "
-            "Separate confirmed findings from unresolved or conflicting information. "
-            "Mention what still needs human verification. Keep the summary concise."
-        ),
-        input=clean_notes,
-    )
-
-    summary = str(response.output_text or "").strip()
-    if not summary:
-        raise RuntimeError("The AI service returned an empty summary.")
-    return summary
 
 # =========================================================
 # Configuration
@@ -71,7 +23,10 @@ INTERNAL_COLUMNS = [
     "Record ID", "Company ID", "Building Name", "Management/Owner", "Street Address",
     "Address Line 2", "City", "Province", "Postal Code", "Country",
     "Phone", "Primary Email", "Secondary Email", "Website",
-    "Number of Apartments", "Rental Rate Range", "Building Classification",
+    "Property Website", "Company Website", "Number of Apartments",
+    "Number of Storeys", "Rental Rate Range", "Suite Types", "Amenities",
+    "Parking", "Laundry", "Utilities", "Elevator", "Accessibility",
+    "Pet Policy", "Smoke-Free", "Building Classification",
     "Source URL", "Date Researched", "Researcher", "Research Status",
     "Source Status", "Verification Status", "Missing Information",
     "Reviewer Notes", "Record Decision",
@@ -106,7 +61,19 @@ LISTING_FIELD_MAP = [
 LISTING_ADDITIONAL_FIELD_MAP = [
     ("Address Line 2", "Address Line 2"),
     ("Secondary Email", "Secondary Email"),
+    ("Property Website", "Property Website"),
+    ("Company Website", "Company Website"),
+    ("Number of Storeys", "Number of Storeys"),
     ("Rental Rate Range", "Rental Rate Range"),
+    ("Suite Types", "Suite Types"),
+    ("Amenities", "Amenities"),
+    ("Parking", "Parking"),
+    ("Laundry", "Laundry"),
+    ("Utilities", "Utilities"),
+    ("Elevator", "Elevator"),
+    ("Accessibility", "Accessibility"),
+    ("Pet Policy", "Pet Policy"),
+    ("Smoke-Free", "Smoke-Free"),
     ("Country", "Country"),
     ("Official Source URL", "Source URL"),
     ("Date Researched", "Date Researched"),
@@ -143,9 +110,21 @@ ALIASES = {
     "Phone": ["Phone", "Phone Number", "Primary Phone"],
     "Primary Email": ["Primary Email", "Primary Email (Enter Email)", "Email", "Email Contact"],
     "Secondary Email": ["Secondary Email", "Alternate Email"],
-    "Website": ["Website", "WebSite", "Website / Source URL", "Property Website"],
+    "Website": ["Website", "WebSite", "Website / Source URL", "Official Website"],
+    "Property Website": ["Property Website", "Official Property Website", "Building Website"],
+    "Company Website": ["Company Website", "Management Company Website", "Corporate Website"],
     "Number of Apartments": ["Number of Apartments", "No. of Units", "Number of Units", "Unit Count", "Units"],
+    "Number of Storeys": ["Number of Storeys", "Storeys", "Stories", "Floors"],
     "Rental Rate Range": ["Rental Rate Range", "Rental Rates", "Rent Range", "Rent"],
+    "Suite Types": ["Suite Types", "Unit Types", "Bedroom Types", "Floor Plan Types"],
+    "Amenities": ["Amenities", "Detected Amenities", "Features"],
+    "Parking": ["Parking", "Parking Details"],
+    "Laundry": ["Laundry", "Laundry Details"],
+    "Utilities": ["Utilities", "Utilities Included"],
+    "Elevator": ["Elevator", "Elevator Available"],
+    "Accessibility": ["Accessibility", "Accessible Features"],
+    "Pet Policy": ["Pet Policy", "Pets"],
+    "Smoke-Free": ["Smoke-Free", "Smoke Free", "Non-Smoking"],
     "Building Classification": ["Building Classification", "Verified Building Classification", "Category", "Building Type"],
     "Source URL": ["Source URL", "Official Source URL", "Research Source", "Website / Source URL"],
     "Date Researched": ["Date Researched", "Date Verified", "Verification Date", "Research Date"],
@@ -195,6 +174,7 @@ COMPANY_SCOPE_TYPES = ["Initial assignment", "Added later", "Imported"]
 COMPANY_COLUMNS = [
     "Company ID", "Management/Owner", "Main Website", "Scope Type",
     "Date Assigned", "Company Status", "Notes",
+    "Research Prompt", "Prompt Updated", "AI Tool Used",
 ]
 
 UNRESOLVED = {
@@ -549,6 +529,9 @@ def normalize_company_registry(registry):
     )
     out["Date Assigned"] = out["Date Assigned"].fillna("").astype(str).str.strip()
     out["Notes"] = out["Notes"].fillna("").astype(str)
+    out["Research Prompt"] = out["Research Prompt"].fillna("").astype(str)
+    out["Prompt Updated"] = out["Prompt Updated"].fillna("").astype(str).str.strip()
+    out["AI Tool Used"] = out["AI Tool Used"].fillna("").astype(str).str.strip()
     out = out.loc[out["Management/Owner"].ne("") | out["Company ID"].ne("")].copy()
 
     used_ids = set(out.loc[out["Company ID"].ne(""), "Company ID"].astype(str))
@@ -907,6 +890,153 @@ def read_google_sheet(url, selector=""):
         ) from error
     sid = sheet_id(url)
     return prepare_data(df), data, f"google_sheet_{sid[:10]}.csv" if sid else "google_sheet.csv", selector or sheet_gid(url) or "linked worksheet"
+
+
+
+
+AI_RESEARCH_DELIVERABLE_COLUMNS = [
+    "Building Name", "Street Address", "Address Line 2", "City", "Province",
+    "Postal Code", "Country", "Management/Owner", "Phone", "Primary Email",
+    "Secondary Email", "Property Website", "Company Website", "Source URL",
+    "Number of Apartments", "Number of Storeys", "Rental Rate Range",
+    "Suite Types", "Building Classification", "Amenities", "Parking",
+    "Laundry", "Utilities", "Elevator", "Accessibility", "Pet Policy",
+    "Smoke-Free", "Supporting Evidence", "Confidence", "Missing Information",
+    "Reviewer Notes",
+]
+
+
+def ai_research_template(company_name: str = "", company_website: str = "") -> pd.DataFrame:
+    """Return a blank spreadsheet structure for external AI research deliverables."""
+    row = {column: "" for column in AI_RESEARCH_DELIVERABLE_COLUMNS}
+    row["Management/Owner"] = str(company_name or "").strip()
+    row["Company Website"] = str(company_website or "").strip()
+    return pd.DataFrame([row])
+
+
+def build_company_website_research_prompt(
+    *,
+    company_name: str,
+    company_website: str,
+    geographic_scope: str,
+    known_records: str,
+    priority_notes: str,
+    source_policy: str,
+    output_notes: str,
+) -> str:
+    """Create one comprehensive, editable, provider-neutral research prompt."""
+    return f"""# Datablix Company Website Research Prompt
+
+You are acting as a careful public-source rental-property research analyst. Research the company below and produce a structured spreadsheet deliverable that can be imported into Datablix for data-quality review and human verification.
+
+## Company context
+- Company or management owner: {company_name or '[enter company name]'}
+- Official company website: {company_website or '[enter official website]'}
+- Geographic scope: {geographic_scope or 'Ontario, Canada'}
+- Known records that may already exist and must be checked for duplicates:
+{known_records or 'None provided.'}
+
+## Research objective
+Research the official company website thoroughly and identify every in-scope apartment building, rental community, residence, or property connected to this company. Follow relevant public links from the company website, including official property websites, location directories, property pages, portfolio pages, community pages, leasing pages, floor-plan pages, amenity pages, contact pages, sitemaps, and official PDF brochures when accessible.
+
+Do not stop at the first page or first group of results. Continue until the accessible official website coverage has been reasonably exhausted. Record important coverage limitations, blocked pages, broken links, JavaScript-only content, missing sitemaps, and any reason the research may be incomplete.
+
+## Source policy
+{source_policy}
+
+Use official company and official property sources as the primary evidence. Do not silently rely on search-result snippets, social media, forums, user-generated listings, scraped directories, or other unverified third-party sources. A third-party source may only be used when explicitly allowed above, and it must be clearly labelled as secondary evidence.
+
+## Fields to collect for each property
+Return one row per unique property. Use these exact column headings:
+
+{', '.join(AI_RESEARCH_DELIVERABLE_COLUMNS)}
+
+Field guidance:
+- Building Name: the actual property or building name, never a generic page heading.
+- Management/Owner: the selected company unless official evidence clearly identifies another responsible entity; note conflicts.
+- Property Website: the official property-specific homepage.
+- Company Website: the official corporate or management-company homepage.
+- Source URL: the exact page that supports the row or its main identity.
+- Supporting Evidence: concise evidence notes and additional supporting URLs separated with semicolons.
+- Confidence: High, Medium, or Low based on the strength and agreement of official evidence.
+- Missing Information: list fields that could not be confirmed.
+- Reviewer Notes: conflicts, assumptions, duplicate concerns, special cases, and follow-up needs.
+
+## Mandatory research and data-quality rules
+1. Never invent, estimate, or fill a field merely to make the dataset look complete.
+2. When information is not publicly confirmed, leave the field blank and record it under Missing Information.
+3. Absence of a feature does not mean “No.” Use No only when an official source explicitly states that the feature is unavailable or prohibited.
+4. Do not use generic labels such as Contact Us, Home, Properties, Apartments, Communities, Amenities, Floor Plans, Availability, Learn More, or Welcome as a building name.
+5. Distinguish a company contact page from a property page. A corporate office address is not automatically a rental-property address.
+6. Keep Property Website, Company Website, and Source URL separate.
+7. Preserve conflicting values and explain the conflict instead of choosing one without evidence.
+8. Check duplicates primarily by normalized street address and postal code, then by property website, building name plus city, and other identity evidence.
+9. Do not merge separate buildings merely because they belong to one complex. Do not split one building merely because several source pages describe it.
+10. Keep only properties inside the stated geographic scope. Put uncertain locations in Reviewer Notes rather than silently including or excluding them.
+11. Validate Canadian postal-code formatting where available, but do not manufacture missing postal codes.
+12. Treat all AI-produced findings as preliminary research subject to Datablix validation and human approval.
+13. Prefer transparency over completeness. Every populated value should be traceable to public evidence.
+14. Record the research date and identify information that appears stale, archived, historical, or no longer current in Reviewer Notes.
+
+## Priority or company-specific instructions
+{priority_notes or 'No additional priorities were provided.'}
+
+## Required deliverable
+Create an editable spreadsheet with one property per row and the exact headings above. Deliver it as one of the following:
+- an Excel workbook (.xlsx),
+- a CSV file (.csv), or
+- an editable Google Sheet with a shareable viewer link.
+
+Do not return only a narrative answer. The spreadsheet is the primary deliverable. You may include a short companion summary covering:
+- coverage completed,
+- total unique in-scope properties found,
+- possible duplicates,
+- unresolved conflicts,
+- missing information,
+- assumptions,
+- limitations, and
+- recommended human follow-up.
+
+Additional output instructions:
+{output_notes or 'Keep the spreadsheet clean, editable, and ready for import into Datablix.'}
+"""
+
+
+def append_external_research_results(
+    imported: pd.DataFrame,
+    *,
+    company_id: str,
+    company_name: str,
+    company_website: str,
+) -> int:
+    """Map an external AI spreadsheet into the current human-review workflow."""
+    validate_input(imported)
+    mapped, _mapping = map_schema(imported)
+    if mapped.empty:
+        return 0
+
+    for column in INTERNAL_COLUMNS:
+        if column not in mapped.columns:
+            mapped[column] = pd.NA
+
+    mapped["Company ID"] = company_id
+    owner_blank = unresolved_mask(mapped["Management/Owner"])
+    mapped.loc[owner_blank, "Management/Owner"] = company_name
+    if "Company Website" in mapped.columns:
+        company_site_blank = unresolved_mask(mapped["Company Website"])
+        mapped.loc[company_site_blank, "Company Website"] = company_website
+    website_blank = unresolved_mask(mapped["Website"])
+    if "Property Website" in mapped.columns:
+        mapped.loc[website_blank, "Website"] = mapped.loc[website_blank, "Property Website"]
+    mapped["Research Status"] = "Imported - Needs Review"
+    mapped["Verification Status"] = "Needs Review"
+    mapped["Record Decision"] = "Undecided"
+
+    current = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
+    combined = pd.concat([current, mapped], ignore_index=True, sort=False)
+    combined = ensure_ids(normalize_workflow(prepare_data(combined)))
+    st.session_state[S_WORKING] = combined
+    return len(mapped)
 
 
 # =========================================================
@@ -1703,7 +1833,7 @@ def open_assignment_project(
         selector,
         message=(
             f"Project registered with {len(registry):,} assigned company or owner "
-            "record(s). Select a company and start its website research."
+            "record(s). Select a company and prepare its external AI research prompt."
         ),
         registry=registry,
     )
@@ -2237,6 +2367,11 @@ def company_progress_table(
             "Needs attention": item["attention"],
             "Progress": f"{item['progress_percent']}%" if item["collected"] else "Not started",
             "Status": item["status"],
+            "Research prompt": (
+                "Saved"
+                if not registry.loc[registry["Company ID"].astype(str).eq(item["company_id"]), "Research Prompt"].fillna("").astype(str).str.strip().eq("").all()
+                else "Not saved"
+            ),
             "Next action": item["next_title"],
             "Company ID": item["company_id"],
         })
@@ -2954,7 +3089,7 @@ if S_WORKING not in st.session_state:
     flow_items = [
         ("Project", "Create or open the container for the assignment."),
         ("Company", "Register and select one company inside the project."),
-        ("Research", "Scan its website or add a building manually."),
+        ("Research", "Generate the company research prompt, import the completed spreadsheet, or add a building manually."),
         ("Finish", "Review, verify, report, and save the project."),
     ]
     for column, (heading, copy) in zip(flow_columns, flow_items):
@@ -3073,10 +3208,10 @@ render_process_bar(section)
 
 if not has_records and section in ["Progress & quality", "Analysis & report", "Downloads"]:
     st.info(
-        "This project has no building records yet. Select a company, scan its website, or add the first building manually."
+        "This project has no building records yet. Select a company, generate its research prompt, import the completed spreadsheet, or add the first building manually."
     )
     action_a, action_b = st.columns(2)
-    if action_a.button("Open website scanner", type="primary", width="stretch"):
+    if action_a.button("Open company research", type="primary", width="stretch"):
         go_to("Website scanner")
         st.rerun()
     if action_b.button("Add building manually", width="stretch"):
@@ -3095,12 +3230,12 @@ if section == "Project & companies":
     ).hexdigest()[:10]
     render_page_heading(
         "PROJECT",
-        "Project home",
-        "See the whole assignment, choose one company, and continue from the next recommended action.",
+        "Research project",
+        "Manage the project, save companies under it, choose one company workspace, and continue from the next recommended action.",
     )
     render_guidance(
-        "One project contains many companies.",
-        "Companies are registered separately inside the project. Website scans and manual building records inherit the selected company automatically.",
+        "One research project contains many saved company workspaces.",
+        "Each company keeps its website, editable research prompt, imported building records, review progress, and optional scanner history under the same project.",
     )
 
     project_snapshot = project_progress_snapshot(project_registry, working)
@@ -3182,6 +3317,9 @@ if section == "Project & companies":
                 ),
                 "Progress": st.column_config.TextColumn("Progress"),
                 "Status": st.column_config.TextColumn("Status"),
+                "Research prompt": st.column_config.TextColumn(
+                    "Research prompt", width="small"
+                ),
                 "Next action": st.column_config.TextColumn(
                     "Next action", width="large"
                 ),
@@ -3276,7 +3414,7 @@ if section == "Project & companies":
             alternate_label = (
                 "Add building manually"
                 if selected_snapshot["next_section"] != "Review records"
-                else "Scan company website"
+                else "Open company research"
             )
             if alternate_action_col.button(
                 alternate_label,
@@ -3443,7 +3581,7 @@ elif section == "Overview":
 
     if not has_records:
         st.info(
-            "This workspace is empty. Scan a public website or add a listing manually to begin."
+            "This workspace is empty. Generate a company research prompt, import a completed spreadsheet, or add a listing manually to begin."
         )
         quick_project, quick_scan, quick_manual = st.columns(3)
         if quick_project.button(
@@ -3454,7 +3592,7 @@ elif section == "Overview":
             go_to("Project & companies")
             st.rerun()
         if quick_scan.button(
-            "Scan company website",
+            "Open company research",
             type="primary",
             width="stretch",
             key="overview_scan_empty",
@@ -3492,7 +3630,7 @@ elif section == "Overview":
         if quick_1.button("Manage companies", width="stretch"):
             go_to("Project & companies")
             st.rerun()
-        if quick_2.button("Scan website", width="stretch"):
+        if quick_2.button("Company research", width="stretch"):
             go_to("Website scanner")
             st.rerun()
         if quick_3.button("Add building manually", width="stretch"):
@@ -3529,32 +3667,32 @@ elif section == "Overview":
 
 
 # -----------------------------
-# Website scanner
+# Company research
 # -----------------------------
 elif section == "Website scanner":
     active_company = active_company_row()
     if active_company is None:
         render_page_heading(
-            "COLLECT",
-            "Select a company before scanning",
-            "Every website scan must belong to one registered company in the active project.",
+            "RESEARCH",
+            "Select a company before researching",
+            "Each research prompt, imported deliverable, and optional website scan must belong to one registered company.",
         )
         st.error(
-            "No company is selected. Register or select a company before scanning so every finding is attached to the correct organization."
+            "No company is selected. Register or select a company so every imported finding remains attached to the correct organization."
         )
         missing_company_setup, missing_company_manual = st.columns(2)
         if missing_company_setup.button(
             "Register or select company",
             type="primary",
             width="stretch",
-            key="db_scanner_missing_company_setup",
+            key="db_research_missing_company_setup",
         ):
             go_to("Project & companies")
             st.rerun()
         if missing_company_manual.button(
             "Add building manually instead",
             width="stretch",
-            key="db_scanner_missing_company_manual",
+            key="db_research_missing_company_manual",
         ):
             st.session_state[S_MANUAL_ENTRY_OPEN] = True
             go_to("Review records")
@@ -3565,63 +3703,285 @@ elif section == "Website scanner":
     company_name = str(active_company["Management/Owner"]).strip()
     company_website = str(active_company.get("Main Website", "")).strip()
 
-    with st.container(border=True):
-        research_context, research_manual = st.columns([2.2, 1], vertical_alignment="center")
-        with research_context:
-            st.caption("ACTIVE RESEARCH CONTEXT")
-            st.markdown(f"**{company_name}** · {company_id}")
-            st.caption(
-                f"Website: {company_website or 'Enter the website in the scanner below'}"
-            )
-            st.caption(
-                "Choose website scanning below, or open the manual form when the building is not available through a usable public webpage."
-            )
-        with research_manual:
-            if st.button(
-                "Register building manually",
-                width="stretch",
-                key=f"db_research_manual_{company_id}",
-            ):
-                st.session_state[S_MANUAL_ENTRY_OPEN] = True
-                go_to("Review records")
-                st.rerun()
-
-    scan_result = render_website_scanner_panel(
-        working_data_key=S_WORKING,
-        active_company_id=company_id,
-        active_company_name=company_name,
-        active_company_website=company_website,
-        scan_history_key=S_SCAN_HISTORY,
-        scan_candidates_key=S_SCAN_CANDIDATES,
-        scan_pages_key=S_SCAN_PAGES,
+    render_page_heading(
+        "RESEARCH",
+        "Company website research",
+        "Generate one strong editable prompt, use it with the AI tool of your choice, and import the completed spreadsheet into Datablix for validation and human review.",
     )
 
-    if scan_result:
-        merged = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
-        for column in INTERNAL_COLUMNS:
-            if column not in merged.columns:
-                merged[column] = pd.NA
-        merged = ensure_ids(normalize_workflow(prepare_data(merged)))
-        merged, registry = synchronize_company_registry(
-            merged,
-            st.session_state.get(S_COMPANIES),
-        )
-        registry.loc[
-            registry["Company ID"].eq(company_id), "Company Status"
-        ] = "Researching"
-        st.session_state[S_WORKING] = merged
-        st.session_state[S_COMPANIES] = normalize_company_registry(registry)
-        st.session_state[S_EDIT_COUNT] = (
-            st.session_state.get(S_EDIT_COUNT, 0)
-            + int(scan_result.get("added", 0))
-        )
-        st.session_state[S_FLASH] = (
-            f"Added {int(scan_result.get('added', 0))} approved record(s) for "
-            f"{company_name}. Review the extracted details and source evidence next."
-        )
-        go_to("Review records")
+    with st.container(border=True):
+        context_left, context_right = st.columns([2.3, 1], vertical_alignment="center")
+        with context_left:
+            st.caption("ACTIVE COMPANY")
+            st.markdown(f"**{company_name}** · {company_id}")
+            st.caption(f"Official website: {company_website or 'Not recorded yet'}")
+        with context_right:
+            if st.button(
+                "Edit company details",
+                width="stretch",
+                key=f"db_research_edit_company_{company_id}",
+            ):
+                go_to("Project & companies")
+                st.rerun()
+
+    st.subheader("1. Prepare the website research prompt")
+    st.caption(
+        "Datablix personalizes one comprehensive prompt for this company. Every part remains editable before you copy or download it."
+    )
+
+    company_rows = working.loc[working["Company ID"].astype(str).eq(company_id)].copy()
+    known_default = ""
+    if not company_rows.empty:
+        known_lines = []
+        for _, row in company_rows.head(100).iterrows():
+            label = " · ".join(
+                value for value in [
+                    "" if is_unresolved(row.get("Building Name")) else str(row.get("Building Name")).strip(),
+                    "" if is_unresolved(row.get("Street Address")) else str(row.get("Street Address")).strip(),
+                    "" if is_unresolved(row.get("City")) else str(row.get("City")).strip(),
+                    "" if is_unresolved(row.get("Postal Code")) else str(row.get("Postal Code")).strip(),
+                ] if value
+            )
+            if label:
+                known_lines.append(f"- {label}")
+        known_default = "\n".join(known_lines)
+
+    prompt_left, prompt_right = st.columns(2)
+    geographic_scope = prompt_left.text_input(
+        "Geographic scope",
+        value="Ontario, Canada",
+        key=f"db_prompt_scope_{company_id}",
+    )
+    known_records = prompt_right.text_area(
+        "Known records for duplicate checking",
+        value=known_default,
+        height=120,
+        key=f"db_prompt_known_{company_id}",
+        help="Datablix preloads current company records when available. Edit or remove them as needed.",
+    )
+    source_policy = prompt_left.text_area(
+        "Source policy",
+        value=(
+            "Use official company pages, official property pages, official leasing pages, official PDFs, and official property websites linked by the company. "
+            "Do not use unverified third-party directories unless necessary to identify a lead; never treat a lead as confirmed without official evidence."
+        ),
+        height=130,
+        key=f"db_prompt_sources_{company_id}",
+    )
+    priority_notes = prompt_right.text_area(
+        "Company-specific priorities or exclusions",
+        value="Prioritize complete website coverage, Ontario properties, exact source URLs, missing fields, classifications, amenities, and duplicate risks.",
+        height=130,
+        key=f"db_prompt_priority_{company_id}",
+    )
+    output_notes = st.text_area(
+        "Deliverable instructions",
+        value=(
+            "Use one row per unique property. Keep the exact requested headings. Preserve blanks for unknown values. "
+            "Return an editable CSV, Excel workbook, or Google Sheet rather than only a narrative response."
+        ),
+        height=95,
+        key=f"db_prompt_output_{company_id}",
+    )
+
+    generated_prompt = build_company_website_research_prompt(
+        company_name=company_name,
+        company_website=company_website,
+        geographic_scope=geographic_scope,
+        known_records=known_records,
+        priority_notes=priority_notes,
+        source_policy=source_policy,
+        output_notes=output_notes,
+    )
+    saved_prompt = str(active_company.get("Research Prompt", "") or "").strip()
+    editable_prompt = st.text_area(
+        "Editable master research prompt",
+        value=saved_prompt or generated_prompt,
+        height=650,
+        key=f"db_master_prompt_{company_id}",
+    )
+
+    prompt_meta_left, prompt_meta_right = st.columns([1.2, 1])
+    ai_tool_used = prompt_meta_left.text_input(
+        "AI tool used (optional)",
+        value=str(active_company.get("AI Tool Used", "") or "").strip(),
+        placeholder="Example: ChatGPT, Claude, Gemini or Copilot",
+        key=f"db_prompt_ai_tool_{company_id}",
+    )
+    prompt_updated = str(active_company.get("Prompt Updated", "") or "").strip()
+    prompt_meta_right.caption(
+        f"Saved to this company: {prompt_updated}"
+        if prompt_updated
+        else "This prompt has not yet been saved to the company workspace."
+    )
+    if st.button(
+        "Save prompt to company workspace",
+        type="primary",
+        width="stretch",
+        key=f"db_save_company_prompt_{company_id}",
+    ):
+        registry_prompt = normalize_company_registry(st.session_state.get(S_COMPANIES))
+        company_mask = registry_prompt["Company ID"].astype(str).eq(company_id)
+        registry_prompt.loc[company_mask, "Research Prompt"] = editable_prompt
+        registry_prompt.loc[company_mask, "Prompt Updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        registry_prompt.loc[company_mask, "AI Tool Used"] = ai_tool_used.strip()
+        registry_prompt.loc[company_mask, "Company Status"] = registry_prompt.loc[company_mask, "Company Status"].replace("Not started", "Researching")
+        st.session_state[S_COMPANIES] = normalize_company_registry(registry_prompt)
+        st.session_state[S_FLASH] = f"Research prompt saved under {company_name}."
         st.rerun()
 
+    with st.expander("Copy-ready prompt", expanded=False):
+        st.caption("Use the copy icon in the code block after finishing your edits above.")
+        st.code(editable_prompt, language="markdown")
+    prompt_download_name = f"{safe_filename(company_name)}_website_research_prompt.txt"
+    prompt_actions = st.columns([1, 1, 1.4])
+    prompt_actions[0].download_button(
+        "Download prompt",
+        data=editable_prompt.encode("utf-8"),
+        file_name=prompt_download_name,
+        mime="text/plain",
+        width="stretch",
+    )
+    prompt_actions[1].download_button(
+        "Download CSV template",
+        data=csv_bytes(ai_research_template(company_name, company_website)),
+        file_name=f"{safe_filename(company_name)}_research_template.csv",
+        mime="text/csv",
+        width="stretch",
+    )
+    prompt_actions[2].download_button(
+        "Download Excel template",
+        data=excel_bytes({"Research Results": ai_research_template(company_name, company_website)}),
+        file_name=f"{safe_filename(company_name)}_research_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        width="stretch",
+    )
+    st.info(
+        "Copy the editable prompt into ChatGPT, Claude, Gemini, Copilot, Perplexity, or another AI tool. Ask it to create the spreadsheet deliverable, review the result, then return here."
+    )
+
+    st.divider()
+    st.subheader("2. Import the completed research deliverable")
+    st.caption(
+        "Datablix accepts CSV, Excel, or a shareable Google Sheets link. Imported findings remain unverified and continue through mapping, quality checks, duplicate review, and human approval."
+    )
+    import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
+    with import_tabs[0]:
+        research_upload = st.file_uploader(
+            "Completed research spreadsheet",
+            type=["csv", "xlsx"],
+            key=f"db_external_research_upload_{company_id}",
+        )
+        selected_sheet = None
+        if research_upload is not None and research_upload.name.lower().endswith(".xlsx"):
+            try:
+                sheet_names = excel_sheet_names(research_upload)
+                selected_sheet = st.selectbox(
+                    "Worksheet",
+                    sheet_names,
+                    index=preferred_sheet(sheet_names),
+                    key=f"db_external_research_sheet_{company_id}",
+                )
+            except Exception as error:
+                st.error(f"Datablix could not inspect this workbook: {error}")
+        if st.button(
+            "Import spreadsheet into review",
+            type="primary",
+            width="stretch",
+            disabled=research_upload is None,
+            key=f"db_external_research_import_{company_id}",
+        ):
+            try:
+                imported_df, _ = read_upload(research_upload, selected_sheet)
+                added_count = append_external_research_results(
+                    imported_df,
+                    company_id=company_id,
+                    company_name=company_name,
+                    company_website=company_website,
+                )
+                st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
+                st.session_state[S_FLASH] = (
+                    f"Imported {added_count:,} research row(s) for {company_name}. Review identity, evidence, duplicates, and missing information next."
+                )
+                go_to("Review records")
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    with import_tabs[1]:
+        with st.form(f"db_external_google_form_{company_id}"):
+            google_url = st.text_input(
+                "Shareable Google Sheets link",
+                placeholder="https://docs.google.com/spreadsheets/d/...",
+            )
+            google_selector = st.text_input(
+                "Worksheet name or gid (optional)",
+                placeholder="Research Results",
+            )
+            import_google = st.form_submit_button(
+                "Import Google Sheet into review",
+                type="primary",
+                width="stretch",
+            )
+        if import_google:
+            try:
+                imported_df, _, _, _ = read_google_sheet(google_url, google_selector)
+                added_count = append_external_research_results(
+                    imported_df,
+                    company_id=company_id,
+                    company_name=company_name,
+                    company_website=company_website,
+                )
+                st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
+                st.session_state[S_FLASH] = (
+                    f"Imported {added_count:,} Google Sheets row(s) for {company_name}. Review the findings before verification."
+                )
+                go_to("Review records")
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    st.divider()
+    with st.expander(
+        "Optional: run the Datablix website scanner for coverage and cross-checking",
+        expanded=False,
+    ):
+        st.caption(
+            "The scanner is no longer the primary research method. Use it when you need a second source of page coverage, want to compare AI findings against the live site, or need to investigate possible omissions. Scanner findings still require human review."
+        )
+        scan_result = render_website_scanner_panel(
+            working_data_key=S_WORKING,
+            active_company_id=company_id,
+            active_company_name=company_name,
+            active_company_website=company_website,
+            scan_history_key=S_SCAN_HISTORY,
+            scan_candidates_key=S_SCAN_CANDIDATES,
+            scan_pages_key=S_SCAN_PAGES,
+        )
+        if scan_result:
+            merged = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
+            for column in INTERNAL_COLUMNS:
+                if column not in merged.columns:
+                    merged[column] = pd.NA
+            merged = ensure_ids(normalize_workflow(prepare_data(merged)))
+            merged, registry = synchronize_company_registry(
+                merged,
+                st.session_state.get(S_COMPANIES),
+            )
+            registry.loc[
+                registry["Company ID"].eq(company_id), "Company Status"
+            ] = "Researching"
+            st.session_state[S_WORKING] = merged
+            st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+            st.session_state[S_EDIT_COUNT] = (
+                st.session_state.get(S_EDIT_COUNT, 0)
+                + int(scan_result.get("added", 0))
+            )
+            st.session_state[S_FLASH] = (
+                f"Added {int(scan_result.get('added', 0))} scanner cross-check record(s) for {company_name}. Compare them with the imported research before verification."
+            )
+            go_to("Review records")
+            st.rerun()
 
 # -----------------------------
 # Review records
@@ -3719,7 +4079,7 @@ elif section == "Review records":
         filtered = qa.loc[mask].copy()
         st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
 
-        review_tabs = st.tabs(["Review queue", "Edit fields", "Summarize notes"])
+        review_tabs = st.tabs(["Review queue", "Edit fields"])
 
         with review_tabs[0]:
             if filtered.empty:
@@ -3845,252 +4205,6 @@ elif section == "Review records":
                 if save_changes:
                     save_edits(edited, [c for c in edit_fields if c in edited.columns])
                     st.rerun()
-
-        with review_tabs[2]:
-            if not ai_is_available():
-                st.info(
-                    "AI note assistance is unavailable in this deployment. All rental property collection, review, quality, and export tools remain available."
-                )
-                st.caption(
-                    "To switch it on, add `AI_ENABLED = true` and `OPENAI_API_KEY = \"your-key\"` in Streamlit Secrets."
-                )
-            elif filtered.empty:
-                st.info("No records match this search and focus. Widen the filters to choose a record.")
-            else:
-                st.caption(
-                    "Turn detailed rental property research notes into a concise review summary. Nothing is saved until you approve it."
-                )
-                ai_options = filtered["Record ID"].astype(str).tolist()
-                selected_ai_id = st.selectbox(
-                    "Record",
-                    ai_options,
-                    format_func=lambda rid: (
-                        f"{rid} · {filtered.loc[filtered['Record ID'].astype(str).eq(rid), 'Working Record Label'].iloc[0]}"
-                    ),
-                    key="db_ai_record_id",
-                )
-
-                ai_row = filtered.loc[
-                    filtered["Record ID"].astype(str).eq(selected_ai_id)
-                ].iloc[0]
-                source_parts = []
-                if not is_unresolved(ai_row.get("Reviewer Notes")):
-                    source_parts.append(f"Reviewer notes: {ai_row['Reviewer Notes']}")
-                if not is_unresolved(ai_row.get("Missing Information")):
-                    source_parts.append(f"Missing information: {ai_row['Missing Information']}")
-                if (
-                    not is_unresolved(ai_row.get("Research Gaps"))
-                    and str(ai_row.get("Research Gaps")) != "None"
-                ):
-                    source_parts.append(f"Open research gaps: {ai_row['Research Gaps']}")
-                if not is_unresolved(ai_row.get("Source URL")):
-                    source_parts.append(f"Source recorded: {ai_row['Source URL']}")
-
-                source_text = "\n".join(source_parts)
-                notes_key = f"db_ai_notes_{selected_ai_id}"
-                summary_key = f"db_ai_summary_{selected_ai_id}"
-                loaded_key = f"db_ai_loaded_{selected_ai_id}"
-
-                if not st.session_state.get(loaded_key):
-                    st.session_state[notes_key] = source_text
-                    st.session_state.setdefault(summary_key, "")
-                    st.session_state[loaded_key] = True
-
-                ai_notes = st.text_area(
-                    "Notes to summarize",
-                    key=notes_key,
-                    height=180,
-                    placeholder="Record what was confirmed, which source was checked, and what still needs verification.",
-                )
-                generate_summary = st.button(
-                    "Prepare summary",
-                    type="primary",
-                    disabled=not ai_notes.strip() or not get_openai_api_key(),
-                    key=f"db_generate_ai_{selected_ai_id}",
-                )
-                if generate_summary:
-                    try:
-                        with st.spinner("Preparing a concise review summary..."):
-                            st.session_state[summary_key] = create_ai_summary(ai_notes)
-                    except Exception as error:
-                        st.error(str(error))
-
-                ai_summary = st.text_area(
-                    "Review and edit the summary",
-                    key=summary_key,
-                    height=160,
-                    placeholder="The prepared summary will appear here. Edit it freely before saving.",
-                )
-                if st.button(
-                    "Save to Reviewer Notes",
-                    disabled=not ai_summary.strip(),
-                    width="stretch",
-                    key=f"db_save_ai_{selected_ai_id}",
-                ):
-                    working_ai = st.session_state[S_WORKING].copy()
-                    target_mask = working_ai["Record ID"].astype(str).eq(selected_ai_id)
-                    working_ai.loc[target_mask, "Reviewer Notes"] = ai_summary.strip()
-                    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working_ai))
-                    st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-                    st.session_state[S_FLASH] = (
-                        f"Saved the summary to Reviewer Notes for {selected_ai_id}."
-                    )
-                    st.rerun()
-
-    st.divider()
-    manual_entry_requested = bool(
-        st.session_state.pop(S_MANUAL_ENTRY_OPEN, False)
-    )
-    with st.expander(
-        "Add building manually",
-        expanded=manual_entry_requested or not has_records,
-    ):
-        st.caption(
-            "Enter confirmed information only. Leave unconfirmed values blank and record unresolved details in Missing Information."
-        )
-        manual_active_company = active_company_row()
-        if manual_active_company is None:
-            st.warning(
-                "Select or register a company first. Manual building records must belong to a company in the active project."
-            )
-            if st.button(
-                "Register or select company",
-                type="primary",
-                width="stretch",
-                key="db_manual_missing_company_setup",
-            ):
-                go_to("Project & companies")
-                st.rerun()
-
-        suggested = generate_id(st.session_state[S_WORKING])
-        with st.form("add_record", clear_on_submit=True):
-            st.markdown("**Listing and location**")
-            p1, p2, p3 = st.columns(3)
-            record_id = p1.text_input(
-                "Record ID",
-                value=suggested,
-                help="A unique reference that keeps similar records separate.",
-            )
-            building_name = p1.text_input("Apartment Building Name")
-            owner = p1.text_input(
-                "Management / Owner",
-                value=(
-                    str(manual_active_company["Management/Owner"])
-                    if manual_active_company is not None
-                    else "Select a company first"
-                ),
-                disabled=True,
-                help="The building is attached to the active company. Change the active company from the Project page.",
-            )
-            classification = p2.text_input(
-                "Building Classification",
-                placeholder="Example: High Rise or Townhome",
-            )
-            units = p2.text_input(
-                "Number of Apartments",
-                placeholder="Example: 120",
-            )
-            address = p2.text_input(
-                "Street Address",
-                placeholder="Example: 100 Main Street",
-            )
-            city = p3.text_input("City", placeholder="Example: Ottawa")
-            province = p3.text_input("Province", placeholder="Example: Ontario or ON")
-            pc = p3.text_input("Postal Code", placeholder="Example: K1A 1A1")
-
-            st.markdown("**Contact and source**")
-            c1, c2, c3 = st.columns(3)
-            phone = c1.text_input("Phone Number", placeholder="Example: 613-555-0199")
-            email = c1.text_input("Email Contact", placeholder="Example: leasing@example.ca")
-            website = c2.text_input("Website", placeholder="https://example.ca")
-            source_url = c2.text_input(
-                "Official Source URL",
-                placeholder="https://example.ca/property",
-                help="Paste the exact page where you checked the information.",
-            )
-            researcher = c3.text_input(
-                "Researcher",
-                placeholder="Name or initials",
-            )
-            no_date = c3.checkbox("Research date not recorded yet")
-            researched = c3.date_input(
-                "Date Researched",
-                value=date.today(),
-                disabled=no_date,
-            )
-
-            st.markdown("**Review and verification**")
-            w1, w2, w3 = st.columns(3)
-            research_status = w1.selectbox(
-                "Research Status",
-                RESEARCH_STATUSES,
-                index=1,
-            )
-            verification_status = w1.selectbox(
-                "Verification Status",
-                VERIFICATION_STATUSES,
-            )
-            source_status = w2.selectbox("Source Status", SOURCE_STATUSES)
-            decision = w2.selectbox("Record Decision", RECORD_DECISIONS)
-            missing = w3.text_area(
-                "Missing Information",
-                placeholder="Details that were unavailable or could not be confirmed.",
-            )
-            notes = w3.text_area(
-                "Reviewer Notes",
-                placeholder="Corrections, conflicts, decisions, or useful context.",
-            )
-            add = st.form_submit_button(
-                "Register building",
-                type="primary",
-                width="stretch",
-                disabled=manual_active_company is None,
-            )
-
-        if add:
-            current = st.session_state[S_WORKING].copy()
-            final_id = record_id.strip() or suggested
-            if final_id in set(resolved(current["Record ID"]).dropna().astype(str).str.strip()):
-                st.error(
-                    f"Record ID {final_id} is already in use. Enter a different ID, or clear the field to use the suggested one."
-                )
-            else:
-                record = {c: pd.NA for c in current.columns}
-                record.update({
-                    "Record ID": final_id,
-                    "Company ID": (
-                        manual_active_company["Company ID"]
-                        if manual_active_company is not None
-                        else pd.NA
-                    ),
-                    "Building Name": building_name,
-                    "Management/Owner": owner,
-                    "Street Address": address,
-                    "City": city,
-                    "Province": canonical_province(province),
-                    "Postal Code": postal_code(pc),
-                    "Phone": phone,
-                    "Primary Email": email,
-                    "Website": website,
-                    "Number of Apartments": units,
-                    "Building Classification": classification,
-                    "Source URL": source_url,
-                    "Date Researched": pd.NA if no_date else researched.isoformat(),
-                    "Researcher": researcher,
-                    "Research Status": research_status,
-                    "Source Status": source_status,
-                    "Verification Status": verification_status,
-                    "Missing Information": missing,
-                    "Reviewer Notes": notes,
-                    "Record Decision": decision,
-                })
-                st.session_state[S_WORKING] = normalize_workflow(
-                    pd.concat([current, pd.DataFrame([record])], ignore_index=True)
-                )
-                st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-                st.session_state[S_FLASH] = f"Registered {final_id} in the selected company records."
-                st.rerun()
-
 
 # -----------------------------
 # Progress and quality
