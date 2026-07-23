@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Current Inventory Research Workspace 2026.07.23-v3"
+DATABLIX_BUILD = "Project Lifecycle Workspace 2026.07.23-v7"
 
 # =========================================================
 # Configuration
@@ -201,7 +201,8 @@ COMPANY_SCOPE_TYPES = ["Initial assignment", "Added later", "Imported"]
 COMPANY_COLUMNS = [
     "Company ID", "Management/Owner", "Main Website", "Scope Type",
     "Date Assigned", "Company Status", "Notes",
-    "Research Prompt", "Prompt Updated", "AI Tool Used",
+    "Prompt Scope", "Prompt Source Policy", "Prompt Priority Notes",
+    "Prompt Output Notes", "Research Prompt", "Prompt Updated", "AI Tool Used",
 ]
 
 UNRESOLVED = {
@@ -562,6 +563,73 @@ def remove_project_member(project_id: str, email: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def delete_cloud_project(project_id: str) -> tuple[bool, str]:
+    """Permanently delete one cloud project and its membership rows.
+
+    Only the authenticated project owner may perform this action.
+    Other Datablix projects are not touched.
+    """
+    project_id = str(project_id or "").strip()
+    if not project_id:
+        return False, "No saved project is selected."
+
+    if st.session_state.get(S_DEMO_MODE):
+        return False, "Demo workspaces cannot be permanently deleted."
+
+    client = get_supabase_client()
+    if client is None:
+        return False, "Cloud storage is not configured."
+
+    email = current_user_email()
+    if not email:
+        return False, "Sign in before deleting a project."
+
+    # Verify ownership from cloud state immediately before deletion instead of
+    # trusting only the role cached in the Streamlit session.
+    workspace_key = _secret_value("DATABLIX_WORKSPACE_KEY", "default")
+    try:
+        response = (
+            client.table("datablix_project_state")
+            .select("project_id,project_name,owner_email")
+            .eq("workspace_key", workspace_key)
+            .eq("project_id", project_id)
+            .limit(1)
+            .execute()
+        )
+        rows = list(response.data or [])
+    except Exception:
+        return False, "Datablix could not verify project ownership."
+
+    if not rows:
+        return False, "The saved project could not be found."
+
+    owner_email = str(rows[0].get("owner_email", "") or "").strip().lower()
+    if owner_email != email:
+        return False, "Only the project owner can permanently delete this project."
+
+    try:
+        # Delete access rows first so this works whether or not the database
+        # relationship is configured with cascading deletes.
+        (
+            client.table("datablix_project_members")
+            .delete()
+            .eq("project_id", project_id)
+            .execute()
+        )
+        (
+            client.table("datablix_project_state")
+            .delete()
+            .eq("workspace_key", workspace_key)
+            .eq("project_id", project_id)
+            .eq("owner_email", email)
+            .execute()
+        )
+    except Exception:
+        return False, "The project could not be deleted from cloud storage."
+
+    return True, "Project permanently deleted."
 
 
 def _json_safe(value):
@@ -1168,7 +1236,11 @@ def normalize_company_registry(registry):
     )
     out["Date Assigned"] = out["Date Assigned"].fillna("").astype(str).str.strip()
     out["Notes"] = out["Notes"].fillna("").astype(str)
-    out["Research Prompt"] = out["Research Prompt"].fillna("").astype(str)
+    for prompt_column in [
+        "Prompt Scope", "Prompt Source Policy", "Prompt Priority Notes",
+        "Prompt Output Notes", "Research Prompt",
+    ]:
+        out[prompt_column] = out[prompt_column].fillna("").astype(str)
     out["Prompt Updated"] = out["Prompt Updated"].fillna("").astype(str).str.strip()
     out["AI Tool Used"] = out["AI Tool Used"].fillna("").astype(str).str.strip()
     out = out.loc[out["Management/Owner"].ne("") | out["Company ID"].ne("")].copy()
@@ -1540,7 +1612,11 @@ AI_RESEARCH_DELIVERABLE_COLUMNS = [
     "Number of Apartments", "Number of Storeys", "Rental Rate Range",
     "Suite Types", "Building Classification", "Amenities", "Parking",
     "Laundry", "Utilities", "Elevator", "Accessibility", "Pet Policy",
-    "Smoke-Free", "Supporting Evidence", "Confidence", "Missing Information",
+    "Smoke-Free",
+    "Current Inventory Status", "Inventory Evidence",
+    "Found on City/Portfolio Page", "Found on HTML Sitemap",
+    "Found on XML Sitemap", "Inventory Exclusion Reason",
+    "Supporting Evidence", "Confidence", "Missing Information",
     "Reviewer Notes",
 ]
 
@@ -1564,7 +1640,7 @@ def build_company_website_research_prompt(
     output_notes: str,
 ) -> str:
     """Create one comprehensive, editable, provider-neutral research prompt."""
-    return f"""# Datablix Company Website Research Prompt
+    return f"""# Datablix Inventory-First Company Research Prompt
 
 You are acting as a careful public-source rental-property research analyst. Research the company below and produce a structured spreadsheet deliverable that can be imported into Datablix for data-quality review and human verification.
 
@@ -1575,71 +1651,161 @@ You are acting as a careful public-source rental-property research analyst. Rese
 - Known records that may already exist and must be checked for duplicates:
 {known_records or 'None provided.'}
 
-## Research objective
-Research the official company website thoroughly and identify every in-scope apartment building, rental community, residence, or property connected to this company. Follow relevant public links from the company website, including official property websites, location directories, property pages, portfolio pages, community pages, leasing pages, floor-plan pages, amenity pages, contact pages, sitemaps, and official PDF brochures when accessible.
+## Core principle
+Do NOT begin by collecting every property URL that happens to exist.
 
-Do not stop at the first page or first group of results. Continue until the accessible official website coverage has been reasonably exhausted. Record important coverage limitations, blocked pages, broken links, JavaScript-only content, missing sitemaps, and any reason the research may be incomplete.
+First establish the company's CURRENT in-scope property inventory from the strongest current official inventory evidence. Only after a property is confirmed or reasonably supported as current should you research its detailed fields.
+
+A dedicated property URL that still loads is NOT, by itself, proof that the property currently belongs in the company's active portfolio.
+
+## Research workflow
+
+### Phase 1 — Establish the current company inventory
+Start with current official inventory/navigation sources whenever they exist, especially:
+1. current city or location pages;
+2. current property-search or portfolio pages;
+3. the company's current human-readable HTML sitemap;
+4. current community/building index pages;
+5. current official property pages linked from those inventory sources.
+
+Use technical XML sitemaps as DISCOVERY evidence, not automatic proof that a property is current. XML sitemaps can contain old, orphaned, archived, or otherwise stale URLs.
+
+For every candidate property, record:
+- Current Inventory Status;
+- Inventory Evidence;
+- Found on City/Portfolio Page;
+- Found on HTML Sitemap;
+- Found on XML Sitemap; and
+- Inventory Exclusion Reason when excluded.
+
+Use these values consistently:
+- Current — supported by current official inventory evidence.
+- Review — current status is uncertain because inventory evidence is incomplete, conflicting, blocked, or unavailable.
+- Excluded — not in current inventory.
+
+When BOTH a current city/property/portfolio index and a current human-readable HTML sitemap are available and a dedicated property page is absent from BOTH, treat that dedicated page as legacy/orphaned and mark it:
+Excluded — not in current inventory.
+
+Do not include excluded properties in the final active property count or final directory rows intended for import.
+
+If one of the authoritative inventory sources is missing, blocked, obviously incomplete, or unavailable, do not exclude solely because of absence from that one source. Mark the property for review and explain the limitation.
+
+### Phase 2 — Research confirmed/current properties deeply
+For each Current property, inspect the complete relevant official property content before declaring any field missing. Check, where available:
+- property overview;
+- address/location information;
+- contact information;
+- amenities and building features;
+- suite features and floor plans;
+- parking;
+- laundry;
+- utilities;
+- elevator/accessibility information;
+- pet and smoke-free policies;
+- leasing/availability pages;
+- official PDFs or brochures;
+- linked official property websites; and
+- page content visible after JavaScript rendering when relevant.
+
+Missing means researched and not found — not merely missed during the first extraction pass.
+
+### Phase 3 — Use secondary public sources only for genuine gaps
+After a property has been confirmed as Current, reliable third-party public sources may be used only to fill fields that remain genuinely unavailable from current official sources, when permitted by the source policy below.
+
+A third-party source must NEVER bring an Excluded legacy/orphaned property back into scope.
+
+Clearly label secondary evidence in Supporting Evidence and keep the official company/property source as the primary basis for property identity and current-inventory status.
+
+### Phase 4 — Quality-check before delivery
+Before producing the final spreadsheet:
+1. Recheck every included property against current company inventory evidence.
+2. Remove Excluded legacy/orphaned properties from the active deliverable.
+3. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
+4. Verify every field before listing it under Missing Information.
+5. Check duplicates primarily by normalized street address and postal code, then property URL and building name plus city.
+6. Check that City, Province, and Postal Code agree.
+7. Ensure every populated value is traceable to public evidence.
+8. Distinguish official-source findings from secondary-source findings.
+9. Keep genuine unresolved information separate from extraction failures.
+10. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
 
 ## Source policy
 {source_policy}
 
-Use official company and official property sources as the primary evidence. Do not silently rely on search-result snippets, social media, forums, user-generated listings, scraped directories, or other unverified third-party sources. A third-party source may only be used when explicitly allowed above, and it must be clearly labelled as secondary evidence.
+Official company and official property sources are the primary evidence. Do not silently rely on search-result snippets, social media, forums, user-generated listings, scraped directories, or unverified third-party sources.
 
 ## Fields to collect for each property
-Return one row per unique property. Use these exact column headings:
+Return one row per unique CURRENT or REVIEW property. Do not return Excluded properties as active directory rows.
+
+Use these exact column headings:
 
 {', '.join(AI_RESEARCH_DELIVERABLE_COLUMNS)}
 
 Field guidance:
-- Building Name: the actual property or building name, never a generic page heading.
+- Building Name: the actual property/building name, never a generic page heading.
 - Management/Owner: the selected company unless official evidence clearly identifies another responsible entity; note conflicts.
 - Property Website: the official property-specific homepage.
 - Company Website: the official corporate or management-company homepage.
-- Source URL: the exact page that supports the row or its main identity.
-- Supporting Evidence: concise evidence notes and additional supporting URLs separated with semicolons.
-- Confidence: High, Medium, or Low based on the strength and agreement of official evidence.
-- Missing Information: list fields that could not be confirmed.
-- Reviewer Notes: conflicts, assumptions, duplicate concerns, special cases, and follow-up needs.
+- Source URL: the strongest exact official page supporting the property's identity/current status.
+- Current Inventory Status: Current, Review, or Excluded — not in current inventory.
+- Inventory Evidence: explain the official inventory source(s) supporting the status.
+- Found on City/Portfolio Page: Yes, No, or Unknown.
+- Found on HTML Sitemap: Yes, No, or Unknown.
+- Found on XML Sitemap: Yes, No, or Unknown. XML presence alone does not prove current status.
+- Inventory Exclusion Reason: complete only when exclusion/review requires explanation.
+- Supporting Evidence: concise field-level evidence notes and additional supporting URLs separated with semicolons. Clearly label secondary sources.
+- Confidence: High, Medium, or Low based on strength and agreement of evidence.
+- Missing Information: list only fields that were actively checked and could not be confirmed.
+- Reviewer Notes: conflicts, assumptions, duplicate concerns, limitations, special cases, and follow-up needs.
 
 ## Mandatory research and data-quality rules
-1. Never invent, estimate, or fill a field merely to make the dataset look complete.
-2. When information is not publicly confirmed, leave the field blank and record it under Missing Information.
-3. Absence of a feature does not mean “No.” Use No only when an official source explicitly states that the feature is unavailable or prohibited.
-4. Do not use generic labels such as Contact Us, Home, Properties, Apartments, Communities, Amenities, Floor Plans, Availability, Learn More, or Welcome as a building name.
-5. Distinguish a company contact page from a property page. A corporate office address is not automatically a rental-property address.
-6. Keep Property Website, Company Website, and Source URL separate.
-7. Preserve conflicting values and explain the conflict instead of choosing one without evidence.
-8. Check duplicates primarily by normalized street address and postal code, then by property website, building name plus city, and other identity evidence.
-9. Do not merge separate buildings merely because they belong to one complex. Do not split one building merely because several source pages describe it.
-10. Keep only properties inside the stated geographic scope. Put uncertain locations in Reviewer Notes rather than silently including or excluding them.
-11. Validate Canadian postal-code formatting where available, but do not manufacture missing postal codes.
-12. Treat all AI-produced findings as preliminary research subject to Datablix validation and human approval.
-13. Prefer transparency over completeness. Every populated value should be traceable to public evidence.
-14. Record the research date and identify information that appears stale, archived, historical, or no longer current in Reviewer Notes.
+1. Never invent, estimate, infer, or fill a field merely to make the dataset look complete.
+2. When information is not publicly confirmed after a reasonable check, leave the field blank and record it under Missing Information.
+3. Absence of an amenity or feature does not mean “No.” Use No only when a source explicitly states that the feature is unavailable, not offered, or prohibited.
+4. A dedicated property page existing on the company's domain does not by itself establish that the property is current.
+5. Do not use a third-party listing to resurrect a property that current official inventory evidence excludes.
+6. Do not use generic labels such as Contact Us, Home, Properties, Apartments, Communities, Amenities, Floor Plans, Availability, Learn More, or Welcome as a building name.
+7. Distinguish a company contact page from a property page. A corporate office address is not automatically a rental-property address.
+8. Keep Property Website, Company Website, and Source URL separate.
+9. Preserve conflicting values and explain the conflict instead of choosing one without evidence.
+10. Check duplicates by normalized street address and postal code first, then property website, building name plus city, and other identity evidence.
+11. Do not merge separate buildings merely because they belong to one complex. Do not split one building merely because several source pages describe it.
+12. Keep only properties inside the stated geographic scope. Put uncertain locations in Reviewer Notes and Current Inventory Status = Review rather than silently guessing.
+13. Validate Canadian postal-code formatting where available, but do not manufacture missing postal codes.
+14. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
+15. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
+16. Record information that appears stale, archived, historical, or no longer current in Reviewer Notes and use inventory evidence to determine whether it belongs in the active directory.
 
 ## Priority or company-specific instructions
 {priority_notes or 'No additional priorities were provided.'}
 
 ## Required deliverable
-Create an editable spreadsheet with one property per row and the exact headings above. Deliver it as one of the following:
-- an Excel workbook (.xlsx),
-- a CSV file (.csv), or
+Create an editable spreadsheet with one property per row and the exact headings above.
+
+The ACTIVE spreadsheet should contain only Current and Review properties. Excluded legacy/orphaned properties should be reported separately in the companion summary or a clearly separate worksheet/table and must not be counted as active properties.
+
+Deliver the result as one of the following:
+- an Excel workbook (.xlsx);
+- a CSV file (.csv); or
 - an editable Google Sheet with a shareable viewer link.
 
-Do not return only a narrative answer. The spreadsheet is the primary deliverable. You may include a short companion summary covering:
-- coverage completed,
-- total unique in-scope properties found,
-- possible duplicates,
-- unresolved conflicts,
-- missing information,
-- assumptions,
-- limitations, and
+Do not return only a narrative answer. The spreadsheet is the primary deliverable.
+
+Include a short companion summary covering:
+- official inventory sources checked;
+- total Current properties;
+- total Review properties;
+- total Excluded legacy/orphaned pages;
+- possible duplicates;
+- unresolved conflicts;
+- genuine missing information;
+- secondary sources used;
+- assumptions and limitations; and
 - recommended human follow-up.
 
 Additional output instructions:
-{output_notes or 'Keep the spreadsheet clean, editable, and ready for import into Datablix.'}
+{output_notes or 'Keep the spreadsheet clean, editable, evidence-based, and ready for import into Datablix.'}
 """
-
 
 def append_external_research_results(
     imported: pd.DataFrame,
@@ -2656,14 +2822,35 @@ def start_demo_workspace() -> None:
 
 
 def return_to_project_start() -> None:
-    """Leave the active project without deleting its permanent cloud copy."""
-    was_authenticated = user_is_authenticated()
+    """Leave the active project without deleting its permanent cloud copy.
+
+    Authentication is preserved so the user can immediately choose another
+    saved project or create a new one.
+    """
+    preserved = {
+        key: st.session_state.get(key)
+        for key in [
+            S_AUTH_USER_ID,
+            S_AUTH_EMAIL,
+            S_AUTH_ACCESS_TOKEN,
+            S_AUTH_REFRESH_TOKEN,
+        ]
+        if st.session_state.get(key) not in (None, "")
+    }
+
     clear_autosaved_project()
+
     prefixes = ("db_", "website_scan", "full_scan")
     for key in list(st.session_state.keys()):
         if str(key).startswith(prefixes):
             st.session_state.pop(key, None)
-    if was_authenticated:
+
+    for key, value in preserved.items():
+        st.session_state[key] = value
+
+    if preserved:
+        # Prevent the project we just left from being restored automatically.
+        # The project-start screen can still list all accessible cloud projects.
         st.session_state[S_SKIP_CLOUD_RESTORE] = True
 
 
@@ -4472,6 +4659,7 @@ if section == "Research projects & companies":
         ):
             go_to("Downloads")
             st.rerun()
+
         confirm_new_project = st.checkbox(
             "I saved my work and want to open or create a different project",
             key="db_confirm_return_to_project_start",
@@ -4484,6 +4672,68 @@ if section == "Research projects & companies":
         ):
             return_to_project_start()
             st.rerun()
+
+        project_id_for_admin = str(
+            st.session_state.get(S_CLOUD_PROJECT_ID, "")
+        ).strip()
+        project_name_for_admin = str(
+            st.session_state.get(S_PROJECT_NAME, "Datablix project")
+        ).strip() or "Datablix project"
+        project_role_for_admin = str(
+            st.session_state.get(S_PROJECT_ROLE, "")
+            or project_access_role(project_id_for_admin)
+        ).strip().lower()
+
+        if (
+            project_id_for_admin
+            and project_role_for_admin == "owner"
+            and not st.session_state.get(S_DEMO_MODE)
+        ):
+            st.divider()
+            st.markdown("#### Danger zone")
+            st.warning(
+                "Deleting a project is permanent. Its saved cloud workspace and "
+                "project-member access records will be removed. Other projects are not affected."
+            )
+
+            delete_acknowledged = st.checkbox(
+                "I understand that this project will be permanently deleted",
+                key="db_confirm_project_delete_ack",
+            )
+            delete_name = st.text_input(
+                f'Type the project name to confirm: "{project_name_for_admin}"',
+                key="db_confirm_project_delete_name",
+                autocomplete="off",
+            )
+            name_matches = (
+                delete_name.strip() == project_name_for_admin
+            )
+
+            if delete_name.strip() and not name_matches:
+                st.caption("The confirmation name does not match the current project.")
+
+            if st.button(
+                "Delete this project permanently",
+                type="secondary",
+                width="stretch",
+                disabled=not (delete_acknowledged and name_matches),
+                key="db_delete_project_permanently",
+            ):
+                deleted_project_name = project_name_for_admin
+                deleted, delete_message = delete_cloud_project(project_id_for_admin)
+                if deleted:
+                    return_to_project_start()
+                    st.session_state[S_FLASH] = (
+                        f'Project "{deleted_project_name}" was permanently deleted.'
+                    )
+                    st.rerun()
+                else:
+                    st.error(delete_message)
+        elif project_id_for_admin and project_role_for_admin != "owner":
+            st.divider()
+            st.caption(
+                "Only the project owner can permanently delete this shared project."
+            )
 
 
 # -----------------------------
@@ -4681,42 +4931,76 @@ elif section == "Website scanner":
                 known_lines.append(f"- {label}")
         known_default = "\n".join(known_lines)
 
+    default_scope = "Ontario, Canada"
+    default_source_policy = (
+        "Use current official city/property-search/portfolio pages and the current human-readable HTML sitemap first to establish active inventory. "
+        "Use official property pages, leasing pages, official PDFs, and official property websites for detailed fields. "
+        "Technical XML sitemaps are discovery evidence only, not proof that a property is current. "
+        "Use reliable third-party public sources only for genuine field gaps after a property is confirmed as current; clearly label them as secondary evidence. "
+        "Never use a third-party source to bring an excluded legacy property back into scope."
+    )
+    default_priority_notes = (
+        "Establish the current Ontario inventory first. Exclude dedicated legacy property pages that are absent from both the current city/portfolio index "
+        "and current HTML sitemap when both authoritative sources are available. Recheck each valid property page for postal code, amenities, unit count, "
+        "contact details, and other requested fields before declaring information missing. Preserve exact evidence and flag uncertain inventory for review."
+    )
+    default_output_notes = (
+        "Use one row per unique Current or Review property and keep the exact requested headings. Preserve blanks for genuinely unknown values. "
+        "Do not mix Excluded legacy/orphaned properties into the active rows or active property count; report them separately. "
+        "Return an editable CSV, Excel workbook, or Google Sheet rather than only a narrative response."
+    )
+
+    saved_scope = str(active_company.get("Prompt Scope", "") or "").strip() or default_scope
+    saved_source_policy = str(active_company.get("Prompt Source Policy", "") or "").strip() or default_source_policy
+    saved_priority_notes = str(active_company.get("Prompt Priority Notes", "") or "").strip() or default_priority_notes
+    saved_output_notes = str(active_company.get("Prompt Output Notes", "") or "").strip() or default_output_notes
+
     prompt_left, prompt_right = st.columns(2)
     geographic_scope = prompt_left.text_input(
         "Geographic scope",
-        value="Ontario, Canada",
+        value=saved_scope,
         key=f"db_prompt_scope_{company_id}",
+        help="Saved separately for this company.",
     )
-    known_records = prompt_right.text_area(
+
+    # Known records are live context, not a saved prompt field. They refresh whenever
+    # the company's Datablix records change, preventing stale duplicate-check context.
+    known_records = known_default
+    known_signature = hashlib.sha256(known_records.encode("utf-8")).hexdigest()[:10]
+    known_key_prefix = f"db_prompt_known_{company_id}_"
+    known_key = f"{known_key_prefix}{known_signature}"
+    for session_key in list(st.session_state.keys()):
+        if str(session_key).startswith(known_key_prefix) and session_key != known_key:
+            st.session_state.pop(session_key, None)
+    prompt_right.text_area(
         "Known records for duplicate checking",
-        value=known_default,
+        value=known_records or "No current Datablix records are registered for this company yet.",
         height=120,
-        key=f"db_prompt_known_{company_id}",
-        help="Datablix preloads current company records when available. Edit or remove them as needed.",
+        disabled=True,
+        key=known_key,
+        help="This list refreshes automatically from the active company's current Datablix records.",
     )
+
     source_policy = prompt_left.text_area(
         "Source policy",
-        value=(
-            "Use official company pages, official property pages, official leasing pages, official PDFs, and official property websites linked by the company. "
-            "Do not use unverified third-party directories unless necessary to identify a lead; never treat a lead as confirmed without official evidence."
-        ),
-        height=130,
+        value=saved_source_policy,
+        height=150,
         key=f"db_prompt_sources_{company_id}",
+        help="Persistent company-specific research rule. Save the prompt settings to keep edits across sessions.",
     )
     priority_notes = prompt_right.text_area(
         "Company-specific priorities or exclusions",
-        value="Prioritize complete website coverage, Ontario properties, exact source URLs, missing fields, classifications, amenities, and duplicate risks.",
-        height=130,
+        value=saved_priority_notes,
+        height=150,
         key=f"db_prompt_priority_{company_id}",
+        help="Use this for company-specific exclusions, special website structure, or research priorities.",
     )
     output_notes = st.text_area(
         "Deliverable instructions",
-        value=(
-            "Use one row per unique property. Keep the exact requested headings. Preserve blanks for unknown values. "
-            "Return an editable CSV, Excel workbook, or Google Sheet rather than only a narrative response."
-        ),
-        height=95,
+        value=saved_output_notes,
+        height=105,
         key=f"db_prompt_output_{company_id}",
+        help="Persistent company-specific output rules.",
     )
 
     generated_prompt = build_company_website_research_prompt(
@@ -4728,13 +5012,39 @@ elif section == "Website scanner":
         source_policy=source_policy,
         output_notes=output_notes,
     )
-    saved_prompt = str(active_company.get("Research Prompt", "") or "").strip()
+
+    # The master prompt is regenerated whenever any dynamic company context changes.
+    # A fingerprint in the widget key forces Streamlit to refresh the text area instead
+    # of retaining a stale prompt from the same company.
+    prompt_fingerprint = hashlib.sha256(generated_prompt.encode("utf-8")).hexdigest()[:12]
+    master_key_prefix = f"db_master_prompt_{company_id}_"
+    master_prompt_key = f"{master_key_prefix}{prompt_fingerprint}"
+    for session_key in list(st.session_state.keys()):
+        if str(session_key).startswith(master_key_prefix) and session_key != master_prompt_key:
+            st.session_state.pop(session_key, None)
+
     editable_prompt = st.text_area(
         "Editable master research prompt",
-        value=saved_prompt or generated_prompt,
+        value=generated_prompt,
         height=650,
-        key=f"db_master_prompt_{company_id}",
+        key=master_prompt_key,
+        help=(
+            "Automatically rebuilt when the selected company, website, known records, or saved prompt settings change. "
+            "For persistent custom rules, edit the fields above and save them to the company workspace."
+        ),
     )
+    st.caption(
+        "The company name, website and known-record context refresh automatically. "
+        "Persistent research rules are stored separately per company; the full prompt saved below is an audit snapshot."
+    )
+
+    previous_prompt_snapshot = str(active_company.get("Research Prompt", "") or "").strip()
+    if previous_prompt_snapshot and previous_prompt_snapshot != generated_prompt:
+        with st.expander("Previous saved prompt snapshot", expanded=False):
+            st.caption(
+                "Kept for audit/history. Datablix no longer uses an old full prompt as the source of truth, so company changes cannot leave the active prompt stale."
+            )
+            st.code(previous_prompt_snapshot, language="markdown")
 
     prompt_meta_left, prompt_meta_right = st.columns([1.2, 1])
     ai_tool_used = prompt_meta_left.text_input(
@@ -4745,24 +5055,29 @@ elif section == "Website scanner":
     )
     prompt_updated = str(active_company.get("Prompt Updated", "") or "").strip()
     prompt_meta_right.caption(
-        f"Saved to this company: {prompt_updated}"
+        f"Prompt settings saved to this company: {prompt_updated}"
         if prompt_updated
-        else "This prompt has not yet been saved to the company workspace."
+        else "This company's prompt settings have not yet been saved."
     )
     if st.button(
-        "Save prompt to company workspace",
+        "Save prompt settings to company workspace",
         type="primary",
         width="stretch",
         key=f"db_save_company_prompt_{company_id}",
     ):
         registry_prompt = normalize_company_registry(st.session_state.get(S_COMPANIES))
         company_mask = registry_prompt["Company ID"].astype(str).eq(company_id)
+        registry_prompt.loc[company_mask, "Prompt Scope"] = geographic_scope.strip()
+        registry_prompt.loc[company_mask, "Prompt Source Policy"] = source_policy.strip()
+        registry_prompt.loc[company_mask, "Prompt Priority Notes"] = priority_notes.strip()
+        registry_prompt.loc[company_mask, "Prompt Output Notes"] = output_notes.strip()
         registry_prompt.loc[company_mask, "Research Prompt"] = editable_prompt
         registry_prompt.loc[company_mask, "Prompt Updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         registry_prompt.loc[company_mask, "AI Tool Used"] = ai_tool_used.strip()
         registry_prompt.loc[company_mask, "Company Status"] = registry_prompt.loc[company_mask, "Company Status"].replace("Not started", "Researching")
         st.session_state[S_COMPANIES] = normalize_company_registry(registry_prompt)
-        st.session_state[S_FLASH] = f"Research prompt saved under {company_name}."
+        st.session_state[S_FLASH] = f"Research prompt settings saved under {company_name}."
+        autosave_current_project()
         st.rerun()
 
     with st.expander("Copy-ready prompt", expanded=False):
@@ -5113,6 +5428,18 @@ elif section == "Review records":
                     num_rows="fixed",
                     disabled=locked,
                     column_config={
+                        "Record ID": st.column_config.TextColumn(
+                            "Record ID",
+                            width="small",
+                            pinned=True,
+                            help="Pinned so the record identifier stays visible while you scroll horizontally.",
+                        ),
+                        "Working Record Label": st.column_config.TextColumn(
+                            "Working Record Label",
+                            width="medium",
+                            pinned=True,
+                            help="Pinned so the working property label stays visible while you scroll horizontally.",
+                        ),
                         "Building Name": st.column_config.TextColumn("Apartment Building Name"),
                         "Management/Owner": st.column_config.TextColumn("Management / Owner", width="large"),
                         "Phone": st.column_config.TextColumn("Phone Number"),
