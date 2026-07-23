@@ -35,7 +35,7 @@ RenderMode = Literal["html", "auto", "javascript"]
 ProgressCallback = Callable[[dict], None]
 CheckpointCallback = Callable[["ScanReport"], None]
 
-USER_AGENT = "DatablixResearchScanner/3.0 (+human-reviewed research tool)"
+USER_AGENT = "DatablixResearchScanner/3.1 (+human-reviewed research tool)"
 DEFAULT_TIMEOUT = 20
 MAX_HTML_BYTES = 8_000_000
 MAX_SITEMAP_BYTES = 12_000_000
@@ -111,6 +111,40 @@ CLASSIFICATION_PATTERNS = [
     ("Luxury", re.compile(r"\bluxury\b", re.IGNORECASE)),
     ("Adult-oriented", re.compile(r"\badult[-\s]?oriented\b", re.IGNORECASE)),
 ]
+
+AMENITY_PATTERNS = [
+    ("Air conditioning", re.compile(r"\b(?:air conditioning|air[- ]conditioned|a/c)\b", re.IGNORECASE)),
+    ("Balcony", re.compile(r"\b(?:balcony|balconies)\b", re.IGNORECASE)),
+    ("Bike storage", re.compile(r"\b(?:bike|bicycle)\s+(?:room|storage|parking)\b", re.IGNORECASE)),
+    ("Dishwasher", re.compile(r"\bdishwasher(?:s)?\b", re.IGNORECASE)),
+    ("Elevator", re.compile(r"\belevator(?:s)?\b", re.IGNORECASE)),
+    ("Fitness centre", re.compile(r"\b(?:fitness\s+(?:centre|center|room)|gym)\b", re.IGNORECASE)),
+    ("Laundry", re.compile(r"\b(?:laundry|washer|dryer|washers|dryers)\b", re.IGNORECASE)),
+    ("Parking", re.compile(r"\b(?:parking|garage|carport)\b", re.IGNORECASE)),
+    ("Pet friendly", re.compile(r"\b(?:pet[- ]friendly|pets?\s+(?:allowed|welcome))\b", re.IGNORECASE)),
+    ("Playground", re.compile(r"\bplayground\b", re.IGNORECASE)),
+    ("Pool", re.compile(r"\b(?:indoor\s+pool|outdoor\s+pool|swimming\s+pool|pool)\b", re.IGNORECASE)),
+    ("Security", re.compile(r"\b(?:secure entry|controlled access|security system|security cameras?|surveillance)\b", re.IGNORECASE)),
+    ("Storage", re.compile(r"\b(?:storage locker|storage lockers|storage room)\b", re.IGNORECASE)),
+]
+AMENITY_HEADING_RE = re.compile(
+    r"\b(?:amenit(?:y|ies)|building features?|community features?|property features?)\b",
+    re.IGNORECASE,
+)
+
+INVENTORY_STATUS_CURRENT = "Current inventory"
+INVENTORY_STATUS_REVIEW = "Review inventory"
+INVENTORY_STATUS_EXCLUDED = "Excluded — not in current inventory"
+INVENTORY_SOURCE_HTML_SITEMAP = "HTML sitemap"
+INVENTORY_SOURCE_CITY_PORTFOLIO = "City / portfolio page"
+PROPERTY_CONTAINER_SEGMENTS = {
+    "property", "properties", "building", "buildings", "community",
+    "communities", "residence", "residences",
+}
+INVENTORY_INDEX_MARKERS = {
+    "apartments", "buildings", "communities", "locations", "portfolio",
+    "properties", "property search", "rentals", "rent", "find a home",
+}
 
 SCHEMA_PROPERTY_TYPES = {
     "Accommodation", "Apartment", "ApartmentComplex", "House", "Place",
@@ -190,6 +224,7 @@ class RecordCandidate:
     primary_email: str = ""
     website: str = ""
     number_of_apartments: str = ""
+    amenities: str = ""
     building_classification: str = ""
     source_url: str = ""
     source_page_title: str = ""
@@ -197,6 +232,12 @@ class RecordCandidate:
     confidence: float = 0.0
     review_status: str = "Review required"
     evidence: str = ""
+    inventory_status: str = INVENTORY_STATUS_REVIEW
+    inventory_evidence: str = ""
+    found_on_city_page: bool = False
+    found_on_html_sitemap: bool = False
+    found_on_xml_sitemap: bool = False
+    exclusion_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -311,6 +352,13 @@ class FullSiteScanner:
         self.page: Page | None = None
         self._last_request_monotonic = 0.0
 
+        # Current-inventory evidence is collected separately from raw URL discovery.
+        # A property URL can remain technically accessible after it leaves a company's
+        # current portfolio, so XML discovery alone is never treated as proof of currency.
+        self.inventory_link_sources: dict[str, set[str]] = {}
+        self.inventory_source_pages: dict[str, str] = {}
+        self.xml_sitemap_property_urls: set[str] = set()
+
     def scan(self) -> ScanReport:
         report = ScanReport(
             start_url=self.start_url,
@@ -321,12 +369,27 @@ class FullSiteScanner:
         queued: set[str] = set()
         visited: set[str] = set()
 
-        self._enqueue(queue, queued, self.start_url, depth=0, priority=0)
+        self._enqueue(queue, queued, self.start_url, depth=0, priority=-5)
 
         if self.options.use_sitemaps:
+            # Human-readable sitemap pages often reflect the company's current
+            # portfolio more accurately than technical XML discovery feeds.
+            for html_sitemap_url in self._html_sitemap_candidates(self.start_url):
+                self._enqueue(
+                    queue, queued, html_sitemap_url, depth=0, priority=-4
+                )
+
             for sitemap_url in self._discover_sitemap_urls(self.start_url, report):
                 for page_url in self._read_sitemap_tree(sitemap_url, report):
-                    priority = self._url_priority(page_url)
+                    if self._looks_like_property_detail_url(page_url):
+                        self.xml_sitemap_property_urls.add(
+                            self._canonicalize_url(page_url)
+                        )
+                        # XML URLs are useful for coverage, but they are deliberately
+                        # lower priority because they may contain legacy routes.
+                        priority = 1
+                    else:
+                        priority = max(self._url_priority(page_url), 0)
                     self._enqueue(queue, queued, page_url, depth=0, priority=priority)
                     if len(queued) >= self.options.maximum_queue_urls:
                         break
@@ -401,14 +464,27 @@ class FullSiteScanner:
                 report.records.extend(records)
 
                 links = self._extract_internal_links(fetch.final_url, soup)
+                source_kind = self._inventory_source_kind(
+                    fetch.final_url, soup, page_title, heading, links
+                )
+                self._register_inventory_links(
+                    fetch.final_url, source_kind, links
+                )
+
                 if depth < self.options.max_depth:
                     for link_url in links:
+                        priority = self._url_priority(link_url)
+                        if (
+                            source_kind
+                            and self._looks_like_property_detail_url(link_url)
+                        ):
+                            priority = -3
                         self._enqueue(
                             queue,
                             queued,
                             link_url,
                             depth=depth + 1,
-                            priority=self._url_priority(link_url),
+                            priority=priority,
                         )
 
                 report.pages.append(
@@ -430,6 +506,7 @@ class FullSiteScanner:
                 self._notify(report, fetch.final_url, "Scanned")
                 self._checkpoint(report)
 
+            report.records = self._apply_inventory_status(report.records)
             report.records = self._deduplicate_records(report.records)
             report.completed_at_utc = self._utc_now()
             report.remaining_queue_urls = len(queue)
@@ -534,7 +611,11 @@ class FullSiteScanner:
         rendered = False
 
         should_render = self.options.render_mode == "javascript" or (
-            self.options.render_mode == "auto" and self._looks_javascript_dependent(html)
+            self.options.render_mode == "auto"
+            and (
+                self._looks_javascript_dependent(html)
+                or self._property_page_missing_critical_html(final_url, html)
+            )
         )
         if should_render and self.page is not None:
             html, final_url = self._render_with_playwright(final_url)
@@ -582,6 +663,19 @@ class FullSiteScanner:
             or (app_markers and len(visible_text) < 1_000)
             or hydration_markers
         )
+
+    def _property_page_missing_critical_html(self, url: str, html: str) -> bool:
+        """Render likely property pages when raw HTML omits common visible details."""
+        if not self._looks_like_property_detail_url(url):
+            return False
+        soup = self._make_soup(html)
+        visible_text = self._visible_text(soup)
+        if len(visible_text) < 450:
+            return True
+        # Postal codes are commonly visible in the browser but injected after load.
+        # Rendering when they are missing fixes that gap without forcing JavaScript
+        # rendering on every page in the website.
+        return POSTAL_RE.search(visible_text) is None
 
     def _start_browser_if_needed(self) -> None:
         if self.options.render_mode == "html":
@@ -684,6 +778,14 @@ class FullSiteScanner:
         if rules.parser is None:
             return True
         return rules.parser.can_fetch(USER_AGENT, url)
+
+    def _html_sitemap_candidates(self, start_url: str) -> list[str]:
+        parsed = urlparse(start_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        return [
+            urljoin(origin, "/sitemap"),
+            urljoin(origin, "/site-map"),
+        ]
 
     def _discover_sitemap_urls(self, start_url: str, report: ScanReport) -> list[str]:
         parsed = urlparse(start_url)
@@ -952,6 +1054,142 @@ class FullSiteScanner:
         return 0
 
     # ------------------------------------------------------------------
+    # Current-inventory evidence
+    # ------------------------------------------------------------------
+
+    def _looks_like_property_detail_url(self, url: str) -> bool:
+        try:
+            segments = [
+                segment.lower()
+                for segment in urlparse(url).path.split("/")
+                if segment
+            ]
+        except ValueError:
+            return False
+        if not segments:
+            return False
+        for index, segment in enumerate(segments):
+            if segment not in PROPERTY_CONTAINER_SEGMENTS:
+                continue
+            if index + 1 >= len(segments):
+                return False
+            slug = segments[index + 1]
+            if slug in {"search", "find", "all", "ontario", "canada"}:
+                return False
+            return True
+        return False
+
+    def _inventory_source_kind(
+        self,
+        page_url: str,
+        soup: BeautifulSoup,
+        page_title: str,
+        heading: str,
+        links: list[str],
+    ) -> str:
+        path = urlparse(page_url).path.lower().rstrip("/")
+        context = self._clean_text(f"{path} {page_title} {heading}").lower()
+        if (
+            path.endswith("/sitemap")
+            or path.endswith("/site-map")
+            or re.search(r"\bsite\s*map\b", context)
+        ):
+            return INVENTORY_SOURCE_HTML_SITEMAP
+
+        property_links = [
+            link for link in links if self._looks_like_property_detail_url(link)
+        ]
+        has_index_marker = any(marker in context for marker in INVENTORY_INDEX_MARKERS)
+        is_root = urlparse(page_url).path.strip("/") == ""
+
+        # Index pages can themselves live under paths such as /properties/ottawa.
+        # Multiple property links plus portfolio wording is stronger evidence than
+        # the URL shape, so test for an index before classifying the page as detail.
+        if len(property_links) >= 2 and has_index_marker:
+            return INVENTORY_SOURCE_CITY_PORTFOLIO
+        if is_root and len(property_links) >= 2:
+            return INVENTORY_SOURCE_CITY_PORTFOLIO
+        if self._looks_like_property_detail_url(page_url):
+            return ""
+        return ""
+
+    def _register_inventory_links(
+        self,
+        page_url: str,
+        source_kind: str,
+        links: list[str],
+    ) -> None:
+        if not source_kind:
+            return
+        canonical_page = self._canonicalize_url(page_url)
+        self.inventory_source_pages[canonical_page] = source_kind
+        for link in links:
+            if not self._looks_like_property_detail_url(link):
+                continue
+            canonical = self._canonicalize_url(link)
+            self.inventory_link_sources.setdefault(canonical, set()).add(source_kind)
+
+    def _apply_inventory_status(
+        self, records: Iterable[RecordCandidate]
+    ) -> list[RecordCandidate]:
+        records = list(records)
+        detected_source_kinds = set(self.inventory_source_pages.values())
+        has_html_sitemap = INVENTORY_SOURCE_HTML_SITEMAP in detected_source_kinds
+        has_city_portfolio = INVENTORY_SOURCE_CITY_PORTFOLIO in detected_source_kinds
+        can_auto_exclude = has_html_sitemap and has_city_portfolio
+
+        for record in records:
+            source_url = self._canonicalize_url(record.source_url or record.website)
+            sources = set(self.inventory_link_sources.get(source_url, set()))
+            source_page_kind = self.inventory_source_pages.get(source_url, "")
+            if source_page_kind:
+                sources.add(source_page_kind)
+
+            record.found_on_html_sitemap = (
+                INVENTORY_SOURCE_HTML_SITEMAP in sources
+            )
+            record.found_on_city_page = (
+                INVENTORY_SOURCE_CITY_PORTFOLIO in sources
+            )
+            record.found_on_xml_sitemap = source_url in self.xml_sitemap_property_urls
+
+            strong_sources = []
+            if record.found_on_html_sitemap:
+                strong_sources.append("current HTML sitemap")
+            if record.found_on_city_page:
+                strong_sources.append("current city/portfolio page")
+
+            if strong_sources:
+                record.inventory_status = INVENTORY_STATUS_CURRENT
+                record.inventory_evidence = "; ".join(strong_sources)
+                record.exclusion_reason = ""
+            elif (
+                can_auto_exclude
+                and self._looks_like_property_detail_url(source_url)
+            ):
+                record.inventory_status = INVENTORY_STATUS_EXCLUDED
+                record.inventory_evidence = (
+                    "Dedicated property URL was found, but it was not linked from "
+                    "either the current HTML sitemap or the current city/portfolio pages "
+                    "detected during this scan."
+                )
+                record.exclusion_reason = (
+                    "Accessible property page is not supported by current inventory evidence."
+                )
+                record.approved = False
+            else:
+                record.inventory_status = INVENTORY_STATUS_REVIEW
+                if record.found_on_xml_sitemap:
+                    record.inventory_evidence = (
+                        "Found in technical XML sitemap only; confirm current inventory manually."
+                    )
+                else:
+                    record.inventory_evidence = (
+                        "No strong current-inventory index was available for this record."
+                    )
+        return records
+
+    # ------------------------------------------------------------------
     # HTML parsing and extraction
     # ------------------------------------------------------------------
 
@@ -1032,10 +1270,12 @@ class FullSiteScanner:
         records.extend(self._records_from_microdata(page_url, soup, page_title))
         records.extend(self._records_from_address_elements(page_url, soup, page_title))
 
-        if not any(record.street_address for record in records):
-            records.extend(self._records_from_visible_text(page_url, soup, page_title))
-
-        return self._deduplicate_records(records)
+        # Visible text is an enrichment layer, not an emergency fallback. A page
+        # can provide its street address in JSON-LD while leaving the postal code,
+        # amenities, unit count, or classification only in rendered page content.
+        records.extend(self._records_from_visible_text(page_url, soup, page_title))
+        records = self._deduplicate_records(records)
+        return self._enrich_records_from_page(records, soup, page_url, page_title)
 
     def _records_from_json_ld(
         self,
@@ -1097,6 +1337,7 @@ class FullSiteScanner:
                 primary_email=self._clean_text(node.get("email")),
                 website=self._clean_text(node.get("url") or page_url),
                 number_of_apartments=self._unit_count_from_node(node),
+                amenities=self._amenities_from_node(node),
                 building_classification=self._classification_from_text(
                     " ".join(
                         self._clean_text(str(node.get(key, "")))
@@ -1211,6 +1452,7 @@ class FullSiteScanner:
                     phone=prop("telephone"),
                     primary_email=prop("email").replace("mailto:", ""),
                     website=prop("url") or page_url,
+                    amenities=self._amenities_from_container(block),
                     building_classification=self._classification_from_text(
                         block.get_text(" ", strip=True)
                     ),
@@ -1253,6 +1495,7 @@ class FullSiteScanner:
                     primary_email=self._first_match(EMAIL_RE, text),
                     website=page_url,
                     number_of_apartments=self._first_group(UNIT_COUNT_RE, local_context),
+                    amenities=self._amenities_from_text(local_context),
                     building_classification=self._classification_from_text(local_context),
                     source_url=page_url,
                     source_page_title=page_title,
@@ -1276,6 +1519,7 @@ class FullSiteScanner:
         phones = list(dict.fromkeys(PHONE_RE.findall(page_text)))
         emails = list(dict.fromkeys(EMAIL_RE.findall(page_text)))
         unit_count = self._first_group(UNIT_COUNT_RE, page_text)
+        amenities = self._amenities_from_container(soup) or self._amenities_from_text(page_text)
 
         seen_addresses: set[str] = set()
         for match in ADDRESS_LINE_RE.finditer(page_text):
@@ -1300,6 +1544,7 @@ class FullSiteScanner:
                     primary_email=emails[0] if emails else "",
                     website=page_url,
                     number_of_apartments=local_unit_count,
+                    amenities=amenities or self._amenities_from_text(local_context),
                     building_classification=self._classification_from_text(local_context),
                     source_url=page_url,
                     source_page_title=page_title,
@@ -1309,6 +1554,123 @@ class FullSiteScanner:
                 )
             )
         return output
+
+    def _enrich_records_from_page(
+        self,
+        records: list[RecordCandidate],
+        soup: BeautifulSoup,
+        page_url: str,
+        page_title: str,
+    ) -> list[RecordCandidate]:
+        if not records:
+            return records
+
+        page_text = self._visible_text(soup)
+        page_heading = self._page_heading(soup)
+        page_amenities = self._amenities_from_container(soup) or self._amenities_from_text(page_text)
+        page_phones = list(dict.fromkeys(PHONE_RE.findall(page_text)))
+        page_emails = list(dict.fromkeys(EMAIL_RE.findall(page_text)))
+        page_unit_count = self._first_group(UNIT_COUNT_RE, page_text)
+        page_classification = self._classification_from_text(page_text)
+        page_postals = list(dict.fromkeys(POSTAL_RE.findall(page_text)))
+
+        for record in records:
+            if not record.building_name and page_heading:
+                record.building_name = page_heading
+            if not record.phone and page_phones:
+                record.phone = page_phones[0]
+            if not record.primary_email and page_emails:
+                record.primary_email = page_emails[0]
+            if not record.number_of_apartments and page_unit_count:
+                record.number_of_apartments = page_unit_count
+            if not record.amenities and page_amenities:
+                record.amenities = page_amenities
+            if not record.building_classification and page_classification:
+                record.building_classification = page_classification
+
+            if not record.postal_code:
+                # Prefer the postal code nearest this record's street address.
+                postal = ""
+                street = self._clean_text(record.street_address)
+                if street:
+                    lowered = page_text.lower()
+                    position = lowered.find(street.lower())
+                    if position >= 0:
+                        nearby = page_text[position:position + 500]
+                        nearby_match = POSTAL_RE.search(nearby)
+                        if nearby_match:
+                            postal = nearby_match.group(0)
+                if not postal and len(page_postals) == 1:
+                    postal = page_postals[0]
+                if postal:
+                    record.postal_code = self._normalize_postal(postal)
+                    if not record.country:
+                        record.country = "Canada"
+
+            record.source_url = record.source_url or page_url
+            record.source_page_title = record.source_page_title or page_title
+
+        return records
+
+    def _amenities_from_node(self, node: dict) -> str:
+        raw = node.get("amenityFeature") or node.get("amenities") or []
+        values: list[str] = []
+        if isinstance(raw, dict):
+            raw = [raw]
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    value = item.get("name") or item.get("value") or item.get("description")
+                else:
+                    value = item
+                cleaned = self._clean_text(str(value or ""))
+                if cleaned and cleaned.lower() not in {"true", "false"}:
+                    values.append(cleaned)
+        if values:
+            return "; ".join(dict.fromkeys(values))[:1500]
+        text = " ".join(
+            self._clean_text(str(node.get(key, "")))
+            for key in ("description", "keywords")
+        )
+        return self._amenities_from_text(text)
+
+    def _amenities_from_container(self, container) -> str:
+        """Prefer explicit amenity/feature sections over site-wide keyword guesses."""
+        values: list[str] = []
+        headings = container.find_all(["h1", "h2", "h3", "h4", "h5", "strong", "b"])
+        for heading in headings:
+            heading_text = self._clean_text(heading.get_text(" ", strip=True))
+            if not AMENITY_HEADING_RE.search(heading_text):
+                continue
+
+            parent = heading.parent or heading
+            if getattr(parent, "name", "") not in {"body", "html"}:
+                for node in parent.find_all(["li", "p"], limit=30):
+                    value = self._clean_text(node.get_text(" ", strip=True))
+                    if 1 < len(value) <= 140 and value.lower() != heading_text.lower():
+                        values.append(value)
+
+            # Some layouts put the amenity list in siblings following the heading.
+            sibling = heading.find_next_sibling()
+            sibling_count = 0
+            while sibling is not None and sibling_count < 8:
+                if getattr(sibling, "name", "") in {"h1", "h2", "h3", "h4", "h5"}:
+                    break
+                for node in sibling.find_all(["li", "p"], recursive=True) if hasattr(sibling, "find_all") else []:
+                    value = self._clean_text(node.get_text(" ", strip=True))
+                    if 1 < len(value) <= 140:
+                        values.append(value)
+                sibling = sibling.find_next_sibling()
+                sibling_count += 1
+
+        values = list(dict.fromkeys(values))
+        if values:
+            return "; ".join(values[:25])[:1500]
+        return ""
+
+    def _amenities_from_text(self, text: str) -> str:
+        labels = [label for label, pattern in AMENITY_PATTERNS if pattern.search(text or "")]
+        return "; ".join(dict.fromkeys(labels))
 
     def _organization_name(self, soup: BeautifulSoup) -> str:
         for selector in (
@@ -1406,10 +1768,40 @@ class FullSiteScanner:
             "city", "province", "postal_code", "country", "phone", "primary_email",
             "website", "number_of_apartments", "building_classification",
             "source_url", "source_page_title",
-            "extraction_method", "evidence",
+            "extraction_method", "evidence", "inventory_evidence", "exclusion_reason",
         ):
             if not getattr(preferred, field_name) and getattr(other, field_name):
                 setattr(preferred, field_name, getattr(other, field_name))
+
+        amenity_values = []
+        for value in (first.amenities, second.amenities):
+            amenity_values.extend(
+                part.strip() for part in str(value or "").split(";") if part.strip()
+            )
+        preferred.amenities = "; ".join(dict.fromkeys(amenity_values))[:1500]
+
+        preferred.found_on_city_page = first.found_on_city_page or second.found_on_city_page
+        preferred.found_on_html_sitemap = first.found_on_html_sitemap or second.found_on_html_sitemap
+        preferred.found_on_xml_sitemap = first.found_on_xml_sitemap or second.found_on_xml_sitemap
+        status_rank = {
+            INVENTORY_STATUS_EXCLUDED: 0,
+            INVENTORY_STATUS_REVIEW: 1,
+            INVENTORY_STATUS_CURRENT: 2,
+        }
+        preferred.inventory_status = max(
+            (first.inventory_status, second.inventory_status),
+            key=lambda value: status_rank.get(value, 1),
+        )
+        if preferred.inventory_status == INVENTORY_STATUS_CURRENT:
+            preferred.exclusion_reason = ""
+            evidence = []
+            if preferred.found_on_html_sitemap:
+                evidence.append("current HTML sitemap")
+            if preferred.found_on_city_page:
+                evidence.append("current city/portfolio page")
+            if evidence:
+                preferred.inventory_evidence = "; ".join(evidence)
+
         preferred.confidence = max(first.confidence, second.confidence)
         return preferred
 
