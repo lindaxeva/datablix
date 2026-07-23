@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Project Lifecycle Workspace 2026.07.23-v7"
+DATABLIX_BUILD = "Company Lifecycle Workspace 2026.07.23-v8"
 
 # =========================================================
 # Configuration
@@ -1380,6 +1380,184 @@ def add_company_to_project(name, website="", scope_type="Added later", notes="")
     st.session_state[S_ACTIVE_COMPANY] = company_id
     st.session_state[S_PENDING_ACTIVE_COMPANY] = company_id
     return company_id, True
+
+
+def _company_row_mask(
+    frame: pd.DataFrame,
+    *,
+    company_id: str,
+    company_name: str,
+) -> pd.Series:
+    """Return rows that belong to one company across Datablix data/history frames."""
+    if not isinstance(frame, pd.DataFrame):
+        return pd.Series(dtype="bool")
+    if frame.empty:
+        return pd.Series(False, index=frame.index, dtype="bool")
+
+    mask = pd.Series(False, index=frame.index, dtype="bool")
+    id_fields = ["Company ID", "company_id"]
+    name_fields = [
+        "Management/Owner",
+        "management_owner",
+        "Assigned Company",
+        "assigned_company",
+        "Company",
+        "company",
+    ]
+
+    clean_company_id = str(company_id or "").strip()
+    clean_company_name = re.sub(r"\s+", " ", str(company_name or "")).strip()
+    normalized_name = company_name_key(clean_company_name)
+
+    id_evidence_found = False
+    if clean_company_id:
+        for field in id_fields:
+            if field in frame.columns:
+                values = frame[field].astype("string").fillna("").str.strip()
+                field_match = values.eq(clean_company_id)
+                if field_match.any():
+                    id_evidence_found = True
+                    mask |= field_match
+
+    # Use the organization name as a fallback for older imported/history rows that
+    # predate Company ID assignment. We only use this fallback when no ID match was
+    # available in the frame, reducing the chance of deleting similarly named records.
+    if not id_evidence_found and normalized_name:
+        for field in name_fields:
+            if field in frame.columns:
+                values = frame[field].astype("string").fillna("").apply(company_name_key)
+                mask |= values.eq(normalized_name)
+
+    return mask
+
+
+def delete_company_from_project(company_id: str) -> tuple[bool, str, dict]:
+    """Delete one company and its company-scoped project data.
+
+    The project itself and every other company remain untouched. For cloud/shared
+    projects, permanent company removal is restricted to the project owner.
+    """
+    clean_company_id = str(company_id or "").strip()
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+
+    match = registry.loc[registry["Company ID"].astype(str).eq(clean_company_id)]
+    if match.empty:
+        return False, "The selected company could not be found.", {}
+
+    company_name = str(match.iloc[0].get("Management/Owner", "") or "").strip()
+    project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "") or "").strip()
+    project_role = str(
+        st.session_state.get(S_PROJECT_ROLE, "")
+        or (project_access_role(project_id) if project_id else "owner")
+    ).strip().lower()
+
+    if (
+        project_id
+        and not st.session_state.get(S_DEMO_MODE)
+        and project_role != "owner"
+    ):
+        return (
+            False,
+            "Only the project owner can permanently delete a company from this project.",
+            {},
+        )
+
+    stats = {
+        "company": company_name,
+        "records_removed": 0,
+        "baseline_rows_removed": 0,
+        "scan_history_rows_removed": 0,
+        "scan_candidate_rows_removed": 0,
+        "scan_page_rows_removed": 0,
+    }
+
+    # Remove company-owned rows from the working project and from the imported
+    # original snapshot so a later reset cannot silently restore the deleted company.
+    for state_key, stat_key in [
+        (S_WORKING, "records_removed"),
+        (S_ORIGINAL, None),
+        (S_QA_BASELINE, "baseline_rows_removed"),
+        (S_SCAN_HISTORY, "scan_history_rows_removed"),
+        (S_SCAN_CANDIDATES, "scan_candidate_rows_removed"),
+        (S_SCAN_PAGES, "scan_page_rows_removed"),
+    ]:
+        frame = st.session_state.get(state_key)
+        if not isinstance(frame, pd.DataFrame):
+            continue
+
+        mask = _company_row_mask(
+            frame,
+            company_id=clean_company_id,
+            company_name=company_name,
+        )
+        removed = int(mask.sum()) if len(mask) else 0
+        st.session_state[state_key] = frame.loc[~mask].reset_index(drop=True).copy()
+        if stat_key:
+            stats[stat_key] = removed
+
+    # Remove the organization from the project registry itself.
+    registry = registry.loc[
+        ~registry["Company ID"].astype(str).eq(clean_company_id)
+    ].reset_index(drop=True)
+    st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+
+    # Remove scanner UI/state cached specifically for this company.
+    scanner_store_key = "_db_company_scan_states"
+    scanner_active_key = "_db_active_scan_company"
+    scanner_store = st.session_state.get(scanner_store_key)
+    if isinstance(scanner_store, dict):
+        scanner_store = dict(scanner_store)
+        scanner_store.pop(clean_company_id, None)
+        st.session_state[scanner_store_key] = scanner_store
+
+    if str(st.session_state.get(scanner_active_key, "")).strip() == clean_company_id:
+        st.session_state.pop(scanner_active_key, None)
+        for session_key in list(st.session_state.keys()):
+            if str(session_key).startswith(("website_scan_", "full_scan_")):
+                st.session_state.pop(session_key, None)
+
+    # Clear prompt/editor widgets belonging to the deleted company.
+    company_widget_prefixes = (
+        "db_prompt_",
+        "db_master_prompt_",
+        "db_save_company_prompt_",
+        "db_project_next_",
+        "db_project_alternate_",
+        "db_main_company_details_",
+    )
+    for session_key in list(st.session_state.keys()):
+        session_text = str(session_key)
+        if (
+            clean_company_id in session_text
+            and session_text.startswith(company_widget_prefixes)
+        ):
+            st.session_state.pop(session_key, None)
+
+    # The main company selectbox may still hold the deleted ID. Clearing its widget
+    # state prevents Streamlit from trying to render a value that no longer exists.
+    for session_key in list(st.session_state.keys()):
+        if str(session_key).startswith("db_main_active_company_"):
+            st.session_state.pop(session_key, None)
+
+    # Move safely to another company if one remains.
+    updated_registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    if not updated_registry.empty:
+        next_company_id = str(updated_registry.iloc[0]["Company ID"]).strip()
+        st.session_state[S_ACTIVE_COMPANY] = next_company_id
+        st.session_state[S_PENDING_ACTIVE_COMPANY] = next_company_id
+    else:
+        st.session_state.pop(S_ACTIVE_COMPANY, None)
+        st.session_state.pop(S_PENDING_ACTIVE_COMPANY, None)
+
+    # Rebuild missing-information fields after company rows are removed.
+    working = st.session_state.get(S_WORKING)
+    if isinstance(working, pd.DataFrame):
+        st.session_state[S_WORKING] = normalize_workflow(working)
+
+    # Persist the company deletion into the active project immediately.
+    autosave_current_project()
+
+    return True, f'{company_name or clean_company_id} was removed from this project.', stats
 
 
 # =========================================================
@@ -4598,7 +4776,84 @@ if section == "Research projects & companies":
                     registry_main
                 )
                 st.session_state[S_FLASH] = "Company details saved."
+                autosave_current_project()
                 st.rerun()
+
+        project_id_for_company_delete = str(
+            st.session_state.get(S_CLOUD_PROJECT_ID, "")
+        ).strip()
+        company_delete_role = str(
+            st.session_state.get(S_PROJECT_ROLE, "")
+            or (
+                project_access_role(project_id_for_company_delete)
+                if project_id_for_company_delete
+                else "owner"
+            )
+        ).strip().lower()
+        company_delete_allowed = (
+            st.session_state.get(S_DEMO_MODE)
+            or not project_id_for_company_delete
+            or company_delete_role == "owner"
+        )
+
+        with st.expander("Delete selected company", expanded=False):
+            if not company_delete_allowed:
+                st.caption(
+                    "Only the project owner can permanently delete a company "
+                    "from this shared project."
+                )
+            else:
+                company_rows_to_delete = _company_row_mask(
+                    working,
+                    company_id=selected_main_id,
+                    company_name=selected_snapshot["company_name"],
+                )
+                company_record_count = int(company_rows_to_delete.sum())
+
+                st.warning(
+                    f'This removes "{selected_snapshot["company_name"]}" from this project '
+                    f'and permanently removes its {company_record_count:,} associated '
+                    "building record(s), QA baseline rows, scan history, and saved "
+                    "company scanner state. The project and other companies are not affected."
+                )
+
+                delete_company_ack = st.checkbox(
+                    "I understand that this company and its associated project data will be deleted",
+                    key=f"db_delete_company_ack_{selected_main_id}",
+                )
+                delete_company_name = st.text_input(
+                    f'Type the company name to confirm: "{selected_snapshot["company_name"]}"',
+                    key=f"db_delete_company_name_{selected_main_id}",
+                    autocomplete="off",
+                )
+                company_name_matches = (
+                    delete_company_name.strip()
+                    == str(selected_snapshot["company_name"]).strip()
+                )
+                if delete_company_name.strip() and not company_name_matches:
+                    st.caption(
+                        "The confirmation name does not match the selected company."
+                    )
+
+                if st.button(
+                    "Delete selected company permanently",
+                    type="secondary",
+                    width="stretch",
+                    disabled=not (delete_company_ack and company_name_matches),
+                    key=f"db_delete_company_button_{selected_main_id}",
+                ):
+                    deleted, delete_message, delete_stats = delete_company_from_project(
+                        selected_main_id
+                    )
+                    if deleted:
+                        st.session_state[S_FLASH] = (
+                            f'{delete_message} '
+                            f'{delete_stats.get("records_removed", 0):,} building record(s) '
+                            "were removed. The rest of the project is unchanged."
+                        )
+                        st.rerun()
+                    else:
+                        st.error(delete_message)
 
     with st.expander(
         "Add another company to this project",
