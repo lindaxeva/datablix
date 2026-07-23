@@ -22,7 +22,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Optional Coverage Cross-Check 2026.07.21-r1"
+SCANNER_BUILD = "Current Inventory + Rich Extraction 2026.07.23-r2"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -139,6 +139,14 @@ def _read_durable_checkpoint(website_url: str) -> tuple[ScanReport, dict] | None
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("scanner_build") != SCANNER_BUILD:
+            # Old scan results can contain the exact extraction and inventory
+            # behaviours this build is replacing. Never mix them with new code.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
         report_data = payload.get("report", {})
         report = ScanReport.from_dict(report_data)
     except (OSError, ValueError, TypeError, KeyError):
@@ -174,7 +182,14 @@ DIRECTORY_FIELD_MAP = {
     "primary_email": "Primary Email",
     "website": "Website",
     "number_of_apartments": "Number of Apartments",
+    "amenities": "Amenities",
     "building_classification": "Building Classification",
+    "inventory_status": "Current Inventory Status",
+    "inventory_evidence": "Inventory Evidence",
+    "found_on_city_page": "Found on City/Portfolio Page",
+    "found_on_html_sitemap": "Found on HTML Sitemap",
+    "found_on_xml_sitemap": "Found on XML Sitemap",
+    "exclusion_reason": "Inventory Exclusion Reason",
     "source_url": "Source URL",
     "source_page_title": "Source Page Title",
     "extraction_method": "Extraction Method",
@@ -196,6 +211,18 @@ ONTARIO_APPROVABLE_STATUSES = {
     ONTARIO_SCOPE_CONFIRMED,
     ONTARIO_SCOPE_LIKELY,
 }
+
+INVENTORY_STATUS_CURRENT = "Current inventory"
+INVENTORY_STATUS_REVIEW = "Review inventory"
+INVENTORY_STATUS_EXCLUDED = "Excluded — not in current inventory"
+
+
+def _inventory_eligible_mask(frame: pd.DataFrame) -> pd.Series:
+    if "inventory_status" not in frame.columns:
+        return pd.Series(True, index=frame.index)
+    return ~frame["inventory_status"].fillna(INVENTORY_STATUS_REVIEW).eq(
+        INVENTORY_STATUS_EXCLUDED
+    )
 
 ONTARIO_POSTAL_PREFIXES = set("KLMNP")
 
@@ -406,7 +433,11 @@ def _records_dataframe(report) -> pd.DataFrame:
                 "street_address",
                 "address_line_2", "city", "province", "postal_code", "country",
                 "phone", "primary_email", "website", "number_of_apartments",
-                "building_classification", "source_url", "source_page_title",
+                "amenities", "building_classification",
+                "inventory_status", "inventory_evidence",
+                "found_on_city_page", "found_on_html_sitemap",
+                "found_on_xml_sitemap", "exclusion_reason",
+                "source_url", "source_page_title",
                 "extraction_method", "confidence",
                 "review_status", "evidence",
                 "ontario_scope_status", "ontario_scope_reason",
@@ -434,6 +465,13 @@ SCAN_LISTING_FIELDS = [
 
 SCAN_ADDITIONAL_FIELDS = [
     ("Address Line 2", "address_line_2"),
+    ("Amenities", "amenities"),
+    ("Current Inventory Status", "inventory_status"),
+    ("Inventory Evidence", "inventory_evidence"),
+    ("Found on City/Portfolio Page", "found_on_city_page"),
+    ("Found on HTML Sitemap", "found_on_html_sitemap"),
+    ("Found on XML Sitemap", "found_on_xml_sitemap"),
+    ("Inventory Exclusion Reason", "exclusion_reason"),
     ("Country", "country"),
     ("Official Source URL", "source_url"),
     ("Source Page Title", "source_page_title"),
@@ -538,6 +576,10 @@ def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> by
         records_df.loc[
             records_df["ontario_scope_status"].eq(ONTARIO_SCOPE_UNCLEAR)
         ].to_excel(writer, sheet_name="Location Review", index=False)
+        if "inventory_status" in records_df.columns:
+            records_df.loc[
+                records_df["inventory_status"].eq(INVENTORY_STATUS_EXCLUDED)
+            ].to_excel(writer, sheet_name="Excluded Legacy URLs", index=False)
         pages_df.to_excel(writer, sheet_name="Pages Scanned", index=False)
         pd.DataFrame({"Blocked URL": report.blocked_urls}).to_excel(
             writer,
@@ -851,6 +893,30 @@ def _merge_into_working_data(
 
 
 
+def _clear_stale_scanner_session_if_needed() -> bool:
+    """Remove in-memory results produced by an older scanner build."""
+    has_results = any(
+        key in st.session_state
+        for key in (
+            "website_scan_report",
+            "website_scan_records",
+            "website_scan_checkpoint_report",
+        )
+    )
+    stored_build = str(st.session_state.get("website_scan_build", "")).strip()
+    if not has_results or stored_build == SCANNER_BUILD:
+        return False
+
+    for key in list(st.session_state):
+        if (
+            key.startswith("website_scan_")
+            or key.startswith("full_scan_record_editor_")
+        ):
+            st.session_state.pop(key, None)
+    st.session_state["website_scan_build"] = SCANNER_BUILD
+    return True
+
+
 def render_website_scanner_panel(
     working_data_key: str = WORKING_DATA_KEY,
     *,
@@ -900,6 +966,12 @@ def render_website_scanner_panel(
         return None
 
     _switch_company_scan_state(active_company_id, active_company_website)
+    stale_scan_cleared = _clear_stale_scanner_session_if_needed()
+    if stale_scan_cleared:
+        st.info(
+            "Older scanner results were cleared because the inventory and field-extraction rules changed. "
+            "Run the company website again to use the corrected logic."
+        )
 
     saved_scan_company_id = str(
         st.session_state.get("website_scan_company_id", "")
@@ -1053,7 +1125,7 @@ def render_website_scanner_panel(
         with advanced_col2:
             if scope == "Custom":
                 use_sitemaps = st.checkbox(
-                    "Use XML sitemaps",
+                    "Use sitemaps and current listing pages",
                     value=True,
                     key="full_scan_sitemaps_custom",
                 )
@@ -1067,9 +1139,9 @@ def render_website_scanner_panel(
                 use_sitemaps = True
                 include_subdomains = scope in {"Recommended", "Extended scan"}
                 discovery_note = (
-                    "XML sitemaps and related subdomains are included automatically."
+                    "Sitemaps, current listing pages, and related subdomains are included automatically."
                     if include_subdomains
-                    else "XML sitemaps are included; related subdomains are not followed."
+                    else "Sitemaps and current listing pages are included; related subdomains are not followed."
                 )
                 st.caption(discovery_note)
 
@@ -1118,6 +1190,7 @@ def render_website_scanner_panel(
         )
 
     if submitted:
+        st.session_state["website_scan_build"] = SCANNER_BUILD
         st.session_state["website_scan_active"] = True
         st.session_state["website_scan_company_id"] = active_company_id
         st.session_state["website_scan_company_name"] = active_company_name
@@ -1224,6 +1297,7 @@ def render_website_scanner_panel(
                 recovered_report, checkpoint_meta = recovered
                 recovered_report.completion_reason = "interrupted_recovered"
                 recovered_records = _records_dataframe(recovered_report)
+                st.session_state["website_scan_build"] = SCANNER_BUILD
                 st.session_state["website_scan_report"] = recovered_report
                 st.session_state["website_scan_records"] = recovered_records
                 st.session_state["website_scan_scope"] = checkpoint_meta.get(
@@ -1291,6 +1365,7 @@ def render_website_scanner_panel(
                 )
 
             st.session_state["website_scan_stop_message"] = visible_message
+            st.session_state["website_scan_build"] = SCANNER_BUILD
             st.session_state["website_scan_report"] = report
             st.session_state["website_scan_records"] = _records_dataframe(report)
             st.session_state["website_scan_scope"] = scope
@@ -1339,6 +1414,7 @@ def render_website_scanner_panel(
             records_df = _records_dataframe(report)
 
             st.session_state["website_scan_active"] = False
+            st.session_state["website_scan_build"] = SCANNER_BUILD
             st.session_state["website_scan_report"] = report
             st.session_state["website_scan_records"] = records_df
             st.session_state["website_scan_scope"] = checkpoint_meta.get(
@@ -1477,6 +1553,18 @@ def render_website_scanner_panel(
         "kept for traceability but excluded automatically."
     )
 
+    if "inventory_status" in records_df.columns:
+        inventory_counts = records_df["inventory_status"].value_counts()
+        i1, i2, i3 = st.columns(3)
+        i1.metric("Current inventory", int(inventory_counts.get(INVENTORY_STATUS_CURRENT, 0)))
+        i2.metric("Inventory review", int(inventory_counts.get(INVENTORY_STATUS_REVIEW, 0)))
+        i3.metric("Legacy / excluded", int(inventory_counts.get(INVENTORY_STATUS_EXCLUDED, 0)))
+        st.caption(
+            "A dedicated property URL is not enough by itself. Buildings linked from a current "
+            "HTML sitemap or current city/portfolio page are treated as current. Legacy property "
+            "URLs stay in the audit trail but cannot be approved."
+        )
+
     with st.expander("Manage current scan results"):
         st.caption("Clearing removes this scan report and its review edits from the current session.")
         confirm_clear = st.checkbox(
@@ -1531,6 +1619,9 @@ def render_website_scanner_panel(
         "postal_code",
         "building_classification",
         "number_of_apartments",
+        "amenities",
+        "inventory_status",
+        "inventory_evidence",
         "management_owner",
         "phone",
         "primary_email",
@@ -1542,6 +1633,13 @@ def render_website_scanner_panel(
         "approved",
         "ontario_scope_status",
         "ontario_scope_reason",
+        "inventory_status",
+        "inventory_evidence",
+        "found_on_city_page",
+        "found_on_html_sitemap",
+        "found_on_xml_sitemap",
+        "exclusion_reason",
+        "amenities",
         "address_line_2",
         "country",
         "source_page_title",
@@ -1556,7 +1654,10 @@ def render_website_scanner_panel(
         "building_name", "management_owner", "street_address",
         "address_line_2", "city", "province", "postal_code", "country",
         "phone", "primary_email", "website", "number_of_apartments",
-        "building_classification", "source_url", "source_page_title",
+        "amenities", "building_classification",
+        "inventory_status", "inventory_evidence",
+        "found_on_city_page", "found_on_html_sitemap", "found_on_xml_sitemap",
+        "exclusion_reason", "source_url", "source_page_title",
         "extraction_method", "confidence", "review_status", "evidence",
     ]
     all_review_columns = [column for column in preferred_all_order if column in records_df.columns]
@@ -1593,7 +1694,9 @@ def render_website_scanner_panel(
         disabled=[
             column for column in [
                 "confidence", "source_page_title", "extraction_method",
-                "review_status", "ontario_scope_status", "ontario_scope_reason"
+                "review_status", "ontario_scope_status", "ontario_scope_reason",
+                "inventory_status", "inventory_evidence", "found_on_city_page",
+                "found_on_html_sitemap", "found_on_xml_sitemap", "exclusion_reason"
             ] if column in visible_review_columns
         ],
         column_config={
@@ -1624,6 +1727,25 @@ def render_website_scanner_panel(
             "city": st.column_config.TextColumn("City"),
             "province": st.column_config.TextColumn("Province"),
             "postal_code": st.column_config.TextColumn("Postal Code"),
+            "amenities": st.column_config.TextColumn("Amenities", width="large"),
+            "inventory_status": st.column_config.TextColumn(
+                "Current Inventory Status", width="medium"
+            ),
+            "inventory_evidence": st.column_config.TextColumn(
+                "Inventory Evidence", width="large"
+            ),
+            "found_on_city_page": st.column_config.CheckboxColumn(
+                "On City/Portfolio Page"
+            ),
+            "found_on_html_sitemap": st.column_config.CheckboxColumn(
+                "On HTML Sitemap"
+            ),
+            "found_on_xml_sitemap": st.column_config.CheckboxColumn(
+                "On XML Sitemap"
+            ),
+            "exclusion_reason": st.column_config.TextColumn(
+                "Inventory Exclusion Reason", width="large"
+            ),
             "country": st.column_config.TextColumn("Country"),
             "phone": st.column_config.TextColumn("Phone Number"),
             "primary_email": st.column_config.TextColumn("Email Contact", width="large"),
@@ -1656,8 +1778,11 @@ def render_website_scanner_panel(
     st.session_state["website_scan_records"] = updated_records
 
     requested_approval = updated_records["approved"].fillna(False)
-    eligible_approval = _ontario_eligible_mask(updated_records)
-    blocked_approval_count = int((requested_approval & ~eligible_approval).sum())
+    ontario_eligible = _ontario_eligible_mask(updated_records)
+    inventory_eligible = _inventory_eligible_mask(updated_records)
+    eligible_approval = ontario_eligible & inventory_eligible
+    blocked_location_count = int((requested_approval & ~ontario_eligible).sum())
+    blocked_inventory_count = int((requested_approval & ontario_eligible & ~inventory_eligible).sum())
 
     approved = updated_records.loc[
         requested_approval & eligible_approval
@@ -1678,11 +1803,17 @@ def render_website_scanner_panel(
         pages_key=scan_pages_key,
     )
 
-    if blocked_approval_count:
+    if blocked_location_count:
         st.warning(
-            f"{blocked_approval_count} selected candidate(s) were not approved because "
+            f"{blocked_location_count} selected candidate(s) were not approved because "
             "their location is unclear or confirmed outside Ontario. Update the city, "
             "province, street address, or postal code, then review again."
+        )
+    if blocked_inventory_count:
+        st.warning(
+            f"{blocked_inventory_count} selected candidate(s) were not approved because "
+            "their dedicated property page is not supported by the current HTML sitemap "
+            "or current city/portfolio pages. They remain in the audit trail as legacy/excluded URLs."
         )
 
     with st.container(border=True):
@@ -1742,9 +1873,16 @@ def render_website_scanner_panel(
             "Keep the source page, extraction details, confidence, and supporting text with the research trail."
         )
         evidence_columns = [
+            "inventory_status",
+            "inventory_evidence",
+            "found_on_city_page",
+            "found_on_html_sitemap",
+            "found_on_xml_sitemap",
+            "exclusion_reason",
             "ontario_scope_status",
             "ontario_scope_reason",
             "building_name",
+            "amenities",
             "building_classification",
             "number_of_apartments",
             "source_url",
