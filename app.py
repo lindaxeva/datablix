@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Prompt-First Company Workspace 2026.07.21-v2"
+DATABLIX_BUILD = "Current Inventory Research Workspace 2026.07.23-v3"
 
 # =========================================================
 # Configuration
@@ -39,6 +39,9 @@ INTERNAL_COLUMNS = [
     "Number of Storeys", "Rental Rate Range", "Suite Types", "Amenities",
     "Parking", "Laundry", "Utilities", "Elevator", "Accessibility",
     "Pet Policy", "Smoke-Free", "Building Classification",
+    "Current Inventory Status", "Inventory Evidence",
+    "Found on City/Portfolio Page", "Found on HTML Sitemap",
+    "Found on XML Sitemap", "Inventory Exclusion Reason",
     "Source URL", "Date Researched", "Researcher", "Research Status",
     "Source Status", "Verification Status", "Missing Information",
     "Reviewer Notes", "Record Decision",
@@ -86,6 +89,12 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Accessibility", "Accessibility"),
     ("Pet Policy", "Pet Policy"),
     ("Smoke-Free", "Smoke-Free"),
+    ("Current Inventory Status", "Current Inventory Status"),
+    ("Inventory Evidence", "Inventory Evidence"),
+    ("Found on City/Portfolio Page", "Found on City/Portfolio Page"),
+    ("Found on HTML Sitemap", "Found on HTML Sitemap"),
+    ("Found on XML Sitemap", "Found on XML Sitemap"),
+    ("Inventory Exclusion Reason", "Inventory Exclusion Reason"),
     ("Country", "Country"),
     ("Official Source URL", "Source URL"),
     ("Date Researched", "Date Researched"),
@@ -138,6 +147,12 @@ ALIASES = {
     "Pet Policy": ["Pet Policy", "Pets"],
     "Smoke-Free": ["Smoke-Free", "Smoke Free", "Non-Smoking"],
     "Building Classification": ["Building Classification", "Verified Building Classification", "Category", "Building Type"],
+    "Current Inventory Status": ["Current Inventory Status", "Inventory Status", "Portfolio Status"],
+    "Inventory Evidence": ["Inventory Evidence", "Current Inventory Evidence"],
+    "Found on City/Portfolio Page": ["Found on City/Portfolio Page", "On City Page", "On Portfolio Page"],
+    "Found on HTML Sitemap": ["Found on HTML Sitemap", "On HTML Sitemap"],
+    "Found on XML Sitemap": ["Found on XML Sitemap", "On XML Sitemap"],
+    "Inventory Exclusion Reason": ["Inventory Exclusion Reason", "Exclusion Reason"],
     "Source URL": ["Source URL", "Official Source URL", "Research Source", "Website / Source URL"],
     "Date Researched": ["Date Researched", "Date Verified", "Verification Date", "Research Date"],
     "Researcher": ["Researcher", "Assigned To"],
