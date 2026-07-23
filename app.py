@@ -1104,6 +1104,17 @@ def normalize_choice(series, choices, default, aliases=None):
     return series.astype("string").fillna("").str.strip().str.lower().map(mapping).fillna(default)
 
 
+def synchronize_missing_information(df):
+    """Keep Missing Information aligned with the current research-field gaps."""
+    out = df.copy()
+    missing_text = pd.Series("", index=out.index, dtype="object")
+    for idx in out.index:
+        gaps = [field for field in TARGET_FIELDS if is_unresolved(out.at[idx, field])]
+        missing_text.at[idx] = ", ".join(gaps)
+    out["Missing Information"] = missing_text
+    return out
+
+
 def normalize_workflow(df):
     out = df.copy()
     for c in INTERNAL_COLUMNS:
@@ -1113,6 +1124,7 @@ def normalize_workflow(df):
     out["Source Status"] = normalize_choice(out["Source Status"], SOURCE_STATUSES, "Not Checked", STATUS_ALIASES["Source Status"])
     out["Verification Status"] = normalize_choice(out["Verification Status"], VERIFICATION_STATUSES, "Not Reviewed", STATUS_ALIASES["Verification Status"])
     out["Record Decision"] = normalize_choice(out["Record Decision"], RECORD_DECISIONS, "Undecided", STATUS_ALIASES["Record Decision"])
+    out = synchronize_missing_information(out)
     for c in ["Researcher", "Missing Information", "Reviewer Notes"]:
         out[c] = out[c].fillna("").astype(str)
     return out
@@ -1969,7 +1981,7 @@ def structure_recommendations():
         ("Research", "Date Researched", "Required for verified records", "Date", "Freshness trail", "Filter"),
         ("Research", "Researcher", "Required for verified records", "Controlled text", "Accountability", "Filter"),
         ("Research", "Verification Status", "Required", "Controlled status", "Human review outcome", "Filter"),
-        ("Research", "Missing Information", "When applicable", "Long text", "Records details that could not be confirmed", "No"),
+        ("Research", "Missing Information", "Automatically generated", "System text", "Lists current research fields that remain unconfirmed", "No"),
         ("Workflow", "Record Decision", "Required before final use", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
     ]
     return pd.DataFrame(rows, columns=["Field Group", "Field", "Requirement", "Recommended Type", "Purpose", "Platform Use"])
@@ -5035,7 +5047,7 @@ elif section == "Review records":
                     ],
                     "Research and verification": [
                         "Research Status", "Verification Status", "Record Decision",
-                        "Missing Information", "Reviewer Notes",
+                        "Reviewer Notes",
                     ],
                 }
                 preset = st.selectbox(
@@ -5047,7 +5059,7 @@ elif section == "Review records":
                 if preset == "Custom fields":
                     edit_fields = st.multiselect(
                         "Fields to edit",
-                        [c for c in INTERNAL_COLUMNS if c != "Record ID"],
+                        [c for c in INTERNAL_COLUMNS if c not in {"Record ID", "Missing Information"}],
                         default=[
                             "Building Name", "Management/Owner", "Phone", "Primary Email",
                             "Website", "Research Status", "Verification Status", "Record Decision",
@@ -5067,14 +5079,15 @@ elif section == "Review records":
                     pd.NA,
                 )
                 context = ["Record ID", "Working Record Label"] + edit_fields + [
-                    "Source URL", "Check Source", "Research Gaps", "QA Status", "Record Readiness"
+                    "Source URL", "Check Source", "Missing Information", "Research Gaps",
+                    "QA Status", "Record Readiness"
                 ]
                 context = list(dict.fromkeys(c for c in context if c in filtered.columns))
                 locked = [
                     c for c in context
                     if c in [
                         "Record ID", "Working Record Label", "Check Source",
-                        "Research Gaps", "QA Status", "Record Readiness"
+                        "Missing Information", "Research Gaps", "QA Status", "Record Readiness"
                     ]
                 ]
                 edited = st.data_editor(
@@ -5100,6 +5113,11 @@ elif section == "Review records":
                             width="medium",
                             display_text="Open source",
                             help="Open the supporting page for this observation in a new tab.",
+                        ),
+                        "Missing Information": st.column_config.TextColumn(
+                            "Missing Information",
+                            width="large",
+                            help="Automatically generated from the currently blank research fields. Add explanations in Reviewer Notes.",
                         ),
                         "Date Researched": st.column_config.DateColumn("Date Researched", format="YYYY-MM-DD"),
                         "Research Status": st.column_config.SelectboxColumn(
@@ -5130,7 +5148,7 @@ elif section == "Review records":
                     )
                 with save_note:
                     st.caption(
-                        "Saving updates the working copy and refreshes quality checks immediately."
+                        "Saving updates the working copy, refreshes quality checks, and synchronizes Missing Information automatically."
                     )
                 if save_changes:
                     save_edits(edited, [c for c in edit_fields if c in edited.columns])
