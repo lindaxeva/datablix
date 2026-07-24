@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Delete Previous Source 2026.07.24-v33"
+DATABLIX_BUILD = "Visible Source File Management 2026.07.24-v34"
 
 # =========================================================
 # Configuration
@@ -7068,66 +7068,6 @@ if section == "Research projects & companies":
                             hide_index=True,
                         )
 
-                    previous_versions = [
-                        version
-                        for version in source_versions
-                        if not bool(version.get("is_active"))
-                    ]
-
-                    if previous_versions:
-                        st.markdown("**Delete previous source**")
-                        st.caption(
-                            "Delete an older saved source version that you no longer need. "
-                            "This does not delete your current source or your research records."
-                        )
-
-                        delete_options = {
-                            (
-                                f"{safe_text(version.get('version_label', '')) or 'Source'}"
-                                f" · {safe_text(version.get('meta', {}).get('workbook_name', '')) or 'Workbook'}"
-                                f" · {_safe_int(version.get('meta', {}).get('source_records', 0)):,} records"
-                            ): int(version.get("version_number", 0) or 0)
-                            for version in previous_versions
-                        }
-
-                        selected_delete_label = st.selectbox(
-                            "Previous source version",
-                            options=list(delete_options.keys()),
-                            key="db_delete_source_version_select",
-                        )
-                        selected_delete_number = delete_options[
-                            selected_delete_label
-                        ]
-
-                        delete_confirm = st.checkbox(
-                            "I understand this removes this saved source version from the project.",
-                            key="db_delete_source_version_confirm",
-                        )
-
-                        if st.button(
-                            "Delete selected previous source",
-                            type="secondary",
-                            disabled=not delete_confirm,
-                            key="db_delete_source_version_button",
-                        ):
-                            result = _delete_source_version(
-                                selected_delete_number
-                            )
-                            if result.get("deleted"):
-                                st.session_state[S_FLASH] = (
-                                    f"Deleted previous source "
-                                    f"{result['version_label']}. "
-                                    "Current source and research records were preserved."
-                                )
-                                st.rerun()
-                            else:
-                                st.error(
-                                    result.get(
-                                        "reason",
-                                        "The source version could not be deleted.",
-                                    )
-                                )
-
                 rules = st.session_state.get(
                     S_CLASSIFICATION_RULES
                 )
@@ -7142,6 +7082,85 @@ if section == "Research projects & companies":
                         rules,
                         width="stretch",
                         hide_index=True,
+                    )
+
+            previous_versions = [
+                version
+                for version in source_versions
+                if not bool(version.get("is_active"))
+            ]
+
+            with st.expander("Manage source files", expanded=False):
+                st.markdown("**Current source**")
+                st.code(
+                    f"{current_version} · {workbook_name} · {source_count:,} records",
+                    language=None,
+                )
+                st.caption(
+                    "The current source is protected because new research packages "
+                    "use it automatically."
+                )
+
+                st.markdown("**Previous sources**")
+
+                if previous_versions:
+                    delete_options = {
+                        (
+                            f"{safe_text(version.get('version_label', '')) or 'Source'}"
+                            f" · {safe_text(version.get('meta', {}).get('workbook_name', '')) or 'Workbook'}"
+                            f" · {_safe_int(version.get('meta', {}).get('source_records', 0)):,} records"
+                        ): int(version.get("version_number", 0) or 0)
+                        for version in previous_versions
+                    }
+
+                    selected_delete_label = st.selectbox(
+                        "Select a previous source to delete",
+                        options=list(delete_options.keys()),
+                        key="db_delete_source_version_select",
+                    )
+                    selected_delete_number = delete_options[
+                        selected_delete_label
+                    ]
+
+                    st.warning(
+                        "Deleting a previous source removes that saved source version "
+                        "from the project. Your current source and working research "
+                        "records are not deleted."
+                    )
+
+                    delete_confirm = st.checkbox(
+                        "Confirm deletion of the selected previous source",
+                        key="db_delete_source_version_confirm",
+                    )
+
+                    if st.button(
+                        "Delete previous source",
+                        type="secondary",
+                        disabled=not delete_confirm,
+                        key="db_delete_source_version_button",
+                        width="stretch",
+                    ):
+                        result = _delete_source_version(
+                            selected_delete_number
+                        )
+                        if result.get("deleted"):
+                            st.session_state[S_FLASH] = (
+                                f"Deleted previous source "
+                                f"{result['version_label']}. "
+                                "Current source and research records were preserved."
+                            )
+                            st.rerun()
+                        else:
+                            st.error(
+                                result.get(
+                                    "reason",
+                                    "The source version could not be deleted.",
+                                )
+                            )
+                else:
+                    st.info(
+                        "No previous source versions to delete yet. "
+                        "After you add an updated source, the older source will appear here."
                     )
 
             starting_data_expander_label = "Add updated source"
