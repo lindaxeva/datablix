@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Visible Quality + Custom Export 2026.07.23-v10"
+DATABLIX_BUILD = "CSV-Only Research Deliverables 2026.07.23-v12"
 
 # =========================================================
 # Configuration
@@ -1825,7 +1825,7 @@ def build_company_website_research_prompt(
     """Create one comprehensive, editable, provider-neutral research prompt."""
     return f"""# Datablix Inventory-First Company Research Prompt
 
-You are acting as a careful public-source rental-property research analyst. Research the company below and produce a structured spreadsheet deliverable that can be imported into Datablix for data-quality review and human verification.
+You are acting as a careful public-source rental-property research analyst. Research the company below and produce downloadable CSV file deliverables that can be imported into Datablix for data-quality review and human verification. CSV is the required output format.
 
 ## Company context
 - Company or management owner: {company_name or '[enter company name]'}
@@ -1900,7 +1900,7 @@ A third-party source must NEVER bring an Excluded legacy/orphaned property back 
 Clearly label secondary evidence in Supporting Evidence and keep the official company/property source as the primary basis for property identity and current-inventory status.
 
 ### Phase 4 — Quality-check before delivery
-Before producing the final spreadsheet:
+Before producing the final CSV file:
 1. Recheck every included property against current company inventory evidence.
 2. Remove Excluded legacy/orphaned properties from the active deliverable.
 3. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
@@ -1962,32 +1962,39 @@ Field guidance:
 ## Priority or company-specific instructions
 {priority_notes or 'No additional priorities were provided.'}
 
-## Required deliverable
-Create an editable spreadsheet with one property per row and the exact headings above.
+## Required deliverable — CSV files only
+Create the research deliverable as downloadable CSV file(s) only. Do not create or return an Excel workbook, Google Sheet, JSON file, PDF, Word document, Markdown table, or HTML table.
 
-The ACTIVE spreadsheet should contain only Current and Review properties. Excluded legacy/orphaned properties should be reported separately in the companion summary or a clearly separate worksheet/table and must not be counted as active properties.
+### Required primary file
+Create one primary CSV file named clearly for the company, for example:
+`company_name_active_properties.csv`
 
-Deliver the result as one of the following:
-- an Excel workbook (.xlsx);
-- a CSV file (.csv); or
-- an editable Google Sheet with a shareable viewer link.
+The primary CSV must:
+- contain one property per row;
+- use the exact column headings listed above, in the exact order provided;
+- contain only Current and Review properties;
+- exclude legacy/orphaned properties from the active rows and active property count;
+- preserve blank cells for genuinely unresolved values;
+- remain directly importable into Datablix without restructuring.
 
-Do not return only a narrative answer. The spreadsheet is the primary deliverable.
+### Excluded-property file
+If Excluded legacy/orphaned properties are found, create a second CSV file named, for example:
+`company_name_excluded_properties.csv`
 
-Include a short companion summary covering:
-- official inventory sources checked;
-- total Current properties;
-- total Review properties;
-- total Excluded legacy/orphaned pages;
-- possible duplicates;
-- unresolved conflicts;
-- genuine missing information;
-- secondary sources used;
-- assumptions and limitations; and
-- recommended human follow-up.
+Use the same exact headings where practical and include the exclusion status, evidence, exclusion reason, source URL, and reviewer notes. Do not mix excluded properties into the primary active-properties CSV.
+
+### Output behaviour
+- Generate actual downloadable `.csv` file(s) whenever the AI tool supports file creation.
+- Do not substitute a narrative report for the CSV.
+- Do not paste a Markdown table instead of creating the CSV file.
+- Do not provide Excel or Google Sheets as alternatives.
+- Keep commentary outside the files to an absolute minimum.
+- If the platform cannot create an attached/downloadable file, return raw RFC-style CSV text in a fenced `csv` code block as the fallback, with no surrounding narrative beyond a one-line limitation notice.
+
+CSV-only format rule: This requirement overrides any conflicting output-format instruction in saved company notes or elsewhere in this prompt. Company-specific instructions may change research priorities or content, but they must not change the required `.csv` output format.
 
 Additional output instructions:
-{output_notes or 'Keep the spreadsheet clean, editable, evidence-based, and ready for import into Datablix.'}
+{output_notes or 'Return clean, evidence-based CSV file(s) only, ready for direct import into Datablix.'}
 """
 
 def append_external_research_results(
@@ -3220,12 +3227,11 @@ def render_page_heading(label: str, title: str, description: str) -> None:
 
 
 def render_process_bar(active_section: str) -> None:
-    """Keep the full Project → Research → Review → Quality → Report → Export flow visible."""
+    """Keep the Project → Research → Review & Quality → Report → Export flow visible."""
     stages = [
         ("Project", "Research projects & companies"),
         ("Research", "Website scanner"),
-        ("Review", "Review records"),
-        ("Quality", "Progress & quality"),
+        ("Review & Quality", "Review records"),
         ("Report", "Analysis & report"),
         ("Export", "Downloads"),
     ]
@@ -3264,23 +3270,203 @@ def render_guidance(title: str, message: str) -> None:
 
 
 
-def render_review_navigation(active_section: str) -> None:
-    """Switch between record work and quality progress without another top-level tab."""
-    columns = st.columns(2)
-    options = [
-        ("Review records", "Records"),
-        ("Progress & quality", "Quality & progress"),
-    ]
-    for column, (section_name, label) in zip(columns, options):
-        with column:
+def _review_quality_company(qa_frame: pd.DataFrame) -> tuple[str | None, pd.DataFrame]:
+    """Choose the company whose fixed baseline and live quality progress are shown in Review."""
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    if qa_frame is None or qa_frame.empty or registry.empty:
+        return None, qa_frame.iloc[0:0].copy() if isinstance(qa_frame, pd.DataFrame) else pd.DataFrame()
+
+    available = registry.loc[
+        registry["Company ID"].astype(str).isin(set(qa_frame["Company ID"].astype(str)))
+    ].copy()
+    if available.empty:
+        return None, qa_frame.iloc[0:0].copy()
+
+    company_ids = available["Company ID"].astype(str).tolist()
+    active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+    default_index = company_ids.index(active_id) if active_id in company_ids else 0
+    selected_id = st.selectbox(
+        "Company for review and quality tracking",
+        company_ids,
+        index=default_index,
+        format_func=lambda company_id: company_label(
+            available.loc[available["Company ID"].eq(company_id)].iloc[0]
+        ),
+        key="db_review_quality_company",
+        help="The quality baseline is stored separately for each company.",
+    )
+    selected_qa = qa_frame.loc[
+        qa_frame["Company ID"].astype(str).eq(str(selected_id))
+    ].copy()
+    return str(selected_id), selected_qa
+
+
+def render_review_quality_baseline(qa_frame: pd.DataFrame) -> str | None:
+    """Render the fixed before-review quality snapshot at the top of Review."""
+    st.markdown("### Quality starting point")
+    st.caption(
+        "Capture this once before making review corrections. The baseline stays fixed while the live quality results change as you review records."
+    )
+    company_id, company_qa = _review_quality_company(qa_frame)
+    if not company_id:
+        st.info("Add company-linked building records before setting a quality baseline.")
+        return None
+
+    baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = pd.DataFrame()
+    company_baseline = baseline
+    if not company_baseline.empty and "Company ID" in company_baseline.columns:
+        company_baseline = company_baseline.loc[
+            company_baseline["Company ID"].astype(str).eq(company_id)
+        ].copy()
+    else:
+        company_baseline = pd.DataFrame()
+
+    baseline_exists = quality_baseline_exists(company_id)
+    meta = _quality_baseline_meta().get(company_id, {})
+    current_issues = len(qa_issue_rows(company_qa))
+    already_reviewed = int(
+        (
+            company_qa["Research Status"].eq("Completed")
+            | company_qa["Verification Status"].eq("Verified")
+            | company_qa["Record Decision"].isin(["Keep", "Update", "Possible Duplicate", "Remove"])
+        ).sum()
+    )
+
+    if not baseline_exists:
+        with st.container(border=True):
+            st.warning("Starting quality baseline has not been captured yet.")
+            if already_reviewed:
+                st.caption(
+                    f"{already_reviewed:,} record(s) already show review activity. Capturing now will create a baseline from the current state, not the original pre-review state."
+                )
+            baseline_metrics = st.columns(3)
+            baseline_metrics[0].metric("Records", f"{len(company_qa):,}")
+            baseline_metrics[1].metric("Current QA issues", f"{current_issues:,}")
+            baseline_metrics[2].metric(
+                "Needs verification",
+                f"{int(company_qa['Verification Status'].ne('Verified').sum()):,}",
+            )
             if st.button(
-                label,
-                type="primary" if active_section == section_name else "secondary",
+                "Capture starting quality baseline",
+                type="primary",
                 width="stretch",
-                key=f"db_review_subnav_{norm_header(section_name)}",
+                key="db_review_capture_baseline",
             ):
-                go_to(section_name)
+                captured = capture_quality_baseline(company_id)
+                st.session_state[S_FLASH] = (
+                    f"Starting quality baseline saved with {max(captured, 0):,} issue(s)."
+                )
                 st.rerun()
+    else:
+        impact = quality_impact_summary(company_qa, company_baseline)
+        impact_map = dict(zip(impact["Metric"], impact["Value"]))
+        starting_issues = int(
+            meta.get("starting_issue_count", impact_map.get("Baseline issues", 0)) or 0
+        )
+        captured_at = str(meta.get("captured_at", "") or "")
+        with st.container(border=True):
+            st.success("Starting quality baseline is locked for comparison.")
+            if captured_at:
+                st.caption(f"Captured: {captured_at.replace('T', ' ')}")
+            metrics = st.columns(4)
+            metrics[0].metric("Starting issues", f"{starting_issues:,}")
+            metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
+            metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
+            metrics[3].metric("New", f"{int(impact_map.get('New issues currently detected', 0)):,}")
+            if starting_issues == 0:
+                st.info("This is a valid zero-issue baseline. Datablix will still track new issues that appear later.")
+
+            with st.expander("Reset starting baseline"):
+                st.caption("Reset only when you intentionally want a new starting point.")
+                confirm_reset = st.checkbox(
+                    "I understand this replaces the original baseline.",
+                    key="db_review_quality_confirm_reset",
+                )
+                if st.button(
+                    "Reset baseline",
+                    disabled=not confirm_reset,
+                    width="stretch",
+                    key="db_review_quality_reset",
+                ):
+                    reset_quality_baseline(company_id)
+                    captured = capture_quality_baseline(company_id, replace=True)
+                    st.session_state[S_FLASH] = (
+                        f"Starting baseline reset with {max(captured, 0):,} issue(s)."
+                    )
+                    st.rerun()
+
+    return company_id
+
+
+def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | None) -> None:
+    """Show live after-review quality progress directly beneath the record editor."""
+    if not company_id:
+        return
+    company_qa = qa_frame.loc[
+        qa_frame["Company ID"].astype(str).eq(str(company_id))
+    ].copy()
+    if company_qa.empty:
+        return
+
+    st.divider()
+    st.markdown("### Quality progress")
+    st.caption(
+        "These live results update after every saved review. The starting baseline above does not change."
+    )
+
+    baseline = st.session_state.get(S_QA_BASELINE)
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = pd.DataFrame()
+    company_baseline = baseline
+    if not company_baseline.empty and "Company ID" in company_baseline.columns:
+        company_baseline = company_baseline.loc[
+            company_baseline["Company ID"].astype(str).eq(str(company_id))
+        ].copy()
+    else:
+        company_baseline = pd.DataFrame()
+
+    impact = quality_impact_summary(company_qa, company_baseline)
+    impact_map = dict(zip(impact["Metric"], impact["Value"]))
+    live_metrics = st.columns(5)
+    live_metrics[0].metric("Verified", f"{int(company_qa['Verification Status'].eq('Verified').sum()):,}")
+    live_metrics[1].metric("Critical", f"{int(company_qa['QA Status'].eq('Critical').sum()):,}")
+    live_metrics[2].metric("Warnings", f"{int(company_qa['Warning Count'].sum()):,}")
+    live_metrics[3].metric("Open gaps", f"{int(company_qa['Research Gap Count'].sum()):,}")
+    live_metrics[4].metric("Ready to use", f"{int(ready_mask(company_qa).sum()):,}")
+
+    if quality_baseline_exists(company_id):
+        progress_metrics = st.columns(4)
+        progress_metrics[0].metric("Baseline issues", f"{int(impact_map.get('Baseline issues', 0)):,}")
+        progress_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
+        progress_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
+        progress_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
+    else:
+        st.info("Capture the starting quality baseline above to enable before-and-after progress metrics.")
+
+    with st.expander("See quality details", expanded=False):
+        detail_tabs = st.tabs(["Current issues", "Research progress", "Field coverage"])
+        with detail_tabs[0]:
+            issues = issue_summary(company_qa)
+            if issues.empty:
+                st.success("No data-quality issues are currently flagged for this company.")
+            else:
+                st.dataframe(issues, width="stretch", hide_index=True)
+            attention_columns = [
+                "Record ID", "Working Record Label", "QA Status", "QA Flags",
+                "Research Gaps", "Follow-up Priority", "Record Readiness",
+            ]
+            attention = company_qa[
+                ~ready_mask(company_qa)
+                & ~company_qa["Record Readiness"].eq("Excluded from Listings")
+            ][attention_columns]
+            st.markdown("#### Records needing attention")
+            st.dataframe(attention, width="stretch", hide_index=True, height=360)
+        with detail_tabs[1]:
+            st.dataframe(research_log(company_qa).head(250), width="stretch", hide_index=True, height=460)
+        with detail_tabs[2]:
+            st.dataframe(field_coverage(company_qa), width="stretch", hide_index=True)
 
 
 def render_report_navigation(active_section: str) -> None:
@@ -3288,7 +3474,7 @@ def render_report_navigation(active_section: str) -> None:
     columns = st.columns(2)
     options = [
         ("Analysis & report", "Analysis & report"),
-        ("Downloads", "Downloads & save"),
+        ("Downloads", "Export"),
     ]
     for column, (section_name, label) in zip(columns, options):
         with column:
@@ -3344,8 +3530,8 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
         return (
             "Check progress and remaining gaps",
             "See which research is incomplete, which details are missing, and how fresh each source is.",
-            "Progress & quality",
-            "Check progress",
+            "Review records",
+            "Review quality progress",
         )
     return (
         "Export your selected columns",
@@ -3445,7 +3631,7 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
         next_title = "Resolve records needing attention"
         next_copy = f"Review {attention:,} record(s) with missing details, evidence, or decisions."
         next_section = "Review records"
-        next_button = "Review records"
+        next_button = "Review & quality"
     elif unverified:
         next_title = "Complete human verification"
         next_copy = f"Verify the remaining {unverified:,} collected record(s)."
@@ -4521,7 +4707,7 @@ if S_WORKING not in st.session_state:
         ("Project", "Create or open the container for the assignment."),
         ("Company", "Register and select one company inside the project."),
         ("Research", "Generate the company research prompt, import the completed spreadsheet, or add a building manually."),
-        ("Finish", "Review, verify, report, and save the project."),
+        ("Finish", "Review & quality, report, and export the project."),
     ]
     for column, (heading, copy) in zip(flow_columns, flow_items):
         with column:
@@ -4550,7 +4736,6 @@ all_sections = [
     "Research projects & companies",
     "Website scanner",
     "Review records",
-    "Progress & quality",
     "Analysis & report",
     "Downloads",
 ]
@@ -4558,8 +4743,7 @@ primary_sections = all_sections.copy()
 NAV_LABELS = {
     "Research projects & companies": "Project",
     "Website scanner": "Research",
-    "Review records": "Review",
-    "Progress & quality": "Quality",
+    "Review records": "Review & Quality",
     "Analysis & report": "Report",
     "Downloads": "Export",
 }
@@ -4567,10 +4751,11 @@ PRIMARY_ACTIVE_SECTION = {section_name: section_name for section_name in all_sec
 legacy_sections = {
     "Review & edit": "Review records",
     "Research": "Website scanner",
-    "Data quality": "Progress & quality",
+    "Data quality": "Review records",
     "Export": "Downloads",
     "Review and edit records": "Review records",
-    "Progress and data quality": "Progress & quality",
+    "Progress & quality": "Review records",
+    "Progress and data quality": "Review records",
     "Download your work": "Downloads",
     "Analysis": "Analysis & report",
     "Report": "Analysis & report",
@@ -4629,7 +4814,7 @@ if st.session_state.get(S_PROJECT_ROLE) == "viewer":
 render_process_bar(section)
 
 
-if not has_records and section in ["Progress & quality", "Analysis & report", "Downloads"]:
+if not has_records and section in ["Analysis & report", "Downloads"]:
     st.info(
         "This project has no building records yet. Select a company, generate its research prompt, import the completed spreadsheet, or add the first building manually."
     )
@@ -5203,7 +5388,7 @@ elif section == "Overview":
             st.session_state[S_MANUAL_ENTRY_OPEN] = True
             go_to("Review records")
             st.rerun()
-        if quick_4.button("Review records", width="stretch"):
+        if quick_4.button("Review & quality", width="stretch"):
             go_to("Review records")
             st.rerun()
 
@@ -5272,7 +5457,7 @@ elif section == "Website scanner":
     render_page_heading(
         "RESEARCH",
         "Company website research",
-        "Generate one strong editable prompt, use it with the AI tool of your choice, and import the completed spreadsheet into Datablix for validation and human review.",
+        "Generate one strong editable prompt, use it with the AI tool of your choice, and import the completed CSV into Datablix for validation and human review.",
     )
     st.caption(f"Workspace build: {DATABLIX_BUILD}")
 
@@ -5294,7 +5479,7 @@ elif section == "Website scanner":
 
     st.subheader("1. Prepare the website research prompt")
     st.caption(
-        "Datablix personalizes one comprehensive prompt for this company. Every part remains editable before you copy or download it."
+        "Datablix personalizes one comprehensive prompt for this company. The prompt requires CSV output and remains editable before you copy or download it."
     )
 
     company_rows = working.loc[working["Company ID"].astype(str).eq(company_id)].copy()
@@ -5328,9 +5513,9 @@ elif section == "Website scanner":
         "contact details, and other requested fields before declaring information missing. Preserve exact evidence and flag uncertain inventory for review."
     )
     default_output_notes = (
-        "Use one row per unique Current or Review property and keep the exact requested headings. Preserve blanks for genuinely unknown values. "
-        "Do not mix Excluded legacy/orphaned properties into the active rows or active property count; report them separately. "
-        "Return an editable CSV, Excel workbook, or Google Sheet rather than only a narrative response."
+        "Return downloadable CSV file(s) only. Use one row per unique Current or Review property and keep the exact requested headings in the exact requested order. "
+        "Preserve blanks for genuinely unknown values. Do not mix Excluded legacy/orphaned properties into the active rows or active property count; place exclusions in a separate CSV only when needed. "
+        "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The primary CSV must be ready for direct Datablix import."
     )
 
     saved_scope = str(active_company.get("Prompt Scope", "") or "").strip() or default_scope
@@ -5383,7 +5568,7 @@ elif section == "Website scanner":
         value=saved_output_notes,
         height=105,
         key=f"db_prompt_output_{company_id}",
-        help="Persistent company-specific output rules.",
+        help="Persistent company-specific content rules. The CSV-only output format is enforced by the master prompt and cannot be overridden here.",
     )
 
     generated_prompt = build_company_website_research_prompt(
@@ -5467,7 +5652,7 @@ elif section == "Website scanner":
         st.caption("Use the copy icon in the code block after finishing your edits above.")
         st.code(editable_prompt, language="markdown")
     prompt_download_name = f"{safe_filename(company_name)}_website_research_prompt.txt"
-    prompt_actions = st.columns([1, 1, 1.4])
+    prompt_actions = st.columns(2)
     prompt_actions[0].download_button(
         "Download prompt",
         data=editable_prompt.encode("utf-8"),
@@ -5482,21 +5667,14 @@ elif section == "Website scanner":
         mime="text/csv",
         width="stretch",
     )
-    prompt_actions[2].download_button(
-        "Download Excel template",
-        data=excel_bytes({"Research Results": ai_research_template(company_name, company_website)}),
-        file_name=f"{safe_filename(company_name)}_research_template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width="stretch",
-    )
     st.info(
-        "Copy the editable prompt into ChatGPT, Claude, Gemini, Copilot, Perplexity, or another AI tool. Ask it to create the spreadsheet deliverable, review the result, then return here."
+        "Copy the editable prompt into ChatGPT, Claude, Gemini, Copilot, Perplexity, or another AI tool. Ask it to generate the downloadable CSV file(s), review the result, then return here."
     )
 
     st.divider()
-    st.subheader("2. Import the completed research deliverable")
+    st.subheader("2. Import the completed CSV research deliverable")
     st.caption(
-        "Datablix accepts CSV, Excel, or a shareable Google Sheets link. Imported findings remain unverified and continue through mapping, quality checks, duplicate review, and human approval."
+        "CSV is the required research-deliverable format. Datablix can still open legacy Excel or Google Sheets inputs when needed, but new AI research should be returned as CSV. Imported findings remain unverified and continue through mapping, quality checks, duplicate review, and human approval."
     )
     import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
     with import_tabs[0]:
@@ -5621,10 +5799,20 @@ elif section == "Website scanner":
 # -----------------------------
 elif section == "Review records":
     render_page_heading(
-        "REVIEW",
-        "Review and edit records",
-        "Correct listing information, complete research gaps, and record clear verification decisions.",
+        "REVIEW & QUALITY",
+        "Review records and track quality",
+        "Capture the starting data-quality position, correct and verify records, then measure what your review work improved.",
     )
+    st.caption(f"Workspace build: {DATABLIX_BUILD}")
+    render_guidance(
+        "Baseline first, corrections second.",
+        "Capture the quality starting point before making review corrections whenever possible. The baseline stays fixed while current quality updates after every save.",
+    )
+
+    review_quality_company_id = render_review_quality_baseline(qa) if has_records else None
+
+    st.divider()
+    st.markdown("### Review and verify records")
     render_guidance(
         "Blank values stay neutral.",
         "A blank means the information has not been confirmed; it does not automatically mean the feature or detail is unavailable.",
@@ -5878,178 +6066,8 @@ elif section == "Review records":
                     save_edits(edited, [c for c in edit_fields if c in edited.columns])
                     st.rerun()
 
-# -----------------------------
-# Progress and quality
-# -----------------------------
-elif section == "Progress & quality":
-    render_page_heading(
-        "QUALITY",
-        "Quality baseline and progress",
-        "Set a starting quality baseline before corrections, then track what was resolved, what remains, and which new issues appear.",
-    )
-    st.caption(f"Workspace build: {DATABLIX_BUILD}")
-
-    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
-    available_quality_companies = registry.loc[
-        registry["Company ID"].astype(str).isin(set(qa["Company ID"].astype(str)))
-    ].copy()
-
-    st.subheader("1. Choose the company to measure")
-    if available_quality_companies.empty:
-        st.info("Add at least one company-linked building record before setting a quality baseline.")
-        selected_quality_company_id = None
-        selected_quality_qa = qa.iloc[0:0].copy()
-    else:
-        quality_company_ids = available_quality_companies["Company ID"].astype(str).tolist()
-        active_quality_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
-        quality_index = quality_company_ids.index(active_quality_id) if active_quality_id in quality_company_ids else 0
-        selected_quality_company_id = st.selectbox(
-            "Company",
-            quality_company_ids,
-            index=quality_index,
-            format_func=lambda company_id: company_label(
-                available_quality_companies.loc[
-                    available_quality_companies["Company ID"].eq(company_id)
-                ].iloc[0]
-            ),
-            key="db_quality_company",
-        )
-        selected_quality_qa = qa.loc[
-            qa["Company ID"].astype(str).eq(selected_quality_company_id)
-        ].copy()
-
-    st.subheader("2. Set or review the starting baseline")
-    if selected_quality_company_id:
-        company_baseline = st.session_state.get(S_QA_BASELINE)
-        if not isinstance(company_baseline, pd.DataFrame):
-            company_baseline = pd.DataFrame()
-        if not company_baseline.empty and "Company ID" in company_baseline.columns:
-            company_baseline = company_baseline.loc[
-                company_baseline["Company ID"].astype(str).eq(selected_quality_company_id)
-            ].copy()
-        else:
-            company_baseline = pd.DataFrame()
-
-        current_issue_count = len(qa_issue_rows(selected_quality_qa))
-        baseline_exists = quality_baseline_exists(selected_quality_company_id)
-        baseline_meta = _quality_baseline_meta().get(selected_quality_company_id, {})
-
-        if not baseline_exists:
-            with st.container(border=True):
-                st.markdown("#### Starting point not set yet")
-                st.write(
-                    "Capture this once before you start correcting the company's QA issues. "
-                    "Datablix will use that snapshot to measure improvement."
-                )
-                baseline_metrics = st.columns(2)
-                baseline_metrics[0].metric("Current records", f"{len(selected_quality_qa):,}")
-                baseline_metrics[1].metric("Current QA issues", f"{current_issue_count:,}")
-                if st.button(
-                    "Set starting quality baseline",
-                    type="primary",
-                    width="stretch",
-                    key="db_quality_set_baseline",
-                ):
-                    captured = capture_quality_baseline(selected_quality_company_id)
-                    st.session_state[S_FLASH] = (
-                        f"Starting baseline saved with {max(captured, 0):,} issue(s)."
-                    )
-                    st.rerun()
-        else:
-            impact = quality_impact_summary(selected_quality_qa, company_baseline)
-            impact_map = dict(zip(impact["Metric"], impact["Value"]))
-            starting_issues = int(
-                baseline_meta.get(
-                    "starting_issue_count",
-                    impact_map.get("Baseline issues", 0),
-                ) or 0
-            )
-            captured_at = str(baseline_meta.get("captured_at", "") or "")
-            with st.container(border=True):
-                st.success("Starting quality baseline is saved.")
-                if captured_at:
-                    st.caption(f"Captured: {captured_at.replace('T', ' ')}")
-                impact_metrics = st.columns(4)
-                impact_metrics[0].metric("Starting issues", f"{starting_issues:,}")
-                impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
-                impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
-                impact_metrics[3].metric("New issues", f"{int(impact_map.get('New issues currently detected', 0)):,}")
-                if starting_issues == 0:
-                    st.info(
-                        "This is a valid zero-issue baseline. Datablix will still track any new issues that appear later."
-                    )
-
-                with st.expander("Reset this baseline"):
-                    confirm_reset = st.checkbox(
-                        "I understand this replaces the original starting point.",
-                        key="db_quality_confirm_reset",
-                    )
-                    if st.button(
-                        "Reset starting baseline",
-                        disabled=not confirm_reset,
-                        width="stretch",
-                        key="db_quality_reset_baseline",
-                    ):
-                        reset_quality_baseline(selected_quality_company_id)
-                        captured = capture_quality_baseline(selected_quality_company_id, replace=True)
-                        st.session_state[S_FLASH] = (
-                            f"Starting baseline reset with {max(captured, 0):,} issue(s)."
-                        )
-                        st.rerun()
-
-    st.divider()
-    st.subheader("3. Monitor current quality and research progress")
-
-    top_metrics = st.columns(5)
-    top_metrics[0].metric("Completed", f"{int(qa['Research Status'].eq('Completed').sum()):,}")
-    top_metrics[1].metric("Ready for review", f"{int(qa['Research Status'].eq('Ready for Review').sum()):,}")
-    top_metrics[2].metric("Critical", f"{int(qa['QA Status'].eq('Critical').sum()):,}")
-    top_metrics[3].metric("Quality warnings", f"{int(qa['Warning Count'].sum()):,}")
-    top_metrics[4].metric("Open field gaps", f"{int(qa['Research Gap Count'].sum()):,}")
-
-    progress_tabs = st.tabs([
-        "Quality issues",
-        "Research progress",
-        "Field coverage",
-        "Company progress",
-        "Draft profiles",
-    ])
-
-    with progress_tabs[0]:
-        issue_data = issue_summary(qa)
-        if issue_data.empty:
-            st.success("No data-quality issues are currently flagged.")
-        else:
-            st.caption("Review critical issues first, then work through the warnings.")
-            st.dataframe(issue_data, width="stretch", hide_index=True)
-        attention_columns = [
-            "Record ID", "Working Record Label", "QA Status", "QA Flags",
-            "Research Gaps", "Follow-up Priority", "Record Readiness",
-        ]
-        needs_attention = qa[
-            ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
-        ][attention_columns]
-        st.markdown("#### Records needing attention")
-        st.dataframe(needs_attention, width="stretch", hide_index=True, height=420)
-
-    with progress_tabs[1]:
-        st.caption("Review each record's source, research date, workflow status, and next action in one table.")
-        st.dataframe(research_log(qa).head(250), width="stretch", hide_index=True, height=540)
-
-    with progress_tabs[2]:
-        st.caption("See how often each rental property field is completed.")
-        st.dataframe(field_coverage(qa), width="stretch", hide_index=True)
-
-    with progress_tabs[3]:
-        st.caption("Track every assigned company, including companies that have not produced building records yet.")
-        st.dataframe(
-            company_progress_summary(qa, st.session_state.get(S_COMPANIES)),
-            width="stretch", hide_index=True, height=500,
-        )
-
-    with progress_tabs[4]:
-        st.caption("Draft descriptions are assembled from current rental property fields. Confirm every fact before use.")
-        st.dataframe(draft_profiles(qa).head(100), width="stretch", hide_index=True, height=520)
+    if has_records:
+        render_review_quality_progress(qa_checks(st.session_state[S_WORKING].copy()), review_quality_company_id)
 
 # -----------------------------
 # Analysis and report
@@ -6108,7 +6126,7 @@ elif section == "Analysis & report":
         if not quality_baseline_exists(selected_company_id):
             st.info(
                 "No starting quality baseline is saved for this company yet. "
-                "Open Quality to set it before using before-and-after metrics."
+                "Open Review & Quality to capture it before using before-and-after metrics."
             )
 
     metric_columns = st.columns(5)
@@ -6153,7 +6171,7 @@ elif section == "Analysis & report":
         )
         if not baseline_exists_for_scope:
             st.info(
-                "No starting quality baseline is saved for this scope. Open Quality to set one before using before-and-after metrics."
+                "No starting quality baseline is saved for this scope. Open Review & Quality to capture one before using before-and-after metrics."
             )
         elif int(impact_map.get("Baseline issues", 0)) == 0:
             st.info(
