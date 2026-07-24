@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Approved Export Flow 2026.07.23-v14"
+DATABLIX_BUILD = "Single Navigation Progress 2026.07.23-v16"
 
 # =========================================================
 # Configuration
@@ -3267,39 +3267,6 @@ def render_page_heading(label: str, title: str, description: str) -> None:
     )
 
 
-def render_process_bar(active_section: str) -> None:
-    """Keep the Project → Research → Review & Quality → Report → Export flow visible."""
-    stages = [
-        ("Project", "Research projects & companies"),
-        ("Research", "Website scanner"),
-        ("Review & Quality", "Review records"),
-        ("Report", "Analysis & report"),
-        ("Export", "Downloads"),
-    ]
-    active_index = next(
-        (index for index, (_, section_name) in enumerate(stages)
-         if section_name == active_section),
-        -1,
-    )
-    items = []
-    for index, (label, _section_name) in enumerate(stages):
-        state = (
-            "active" if index == active_index
-            else "complete" if 0 <= active_index and index < active_index
-            else "upcoming"
-        )
-        current = ' aria-current="step"' if state == "active" else ""
-        items.append(
-            f'<div class="db-process-item {state}"{current}>'
-            f'<span class="db-process-dot" aria-hidden="true"></span>'
-            f'<span>{escape(label)}</span></div>'
-        )
-    st.markdown(
-        '<div class="db-process" aria-label="Rental property research workflow">'
-        + "".join(items) + "</div>",
-        unsafe_allow_html=True,
-    )
-
 def render_guidance(title: str, message: str) -> None:
     """Place short decision-support copy beside the task it explains."""
     st.markdown(
@@ -4435,39 +4402,17 @@ button[data-testid="stSidebarCollapseButton"]::after{
     opacity:.72;
 }
 
-/* Persistent mental model without numbering or dense instructions. */
-.db-process{
-    display:grid;
-    grid-template-columns:repeat(6,minmax(0,1fr));
-    gap:.55rem;
-    margin:.1rem 0 1.25rem;
+/* One navigation row only: progress lives inside the main navigation buttons. */
+.db-nav-context{
+    margin:.35rem 0 1.15rem;
+    padding:.2rem .15rem;
+    font-size:.86rem;
+    line-height:1.45;
+    opacity:.72;
 }
-.db-process-item{
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    gap:.45rem;
-    min-height:2.35rem;
-    padding:.45rem .7rem;
-    border:1px solid var(--db-border);
-    border-radius:9px;
-    background:var(--db-soft);
-    font-size:.82rem;
-    font-weight:650;
-    opacity:.68;
-}
-.db-process-item.active{
-    border-color:var(--db-accent-edge);
-    background:var(--db-accent-soft);
+.db-nav-context strong{
     color:var(--db-accent-strong);
-    opacity:1;
-}
-.db-process-item.complete{opacity:.86}
-.db-process-dot{
-    width:.48rem;
-    height:.48rem;
-    border-radius:50%;
-    background:currentColor;
+    font-weight:750;
 }
 
 /* Contextual help is visually quieter than an alert and stronger than a caption. */
@@ -4574,7 +4519,6 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 }
 
 @media (max-width:760px){
-    .db-process{grid-template-columns:repeat(2,minmax(0,1fr))}
     .db-workspace-strip{gap:.4rem .8rem}
 }
 </style>
@@ -4873,12 +4817,64 @@ st.markdown(
 )
 
 visible_active_section = PRIMARY_ACTIVE_SECTION[st.session_state["db_section"]]
-nav_columns = st.columns(len(primary_sections))
+
+# Progress is shown directly in the main navigation so there is only one workflow row.
+active_company_id = (
+    str(active_header_company.get("Company ID", "")).strip()
+    if active_header_company is not None
+    else ""
+)
+company_records = (
+    working.loc[working["Company ID"].astype(str).eq(active_company_id)].copy()
+    if active_company_id and "Company ID" in working.columns
+    else working.iloc[0:0].copy()
+)
+company_qa = (
+    qa.loc[qa["Company ID"].astype(str).eq(active_company_id)].copy()
+    if active_company_id and isinstance(qa, pd.DataFrame) and "Company ID" in qa.columns
+    else pd.DataFrame()
+)
+review_population = (
+    company_qa.loc[~company_qa["Record Decision"].eq("Remove")].copy()
+    if not company_qa.empty and "Record Decision" in company_qa.columns
+    else company_qa
+)
+
+stage_complete = {
+    "Research projects & companies": not project_registry.empty,
+    "Website scanner": not company_records.empty,
+    "Review records": bool(
+        not review_population.empty
+        and approved_for_export_mask(review_population).all()
+    ),
+    # Report and Export are outputs rather than gates; they remain unmarked until active.
+    "Analysis & report": False,
+    "Downloads": False,
+}
+
+NAV_DESCRIPTIONS = {
+    "Research projects & companies": "Set up your project and company workspaces.",
+    "Website scanner": "Research the selected company and add or import building records.",
+    "Review records": "Capture the quality baseline, review records, and approve clean records for export.",
+    "Analysis & report": "Summarize coverage, quality, assumptions, limitations, and progress.",
+    "Downloads": "Choose the company, records, and columns, preview them, then download CSV.",
+}
+
+nav_columns = st.columns([1, 1, 1.18, 1, 1])
 for nav_column, section_key in zip(nav_columns, primary_sections):
+    is_active = visible_active_section == section_key
+    base_label = NAV_LABELS[section_key]
+    if is_active:
+        button_label = f"● {base_label}"
+    elif stage_complete.get(section_key, False):
+        button_label = f"✓ {base_label}"
+    else:
+        button_label = base_label
+
     with nav_column:
         if st.button(
-            NAV_LABELS[section_key],
-            type="primary" if visible_active_section == section_key else "secondary",
+            button_label,
+            type="primary" if is_active else "secondary",
             width="stretch",
             key=f"db_nav_{norm_header(section_key)}",
         ):
@@ -4886,9 +4882,13 @@ for nav_column, section_key in zip(nav_columns, primary_sections):
             st.rerun()
 
 section = st.session_state["db_section"]
+st.markdown(
+    f'<div class="db-nav-context"><strong>{escape(NAV_LABELS[section])}</strong> — '
+    f'{escape(NAV_DESCRIPTIONS[section])}</div>',
+    unsafe_allow_html=True,
+)
 if st.session_state.get(S_PROJECT_ROLE) == "viewer":
     st.info("You have view-only access to this project. Ask the owner for Editor access to make changes.")
-render_process_bar(section)
 
 
 if not has_records and section in ["Analysis & report", "Downloads"]:
@@ -6378,25 +6378,28 @@ elif section == "Downloads":
             )
 
     st.subheader("3. Choose columns")
-    exportable_columns = [
-        column for column in working.columns
-        if column in export_source.columns
-    ]
-    for derived_column in [
-        "Export Status", "Record Readiness", "QA Status", "QA Flags", "QA Flag Count",
-        "Research Gaps", "Research Gap Count", "Follow-up Priority",
-    ]:
-        if derived_column in export_source.columns and derived_column not in exportable_columns:
-            exportable_columns.append(derived_column)
 
+    # Start the custom export with the exact directory/sample listing fields.
+    # This gives the user familiar submission-ready names while still allowing
+    # any Datablix research, QA, or audit column to be added afterward.
+    listing_view = listing_export(export_source)
+    export_view = listing_view.copy()
+    for column in export_source.columns:
+        if column not in export_view.columns:
+            export_view[column] = export_source[column]
+
+    exportable_columns = list(export_view.columns)
     default_columns = [
-        column for column in [
-            "Building Name", "Street Address", "City", "Postal Code",
-            "Building Classification", "Number of Apartments", "Management/Owner",
-            "Phone", "Primary Email", "Website",
-        ]
+        column for column in LISTING_COLUMNS
         if column in exportable_columns
     ]
+
+    # Reset to the new default once after this export-layout update, then preserve
+    # any choices the user makes during the rest of the session.
+    export_defaults_version = "listing_columns_v15"
+    if st.session_state.get("db_export_defaults_version") != export_defaults_version:
+        st.session_state["db_custom_export_columns"] = default_columns
+        st.session_state["db_export_defaults_version"] = export_defaults_version
 
     export_controls = st.columns(2)
     if export_controls[0].button("Select all columns", width="stretch", key="db_export_select_all"):
@@ -6426,7 +6429,7 @@ elif section == "Downloads":
     elif not selected_columns:
         st.warning("Choose at least one column to create the CSV.")
     else:
-        export_table = export_source[selected_columns].copy()
+        export_table = export_view[selected_columns].copy()
         preview_metrics = st.columns(2)
         preview_metrics[0].metric("Rows to download", f"{len(export_table):,}")
         preview_metrics[1].metric("Selected columns", f"{len(selected_columns):,}")
