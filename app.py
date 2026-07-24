@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Straight-Line Navigation 2026.07.23-v19"
+DATABLIX_BUILD = "Five-Button Straight Line 2026.07.23-v20"
 
 # =========================================================
 # Configuration
@@ -4402,30 +4402,36 @@ button[data-testid="stSidebarCollapseButton"]::after{
     opacity:.72;
 }
 
-/* One clean navigation row. The active page is indicated by button styling;
-   small arrows show workflow direction without adding status symbols to labels. */
-.db-nav-arrow{
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    min-height:2.55rem;
+/* Five-button workflow navigation.
+   Arrows are drawn in the gaps with CSS so they do not consume Streamlit columns. */
+.st-key-db_nav_row div[data-testid="stHorizontalBlock"]{
+    flex-wrap:nowrap !important;
+    gap:1.8rem !important;
+    align-items:center !important;
+}
+.st-key-db_nav_row div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]{
+    position:relative !important;
+    flex:1 1 0 !important;
+    min-width:0 !important;
+    width:auto !important;
+}
+.st-key-db_nav_row div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:not(:last-child)::after{
+    content:"→";
+    position:absolute;
+    right:-1.15rem;
+    top:50%;
+    transform:translateY(-50%);
     color:var(--db-muted);
-    font-size:.68rem;
-    opacity:.48;
-    user-select:none;
+    font-size:.72rem;
+    opacity:.5;
+    pointer-events:none;
+    z-index:4;
 }
-/* Keep the complete workflow navigation on one straight horizontal line. */
-div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] button{
-    white-space: nowrap !important;
-    min-width: 0 !important;
+.st-key-db_nav_row button{
+    width:100% !important;
+    white-space:nowrap !important;
+    min-width:0 !important;
 }
-
-/* Keep the five workflow buttons on one line on standard desktop widths. */
-div[data-testid="stHorizontalBlock"] button[kind="primary"],
-div[data-testid="stHorizontalBlock"] button[kind="secondary"]{
-    white-space:nowrap;
-}
-
 .db-nav-context{
     margin:.35rem 0 1.15rem;
     padding:.2rem .15rem;
@@ -4871,31 +4877,21 @@ NAV_DESCRIPTIONS = {
     "Downloads": "Choose the company, records, and columns, preview them, then download CSV.",
 }
 
-# Keep navigation labels clean. Small arrows indicate workflow direction;
-# the current section is identified only by the blue primary button.
-nav_columns = st.columns([1, 0.025, 1, 0.025, 1, 0.025, 1, 0.025, 1], gap="small")
-button_columns = nav_columns[0::2]
-arrow_columns = nav_columns[1::2]
-
-for index, (nav_column, section_key) in enumerate(zip(button_columns, primary_sections)):
-    is_active = visible_active_section == section_key
-
-    with nav_column:
-        if st.button(
-            NAV_LABELS[section_key],
-            type="primary" if is_active else "secondary",
-            width="stretch",
-            key=f"db_nav_{norm_header(section_key)}",
-        ):
-            go_to(section_key)
-            st.rerun()
-
-    if index < len(arrow_columns):
-        with arrow_columns[index]:
-            st.markdown(
-                '<div class="db-nav-arrow" aria-hidden="true">→</div>',
-                unsafe_allow_html=True,
-            )
+# Keep all five navigation buttons in one horizontal row.
+# Arrows are added visually through CSS and therefore consume no columns.
+with st.container(key="db_nav_row"):
+    nav_columns = st.columns(5, gap="small")
+    for nav_column, section_key in zip(nav_columns, primary_sections):
+        is_active = visible_active_section == section_key
+        with nav_column:
+            if st.button(
+                NAV_LABELS[section_key],
+                type="primary" if is_active else "secondary",
+                width="stretch",
+                key=f"db_nav_{norm_header(section_key)}",
+            ):
+                go_to(section_key)
+                st.rerun()
 
 section = st.session_state["db_section"]
 st.markdown(
