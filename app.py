@@ -15,6 +15,8 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Alignment, Border, Font, Side
+from datablix_scanner_panel import render_website_scanner_panel
 
 try:
     from supabase import Client, create_client
@@ -24,12 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-def render_website_scanner_panel(*args, **kwargs):
-    """Lazy-load the optional scanner only when research scanning is actually used."""
-    from datablix_scanner_panel import render_website_scanner_panel as _render_scanner
-    return _render_scanner(*args, **kwargs)
-
-DATABLIX_BUILD = "Ottawa-First + Lean Runtime 2026.07.24-v43"
+DATABLIX_BUILD = "Ottawa Website Scan + Classification Lookup Exception 2026.07.24-v46"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -1132,8 +1129,6 @@ def _excel_display_value(value):
 
 def _write_listing_blocks_sheet(ws, listings):
     """Write one apartment building at a time in the supplied two-column layout."""
-    from openpyxl.styles import Alignment, Border, Font, Side
-
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -1410,42 +1405,6 @@ def _canonical_city(value) -> str:
     return key
 
 
-def _ottawa_scope_status(row) -> str:
-    """Return ``in``, ``out`` or ``unknown`` for the fixed Ottawa project scope.
-
-    Explicit non-Ottawa city/province/country evidence is treated as out of scope.
-    Blank locality data is preserved for human review instead of being guessed.
-    """
-    city_raw = safe_text(row.get("City", ""))
-    province_raw = safe_text(row.get("Province", ""))
-    country_raw = safe_text(row.get("Country", ""))
-
-    if province_raw and province_code(province_raw) not in {"ON", ""}:
-        return "out"
-    if country_raw and norm_header(country_raw) not in {"canada", "ca"}:
-        return "out"
-
-    if city_raw:
-        return "in" if _canonical_city(city_raw) == "ottawa" else "out"
-    return "unknown"
-
-
-def filter_to_ottawa_scope(df: pd.DataFrame, *, keep_unknown: bool = True) -> pd.DataFrame:
-    """Keep only rows compatible with the City of Ottawa project boundary."""
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
-    status = df.apply(_ottawa_scope_status, axis=1)
-    allowed = status.eq("in") | (status.eq("unknown") if keep_unknown else False)
-    return df.loc[allowed].reset_index(drop=True).copy()
-
-
-def _scope_counts(df: pd.DataFrame) -> dict:
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return {"in": 0, "out": 0, "unknown": 0}
-    values = df.apply(_ottawa_scope_status, axis=1).value_counts().to_dict()
-    return {key: int(values.get(key, 0)) for key in ("in", "out", "unknown")}
-
-
 def _canonical_phone(value) -> str:
     digits = re.sub(r"\D+", "", safe_text(value))
     if len(digits) > 10:
@@ -1471,44 +1430,28 @@ def _canonical_url(value) -> str:
 def _address_signature(value) -> dict:
     """Return civic-number and street signatures from a Street Address value.
 
-    Handles compound values such as ``1161-1171 Wellington Street``,
-    ``1140/1150 Fisher Avenue`` and ``2816, 2822 & 2826 Sandalwood Drive``.
-    Datablix intentionally does NOT invent intermediate civic numbers.
+    Compound values such as ``1161-1171 Wellington Street`` and
+    ``1140/1150 Fisher Avenue`` expose every explicitly written civic number.
+    Datablix intentionally does NOT invent intermediate numbers in a range.
     """
     raw = _fold_identity_text(value)
     if not raw:
         return {"numbers": tuple(), "street": "", "street_lenient": "", "full": ""}
 
-    # Remove a trailing locality/province/country portion only when it is clearly
-    # location metadata. Do NOT split on the first comma because commas can separate
-    # civic numbers in legitimate multi-address properties.
-    street_part = raw
+    # A research tool occasionally puts city/province/postal text into the Street
+    # Address cell.  Comparison uses only the street-address part before a comma.
+    street_part = raw.split(",", 1)[0].strip()
     street_part = re.sub(
         r"\b[abceghj-nprstvxy]\d[abceghj-nprstv-z][ -]?\d[abceghj-nprstv-z]\d\b",
         " ",
         street_part,
         flags=re.I,
     )
-    locality_terms = sorted(
-        {safe_text(v).lower() for v in OTTAWA_LOCALITY_LABELS}
-        | {"ottawa", "ontario", "on", "canada"},
-        key=len,
-        reverse=True,
-    )
-    locality_pattern = "|".join(re.escape(v) for v in locality_terms if v)
-    if locality_pattern:
-        street_part = re.sub(
-            rf",\s*(?:{locality_pattern})(?:\s*,.*)?$",
-            "",
-            street_part,
-            flags=re.I,
-        )
-    street_part = re.sub(r"\s+", " ", street_part).strip(" ,")
+    street_part = re.sub(r"\s+", " ", street_part).strip()
 
-    # Capture explicitly listed civic numbers at the beginning. Commas are valid
-    # separators here (e.g. 2816, 2822 & 2826 Sandalwood Drive).
+    # Capture an explicitly listed civic-number sequence at the beginning.
     prefix = re.match(
-        r"^\s*((?:\d+[a-z]?)(?:\s*(?:,|-|/|&|\band\b)\s*\d+[a-z]?)*)(?:\s+)(.+)$",
+        r"^\s*((?:\d+[a-z]?)(?:\s*(?:-|/|&|\band\b)\s*\d+[a-z]?)*)(?:\s+)(.+)$",
         street_part,
         flags=re.I,
     )
@@ -1591,21 +1534,29 @@ def _discovery_keys_for_row(row) -> set[str]:
     return keys
 
 
-def _source_match_score_identity(research: dict, source: dict) -> tuple[int, str]:
-    """Score two pre-normalized identities conservatively."""
+def _source_match_score(research_row, source_row) -> tuple[int, str]:
+    """Score one research row against one Starting Data row conservatively."""
+    research = _row_identity(research_row)
+    source = _row_identity(source_row)
     ra = research["address"]
     sa = source["address"]
 
     numbers_overlap = bool(set(ra["numbers"]) & set(sa["numbers"]))
     research_numbers_are_component = bool(
-        ra["numbers"] and sa["numbers"] and set(ra["numbers"]).issubset(set(sa["numbers"]))
+        ra["numbers"]
+        and sa["numbers"]
+        and set(ra["numbers"]).issubset(set(sa["numbers"]))
     )
     street_exact = bool(ra["street"] and ra["street"] == sa["street"])
-    street_lenient = bool(ra["street_lenient"] and ra["street_lenient"] == sa["street_lenient"])
+    street_lenient = bool(
+        ra["street_lenient"]
+        and ra["street_lenient"] == sa["street_lenient"]
+    )
     postal_same = bool(research["postal"] and research["postal"] == source["postal"])
     city_same = bool(research["city"] and research["city"] == source["city"])
     name_same = bool(research["name"] and research["name"] == source["name"])
 
+    # Strongest signal: same civic address after standardizing street wording.
     if numbers_overlap and street_exact:
         if postal_same:
             return 100, "same civic address and postal code"
@@ -1613,6 +1564,7 @@ def _source_match_score_identity(research: dict, source: dict) -> tuple[int, str
             return 97, "same civic address and Ottawa locality"
         return 93, "same civic address"
 
+    # Directional text is often omitted from either the research or source file.
     if numbers_overlap and street_lenient:
         if postal_same:
             return 99, "same civic address after street-direction normalization"
@@ -1620,6 +1572,8 @@ def _source_match_score_identity(research: dict, source: dict) -> tuple[int, str
             return 95, "same civic address after Ottawa/street normalization"
         return 90, "same civic address after street normalization"
 
+    # A single AI row may represent one component of a combined source address,
+    # e.g. 1171 Wellington versus 1161-1171 Wellington.
     if research_numbers_are_component and street_lenient:
         if postal_same:
             return 99, "research address is a component of a combined source address"
@@ -1627,6 +1581,7 @@ def _source_match_score_identity(research: dict, source: dict) -> tuple[int, str
             return 95, "research address is a component of a combined Ottawa source address"
         return 90, "research address is a component of a combined source address"
 
+    # Property-specific URLs can rescue a formatting-heavy address mismatch.
     url_pairs = [
         (research["property_url"], source["property_url"]),
         (research["property_url"], source["website"]),
@@ -1637,6 +1592,7 @@ def _source_match_score_identity(research: dict, source: dict) -> tuple[int, str
             return 91, "same property website with compatible location"
         return 82, "same property website"
 
+    # Building name is supporting evidence, not enough by itself to force a match.
     if name_same and postal_same:
         return 88, "same building name and postal code"
     if name_same and city_same and street_lenient:
@@ -1648,114 +1604,8 @@ def _source_match_score_identity(research: dict, source: dict) -> tuple[int, str
     return 0, "no credible source match"
 
 
-def _source_match_score(research_row, source_row) -> tuple[int, str]:
-    """Backward-compatible wrapper around the indexed identity scorer."""
-    return _source_match_score_identity(_row_identity(research_row), _row_identity(source_row))
-
-
-def _build_source_match_index(source_frame: pd.DataFrame) -> dict:
-    """Build small lookup buckets so each research row avoids a full source scan."""
-    identities = []
-    index = {
-        "civic_strict": {},
-        "civic_lenient": {},
-        "postal": {},
-        "name_postal": {},
-        "name_city": {},
-        "url": {},
-    }
-
-    def add(bucket: str, key, position: int):
-        if not key:
-            return
-        index[bucket].setdefault(key, set()).add(position)
-
-    for position, (_, row) in enumerate(source_frame.iterrows()):
-        identity = _row_identity(row)
-        identities.append(identity)
-        address = identity["address"]
-        for number in address["numbers"]:
-            if address["street"]:
-                add("civic_strict", (number, address["street"]), position)
-            if address["street_lenient"]:
-                add("civic_lenient", (number, address["street_lenient"]), position)
-        add("postal", identity["postal"], position)
-        if identity["name"] and identity["postal"]:
-            add("name_postal", (identity["name"], identity["postal"]), position)
-        if identity["name"] and identity["city"]:
-            add("name_city", (identity["name"], identity["city"]), position)
-        for url_value in {identity["property_url"], identity["website"], identity["source_url"]}:
-            add("url", url_value, position)
-
-    index["identities"] = identities
-    return index
-
-
-def _source_candidate_positions(identity: dict, source_index: dict) -> set[int]:
-    """Return only plausible source rows for one research identity."""
-    candidates = set()
-    address = identity["address"]
-    for number in address["numbers"]:
-        if address["street"]:
-            candidates |= source_index["civic_strict"].get((number, address["street"]), set())
-        if address["street_lenient"]:
-            candidates |= source_index["civic_lenient"].get((number, address["street_lenient"]), set())
-    if identity["name"] and identity["postal"]:
-        candidates |= source_index["name_postal"].get((identity["name"], identity["postal"]), set())
-    if identity["postal"]:
-        candidates |= source_index["postal"].get(identity["postal"], set())
-    if identity["name"] and identity["city"]:
-        candidates |= source_index["name_city"].get((identity["name"], identity["city"]), set())
-    for url_value in {identity["property_url"], identity["website"], identity["source_url"]}:
-        if url_value:
-            candidates |= source_index["url"].get(url_value, set())
-    return candidates
-
-
-def enforce_ottawa_source_state() -> int:
-    """Migrate restored source versions to Ottawa-compatible structured records.
-
-    The original uploaded workbook bytes remain preserved; only the structured
-    comparison baseline is narrowed to the fixed City of Ottawa project scope.
-    """
-    versions = st.session_state.get(S_SOURCE_VERSIONS, [])
-    if not isinstance(versions, list) or not versions:
-        return 0
-    total_removed = 0
-    updated_versions = []
-    active_records = None
-    for version in versions:
-        if not isinstance(version, dict):
-            updated_versions.append(version)
-            continue
-        copied = dict(version)
-        records = copied.get("records")
-        if isinstance(records, pd.DataFrame):
-            counts = _scope_counts(records)
-            filtered = filter_to_ottawa_scope(records, keep_unknown=True)
-            removed = max(0, len(records) - len(filtered))
-            total_removed += removed
-            copied["records"] = filtered
-            meta = dict(copied.get("meta", {}))
-            meta.setdefault("source_records_before_ottawa_filter", len(records))
-            meta["source_records"] = len(filtered)
-            meta["out_of_scope_source_records"] = int(meta.get("out_of_scope_source_records", 0) or 0) + removed
-            meta["ottawa_scope_unknown_records"] = counts.get("unknown", 0)
-            copied["meta"] = meta
-            if bool(copied.get("is_active")):
-                active_records = filtered.copy()
-        updated_versions.append(copied)
-    st.session_state[S_SOURCE_VERSIONS] = updated_versions
-    if isinstance(active_records, pd.DataFrame):
-        st.session_state[S_ORIGINAL] = active_records.copy()
-        active = next((v for v in reversed(updated_versions) if isinstance(v, dict) and bool(v.get("is_active"))), None)
-        if active:
-            st.session_state[S_SOURCE_BASELINE_META] = dict(active.get("meta", {}))
-    return total_removed
-
-
 def current_starting_source_records() -> pd.DataFrame:
-    """Return only the active Ottawa-compatible structured Starting Data."""
+    """Return the active structured Starting Data with a safe legacy fallback."""
     versions = st.session_state.get(S_SOURCE_VERSIONS, [])
     if isinstance(versions, list):
         for version in reversed(versions):
@@ -1763,48 +1613,39 @@ def current_starting_source_records() -> pd.DataFrame:
                 continue
             records = version.get("records")
             if isinstance(records, pd.DataFrame) and not records.empty:
-                return filter_to_ottawa_scope(records, keep_unknown=True)
+                return records.copy()
         for version in reversed(versions):
             if not isinstance(version, dict):
                 continue
             records = version.get("records")
             if isinstance(records, pd.DataFrame) and not records.empty:
-                return filter_to_ottawa_scope(records, keep_unknown=True)
+                return records.copy()
 
     fallback = st.session_state.get(S_ORIGINAL)
     if isinstance(fallback, pd.DataFrame) and not fallback.empty:
-        return filter_to_ottawa_scope(fallback, keep_unknown=True)
+        return fallback.copy()
     return pd.DataFrame()
 
 
 def classify_discovery_status(df, original=None):
-    """Classify research rows using Ottawa-first indexed Starting Data matching.
+    """Classify website-research rows against the current project Starting Data.
 
-    Unlike earlier builds, this function does not compare every research row with
-    every source row. It builds source lookup buckets once, then checks only plausible
-    candidates. Explicit out-of-Ottawa rows are excluded from discovery claims.
+    The status is deliberately conservative:
+    * strong normalized source match -> Existing Source Record;
+    * plausible/ambiguous source candidate -> Needs Classification;
+    * Newly Discovered -> only after every Starting Data row fails the stronger
+      identity checks and the research row has current-property evidence.
     """
     out = normalize_workflow(df.copy())
     source_frame = pd.DataFrame()
     if isinstance(original, pd.DataFrame) and not original.empty:
-        source_frame = filter_to_ottawa_scope(normalize_workflow(original.copy()), keep_unknown=True)
-
-    source_index = _build_source_match_index(source_frame) if not source_frame.empty else None
-    source_identities = source_index.get("identities", []) if source_index else []
+        source_frame = normalize_workflow(original.copy())
 
     for idx, row in out.iterrows():
         decision = safe_text(row.get("Record Decision", ""))
         inventory_status = safe_text(row.get("Current Inventory Status", "")).lower()
         verification_status = safe_text(row.get("Verification Status", ""))
-        scope_status = _ottawa_scope_status(row)
 
-        if scope_status == "out":
-            out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
-            out.at[idx, "Reviewer Notes"] = _append_note(
-                row.get("Reviewer Notes", ""),
-                "Excluded from project comparison because the public address is outside the City of Ottawa scope.",
-            )
-            continue
         if decision == "Possible Duplicate":
             out.at[idx, "Directory Discovery Status"] = "Possible Duplicate"
             continue
@@ -1812,50 +1653,47 @@ def classify_discovery_status(df, original=None):
             out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
             continue
 
-        if not source_index:
+        if source_frame.empty:
             out.at[idx, "Directory Discovery Status"] = "Needs Classification"
             continue
 
-        identity = _row_identity(row)
-        candidate_positions = _source_candidate_positions(identity, source_index)
         best_score = 0
         best_reason = "no credible source match"
-        for position in candidate_positions:
-            if position >= len(source_identities):
-                continue
-            score, reason = _source_match_score_identity(identity, source_identities[position])
+        for _, source_row in source_frame.iterrows():
+            score, reason = _source_match_score(row, source_row)
             if score > best_score:
                 best_score = score
                 best_reason = reason
-                if score >= 100:
+                if best_score >= 100:
                     break
 
         if best_score >= 88:
             out.at[idx, "Directory Discovery Status"] = "Existing Source Record"
             continue
+
+        # A plausible source candidate blocks an automatic "new" claim.  Human
+        # review is safer than overstating discovery when address evidence conflicts.
         if best_score >= 72:
             out.at[idx, "Directory Discovery Status"] = "Needs Classification"
             continue
 
+        identity = _row_identity(row)
         has_property_identity = bool(
-            identity["address"]["numbers"] and identity["address"]["street_lenient"]
+            identity["address"]["numbers"]
+            and identity["address"]["street_lenient"]
         ) or bool(identity["property_url"]) or bool(identity["name"] and identity["postal"])
         current_evidence = (
             inventory_status.startswith("current")
-            or (verification_status == "Verified" and decision in {"Keep", "Update"})
+            or (
+                verification_status == "Verified"
+                and decision in {"Keep", "Update"}
+            )
         )
-
-        # Unknown locality evidence is never enough to declare a new Ottawa property.
-        if scope_status == "unknown":
-            out.at[idx, "Directory Discovery Status"] = "Needs Classification"
-            out.at[idx, "Reviewer Notes"] = _append_note(
-                row.get("Reviewer Notes", ""),
-                "Ottawa municipal scope needs confirmation before this record can be treated as newly discovered.",
-            )
-        else:
-            out.at[idx, "Directory Discovery Status"] = (
-                "Newly Discovered" if has_property_identity and current_evidence else "Needs Classification"
-            )
+        out.at[idx, "Directory Discovery Status"] = (
+            "Newly Discovered"
+            if has_property_identity and current_evidence
+            else "Needs Classification"
+        )
 
     return out
 
@@ -2796,7 +2634,7 @@ Such pages are non-record pages. Ignore them. A URL alone is not a property reco
 
 Meaningful property evidence can include a reliable building/property name, street address, city/postal code, property-specific leasing/contact information, suite/floor-plan information, amenities, unit count, or substantive property description. Generic labels such as Home, Properties, Apartments, Contact Us, Amenities, Floor Plans, Availability, Learn More, or Welcome are not meaningful property evidence by themselves.
 
-If a property is supported by current official inventory evidence but its dedicated page is sparse, blank, or missing details, keep the property as Current and research missing fields from other permitted sources. Do not discard a legitimate current property because its dedicated page is poorly populated.
+If a property is supported by current official inventory evidence but its dedicated page is sparse, blank, or missing details, keep the property as Current. For all ordinary property fields, stay on the company's official website and leave genuinely unavailable values blank. The ONLY external-research exception is Number of Storeys / Building Classification, described below. Do not discard a legitimate current property because its dedicated page is poorly populated.
 
 If an identifiable orphan/legacy property contains substantive property-specific evidence, evaluate its current website-inventory status. When BOTH a current city/property/portfolio index and a current human-readable HTML sitemap are available and the property is absent from BOTH, it may be marked Excluded — not in current inventory, with clear evidence.
 
@@ -2822,12 +2660,18 @@ For each Current property, inspect the complete relevant official property conte
 
 Missing means researched and not found — not merely missed during the first extraction pass.
 
-### Phase 3 — Use secondary public sources only for genuine field gaps
-After a property has been confirmed as Current from official inventory evidence, reliable third-party public sources may be used only to fill fields that remain genuinely unavailable from current official sources, when permitted by the source policy below.
+### Phase 3 — External lookup exception for Number of Storeys / Building Classification ONLY
+The main research task remains an Ottawa listing scan of the selected company's official website. Do NOT use outside sources to discover additional properties, decide whether a property is current, or fill ordinary property fields.
 
-A third-party source must NEVER override current official inventory evidence about whether a property belongs to the company's current portfolio.
+ONLY after a property has been confirmed as a Current Ottawa listing from the company's official website, you MAY leave the company website to research Number of Storeys when the company website does not provide reliable storey evidence. For this classification-only lookup you MAY:
+- use Google or another search engine to locate evidence using the exact verified Ottawa street address;
+- consult official City of Ottawa planning/development records and documents;
+- consult official public PDFs, planning documents, brochures, or property records;
+- consult reliable third-party property/building sources when necessary.
 
-Clearly label secondary evidence in Supporting Evidence and keep the official company/property source as the primary basis for property identity and current-inventory status.
+Search-result snippets are discovery aids, not evidence by themselves. Open and assess the underlying source. Do not use social-media posts, forums, user-generated comments, or obviously scraped/unverified directories as classification evidence.
+
+External sources found under this exception must NEVER add a new property to scope, change Current Inventory Status, or override the company's official website about whether a property belongs to its current Ottawa portfolio. Clearly label any external classification evidence in Supporting Evidence.
 
 ### Phase 4 — Quality-check the website research before delivery
 Before producing the final CSV:
@@ -2850,7 +2694,7 @@ Do NOT compare any row with Datablix Starting Data during this quality check. Da
 ## Source policy
 {source_policy}
 
-Official company and official property sources are the primary evidence. Do not silently rely on search-result snippets, social media, forums, user-generated listings, scraped directories, or unverified third-party sources.
+For property discovery, current-inventory status, identity, leasing information, amenities, contact details, rates, suite types, policies, and all other ordinary fields, use the selected company's official website only. The sole external-source exception is Number of Storeys / Building Classification for an already-confirmed Current Ottawa property. Google/search engines may be used to locate classification evidence, but search-result snippets alone are not evidence. Do not use social media, forums, user-generated comments, or obviously scraped/unverified directories.
 
 ## Fields to collect for each property
 Return one row per unique company-leased property record discovered through this website-research process, including Current, Review, and meaningful Excluded/legacy website records when supported. A company-leased property record may contain more than one civic address when the company presents and leases those addresses together as one complex/property.
@@ -2888,7 +2732,7 @@ Field guidance:
 2. When information is not publicly confirmed after a reasonable check, leave the field blank and record it under Missing Information.
 3. Absence of an amenity or feature does not mean No. Use No only when a source explicitly states that the feature is unavailable, not offered, or prohibited.
 4. A dedicated property page existing on the company's domain does not by itself establish that the property is current.
-5. Do not use a third-party listing to bring a property into current scope when current official inventory evidence does not support it.
+5. Do not use Google, a third-party listing, City records, or any external source to bring a property into current scope. External lookup is permitted only for Number of Storeys / Building Classification after the property is already confirmed as a Current Ottawa listing on the company's official website.
 6. Do not use generic labels such as Contact Us, Home, Properties, Apartments, Communities, Amenities, Floor Plans, Availability, Learn More, or Welcome as a building name.
 7. Distinguish a company contact page from a property page. A corporate office address is not automatically a rental-property address.
 8. Keep Property Website, Company Website, and Source URL separate.
@@ -2902,7 +2746,7 @@ Field guidance:
 16. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
 17. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
 18. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it.
-19. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain it and research missing details elsewhere.
+19. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain it. Keep ordinary missing fields blank when the company website does not provide them; only Number of Storeys / Building Classification may be researched externally.
 20. Do not classify a property as Existing Source Record, Newly Discovered, or Possible Duplicate relative to the project. Datablix assigns project-comparison status after import.
 
 ## Priority or company-specific instructions
@@ -3165,12 +3009,6 @@ def append_external_research_results(
     mapped["Record Decision"] = "Undecided"
     mapped["Directory Entry Status"] = "Not Entered"
 
-    # Enforce the fixed project boundary before consolidation or source matching.
-    # Explicit non-Ottawa research rows never enter the active review queue.
-    imported_scope_counts = _scope_counts(mapped)
-    mapped = filter_to_ottawa_scope(mapped, keep_unknown=True)
-    st.session_state["db_last_ottawa_omitted"] = imported_scope_counts.get("out", 0)
-
     # Protect the review queue from AI over-splitting.  When the company clearly
     # leases multiple civic addresses as one named property, retain one row.
     mapped = consolidate_shared_leasing_rows(mapped)
@@ -3362,37 +3200,6 @@ def qa_checks(df):
     out.loc[dates.gt(today), "Freshness Status"] = "Future date"
     out.loc[dates.notna() & dates.le(today) & age.gt(FRESHNESS_DAYS), "Freshness Status"] = "Stale"
     return out
-
-
-def cached_qa_checks(df: pd.DataFrame) -> pd.DataFrame:
-    """Reuse QA results until project data actually changes.
-
-    Streamlit reruns the script for navigation and widget interactions. QA should
-    not be rebuilt for display-only reruns.
-    """
-    if not isinstance(df, pd.DataFrame):
-        return pd.DataFrame()
-    if df.empty:
-        return qa_checks(df)
-
-    record_ids = tuple(
-        df.get("Record ID", pd.Series("", index=df.index))
-        .astype("string").fillna("").astype(str).tolist()
-    )
-    cache_key = (
-        int(st.session_state.get(S_EDIT_COUNT, 0) or 0),
-        len(df),
-        record_ids,
-    )
-    cache = st.session_state.get("_db_qa_cache")
-    if isinstance(cache, dict) and cache.get("key") == cache_key:
-        cached = cache.get("frame")
-        if isinstance(cached, pd.DataFrame):
-            return cached
-
-    result = qa_checks(df)
-    st.session_state["_db_qa_cache"] = {"key": cache_key, "frame": result}
-    return result
 
 
 def listing_export(df):
@@ -5619,12 +5426,9 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
     source_hash = hashlib.sha256(data).hexdigest()
     current_registry = st.session_state.get(S_COMPANIES, empty_company_registry())
 
-    project_source_raw, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
+    project_source, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
         data, assignment_sheet, current_registry
     )
-    source_scope_counts = _scope_counts(project_source_raw)
-    project_source = filter_to_ottawa_scope(project_source_raw, keep_unknown=True)
-    out_of_scope_source_records = max(0, len(project_source_raw) - len(project_source))
 
     previous_versions = _source_versions_state()
     replaced_existing = bool(previous_versions or st.session_state.get(S_SOURCE_BASELINE_META))
@@ -5651,9 +5455,6 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
         "imported_at": datetime.now().isoformat(timespec="seconds"),
         "assigned_companies": len(registry),
         "source_records": len(project_source),
-        "source_records_before_ottawa_filter": len(project_source_raw),
-        "out_of_scope_source_records": out_of_scope_source_records,
-        "ottawa_scope_unknown_records": source_scope_counts.get("unknown", 0),
         "project_company_source_records": len(relevant),
         "classification_rules": len(rules),
         "source_hash": source_hash,
@@ -5708,9 +5509,6 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
     return {
         "assigned_companies": len(registry),
         "source_records": len(project_source),
-        "source_records_before_ottawa_filter": len(project_source_raw),
-        "out_of_scope_source_records": out_of_scope_source_records,
-        "ottawa_scope_unknown_records": source_scope_counts.get("unknown", 0),
         "project_company_source_records": len(relevant),
         "working_records": len(research_records),
         "classification_rules": len(rules),
@@ -5931,20 +5729,10 @@ def save_edits(edited, columns):
 
     working["Province"] = working["Province"].apply(canonical_province)
     working["Postal Code"] = working["Postal Code"].apply(postal_code)
-    working = filter_to_ottawa_scope(normalize_workflow(prepare_data(working)), keep_unknown=True)
-    identity_fields = {
-        "Building Name", "Street Address", "City", "Province", "Postal Code",
-        "Property Website", "Website", "Current Inventory Status",
-        "Verification Status", "Record Decision",
-    }
-    if identity_fields.intersection(editable_columns):
-        baseline = current_starting_source_records()
-        working = classify_discovery_status(working, baseline if not baseline.empty else None)
-    st.session_state[S_WORKING] = working
+    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working))
     st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-    refreshed_qa = cached_qa_checks(st.session_state[S_WORKING].copy())
+    refreshed_qa = qa_checks(st.session_state[S_WORKING].copy())
     approved_count = int(approved_for_export_mask(refreshed_qa).sum())
-    autosave_current_project()
     st.session_state[S_FLASH] = (
         f"Changes saved. Quality checks refreshed; {approved_count:,} record(s) "
         "are currently Approved for Export."
@@ -6690,7 +6478,7 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
         if company_records.empty:
             st.info("No building records have been added for this company yet.")
         else:
-            company_qa = cached_qa_checks(company_records)
+            company_qa = qa_checks(company_records)
             coverage = pd.DataFrame({
                 "Stage": ["Collected", "Reviewed", "Verified", "Need attention"],
                 "Records": [snapshot["collected"], snapshot["reviewed"], snapshot["verified"], snapshot["attention"]],
@@ -7505,35 +7293,19 @@ if S_WORKING not in st.session_state:
 if S_FLASH in st.session_state:
     st.toast(st.session_state.pop(S_FLASH), icon="✅")
 
-# Keep runtime work Ottawa-only and avoid the old O(research_rows × source_rows)
-# comparison on every Streamlit rerun. Source matching is recalculated only when
-# source data, imported research, or identity-relevant review fields change.
-if not st.session_state.get("_db_v42_scope_migrated"):
-    removed_source_rows = enforce_ottawa_source_state()
-    st.session_state["_db_v42_scope_migrated"] = True
-    if removed_source_rows:
-        st.session_state[S_FLASH] = (
-            f"Ottawa scope applied: {removed_source_rows:,} explicit out-of-scope Starting Data row(s) were removed from the active comparison baseline."
-        )
-
-# Keep ordinary Streamlit reruns cheap. Ottawa filtering, registry synchronization,
-# and source comparison happen when data is imported/edited, not during navigation.
-working = st.session_state[S_WORKING].copy()
-project_registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+working, project_registry = synchronize_company_registry(
+    st.session_state[S_WORKING].copy(),
+    st.session_state.get(S_COMPANIES),
+)
+_comparison_baseline = current_starting_source_records()
+working = classify_discovery_status(
+    working,
+    _comparison_baseline if not _comparison_baseline.empty else None,
+)
+st.session_state[S_WORKING] = working
 st.session_state[S_COMPANIES] = project_registry
-
-if not st.session_state.get("_db_v42_identity_migrated"):
-    working = filter_to_ottawa_scope(working, keep_unknown=True)
-    _comparison_baseline = current_starting_source_records()
-    working = classify_discovery_status(
-        working,
-        _comparison_baseline if not _comparison_baseline.empty else None,
-    )
-    st.session_state[S_WORKING] = working
-    st.session_state["_db_v42_identity_migrated"] = True
-
 has_records = not working.empty
-qa = None
+qa = qa_checks(working) if has_records else None
 
 # -----------------------------
 # Primary navigation
@@ -7603,11 +7375,26 @@ st.markdown(
 
 visible_active_section = PRIMARY_ACTIVE_SECTION[st.session_state["db_section"]]
 
-# Navigation itself does not require QA. Heavy QA is loaded lazily only where used.
+# Progress is shown directly in the main navigation so there is only one workflow row.
 active_company_id = (
     str(active_header_company.get("Company ID", "")).strip()
     if active_header_company is not None
     else ""
+)
+company_records = (
+    working.loc[working["Company ID"].astype(str).eq(active_company_id)].copy()
+    if active_company_id and "Company ID" in working.columns
+    else working.iloc[0:0].copy()
+)
+company_qa = (
+    qa.loc[qa["Company ID"].astype(str).eq(active_company_id)].copy()
+    if active_company_id and isinstance(qa, pd.DataFrame) and "Company ID" in qa.columns
+    else pd.DataFrame()
+)
+review_population = (
+    company_qa.loc[~company_qa["Record Decision"].eq("Remove")].copy()
+    if not company_qa.empty and "Record Decision" in company_qa.columns
+    else company_qa
 )
 
 NAV_DESCRIPTIONS = {
@@ -7635,9 +7422,6 @@ with st.container(key="db_nav_row"):
                 st.rerun()
 
 section = st.session_state["db_section"]
-if has_records and section in {"Overview", "Review records", "Analysis & report", "Downloads"}:
-    qa = cached_qa_checks(working)
-
 st.markdown(
     f'<div class="db-nav-context"><strong>{escape(NAV_LABELS[section])}</strong> — '
     f'{escape(NAV_DESCRIPTIONS[section])}</div>',
@@ -8524,19 +8308,18 @@ elif section == "Website scanner":
 
     default_scope = PROJECT_GEOGRAPHIC_SCOPE
     default_source_policy = (
-        "Use current official Ottawa city/property-search/portfolio pages and the current human-readable HTML sitemap first to establish the company's active Ottawa inventory. "
-        "Use official property pages, leasing pages, official PDFs, and official property websites for detailed fields. "
-        "Technical XML sitemaps are discovery evidence only, not proof that a property is current. "
-        "Use reliable third-party public sources only for genuine field gaps after a property is confirmed as current; clearly label them as secondary evidence. "
-        "Never let a third-party source override current official inventory evidence. "
-        "Ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence; a URL alone must never create a property row."
+        "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use only the selected company's official website and its Ottawa city/location, portfolio/search, property, leasing, HTML sitemap, and related official pages. "
+        "Do not use Google, third-party sites, City records, or other external sources to discover properties, decide current inventory, or fill ordinary property fields. "
+        "BUILDING CLASSIFICATION EXCEPTION ONLY: after an Ottawa property is already confirmed as Current from the company website, external research may be used only to find Number of Storeys when official company pages do not provide it. "
+        "For that classification-only lookup, Google/search engines may be used to locate evidence, and reliable sources may include City of Ottawa planning/development records, official public documents/PDFs, and reliable third-party property/building sources. "
+        "Search snippets alone are not evidence; open the underlying source. External classification evidence must never add a property to scope or override official company inventory status. "
+        "Derive Building Classification only from reliable storey evidence: Low-rise 1–4, Mid-rise 5–11, High-rise 12+. Never infer classification from visual appearance, unit count, elevator presence, building name, or marketing terminology."
     )
     default_priority_notes = (
-        "Establish the complete current City of Ottawa inventory from the company's current official website structure and omit all properties outside Ottawa. "
-        "Exclude meaningful legacy property pages only when current website inventory evidence supports exclusion. "
-        "Before creating any property row, ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence. "
-        "Keep legitimate current properties even when their dedicated page is sparse, and recheck each valid property across permitted sources for postal code, amenities, unit count, "
-        "contact details, and other requested fields before declaring information missing. For Number of Storeys, use the verified full Ottawa street address as an explicit web-search key (for example: exact address + number of storeys/floors) before treating the field as unavailable; then derive Building Classification from the verified storey evidence. Preserve exact evidence and flag uncertain inventory for review."
+        "Scan the selected company's official website for CURRENT CITY OF OTTAWA apartment listings only and omit every property outside Ottawa. "
+        "Do not branch into general web research for property discovery or ordinary fields. Keep legitimate current Ottawa properties even when their dedicated page is sparse; leave ordinary unavailable fields blank and list them as missing. "
+        "EXCEPTION FOR BUILDING CLASSIFICATION: when Number of Storeys is not stated on the company website, use the verified full Ottawa address as a web-search key (for example: exact address + number of storeys/floors). Google/search engines and reliable external public sources are permitted for this storey/classification lookup only. "
+        "Use reliable storey evidence to derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Do not infer classification from visual appearance, unit count, elevator presence, building name, or marketing terminology. Preserve the external classification source in Supporting Evidence."
     )
     default_output_notes = (
         "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record and keep the exact requested headings in the exact requested order. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
@@ -8547,7 +8330,7 @@ elif section == "Website scanner":
 
     # Geographic scope is project-wide and fixed. Do not restore older saved values such as "Ontario, Canada".
     saved_scope = PROJECT_GEOGRAPHIC_SCOPE
-    saved_source_policy = str(active_company.get("Prompt Source Policy", "") or "").strip() or default_source_policy
+    saved_source_policy = default_source_policy
     saved_priority_notes = str(active_company.get("Prompt Priority Notes", "") or "").strip() or default_priority_notes
     saved_output_notes = str(active_company.get("Prompt Output Notes", "") or "").strip() or default_output_notes
 
@@ -8567,9 +8350,10 @@ elif section == "Website scanner":
     source_policy = prompt_left.text_area(
         "Source policy",
         value=saved_source_policy,
-        height=150,
+        height=180,
         key=f"db_prompt_sources_{company_id}",
-        help="Persistent company-specific research rule. Save the prompt settings to keep edits across sessions.",
+        disabled=True,
+        help="Project-wide guardrail: Ottawa company-website scanning only, with one controlled external exception for Number of Storeys / Building Classification.",
     )
     priority_notes = prompt_right.text_area(
         "Company-specific priorities or exclusions",
@@ -8698,7 +8482,7 @@ elif section == "Website scanner":
     st.divider()
     st.subheader("2. Import the single completed CSV research deliverable")
     st.caption(
-        "Exactly one consolidated CSV is the required research-deliverable format. Datablix first removes explicit out-of-Ottawa rows, then consolidates clearly shared leasing-property rows and compares the remaining records against the Ottawa-only Starting Data baseline before any row can be called newly discovered."
+        "Exactly one consolidated CSV is the required research-deliverable format. The AI file contains website research only. When imported, Datablix first consolidates clearly shared leasing-property rows, then compares normalized civic addresses, compound addresses, Ottawa locality labels, postal codes, names and property URLs against the current Starting Data baseline before any row can be called newly discovered."
     )
     import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
     with import_tabs[0]:
@@ -8735,10 +8519,8 @@ elif section == "Website scanner":
                     company_website=company_website,
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
-                omitted_count = int(st.session_state.pop("db_last_ottawa_omitted", 0) or 0)
-                scope_note = f" {omitted_count:,} explicit out-of-Ottawa row(s) were omitted." if omitted_count else ""
                 st.session_state[S_FLASH] = (
-                    f"Imported {added_count:,} Ottawa-compatible website-research row(s) for {company_name}.{scope_note} Datablix compared them with the current Ottawa Starting Data; review the comparison, evidence, duplicates, and missing information next."
+                    f"Imported {added_count:,} website-research row(s) for {company_name}. Datablix compared them with the current Starting Data when available; review the comparison, evidence, duplicates, and missing information next."
                 )
                 go_to("Review records")
                 st.rerun()
@@ -8770,10 +8552,8 @@ elif section == "Website scanner":
                     company_website=company_website,
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
-                omitted_count = int(st.session_state.pop("db_last_ottawa_omitted", 0) or 0)
-                scope_note = f" {omitted_count:,} explicit out-of-Ottawa row(s) were omitted." if omitted_count else ""
                 st.session_state[S_FLASH] = (
-                    f"Imported {added_count:,} Ottawa-compatible Google Sheets research row(s) for {company_name}.{scope_note} Datablix compared them with the current Ottawa Starting Data; review the findings before verification."
+                    f"Imported {added_count:,} Google Sheets research row(s) for {company_name}. Datablix compared them with the current Starting Data when available; review the findings before verification."
                 )
                 go_to("Review records")
                 st.rerun()
@@ -8803,13 +8583,6 @@ elif section == "Website scanner":
                 if column not in merged.columns:
                     merged[column] = pd.NA
             merged = ensure_ids(normalize_workflow(prepare_data(merged)))
-            before_scope_count = len(merged)
-            merged = filter_to_ottawa_scope(merged, keep_unknown=True)
-            scanner_scope_omitted = max(0, before_scope_count - len(merged))
-            baseline = current_starting_source_records()
-            merged = classify_discovery_status(
-                merged, baseline if not baseline.empty else None
-            )
             merged, registry = synchronize_company_registry(
                 merged,
                 st.session_state.get(S_COMPANIES),
@@ -8823,12 +8596,8 @@ elif section == "Website scanner":
                 st.session_state.get(S_EDIT_COUNT, 0)
                 + int(scan_result.get("added", 0))
             )
-            scanner_scope_note = (
-                f" {scanner_scope_omitted:,} explicit out-of-Ottawa scanner row(s) were omitted."
-                if scanner_scope_omitted else ""
-            )
             st.session_state[S_FLASH] = (
-                f"Added {int(scan_result.get('added', 0))} scanner cross-check record(s) for {company_name}.{scanner_scope_note} Compare the Ottawa-compatible findings with the imported research before verification."
+                f"Added {int(scan_result.get('added', 0))} scanner cross-check record(s) for {company_name}. Compare them with the imported research before verification."
             )
             go_to("Review records")
             st.rerun()
@@ -9153,9 +8922,7 @@ elif section == "Review records":
                     st.rerun()
 
     if has_records:
-        # Reuse the QA frame already calculated for this rerun instead of running
-        # the full quality engine a second time in the Review page.
-        render_review_quality_progress(qa, review_quality_company_id)
+        render_review_quality_progress(qa_checks(st.session_state[S_WORKING].copy()), review_quality_company_id)
 
 # -----------------------------
 # Analysis and report
@@ -9782,32 +9549,5 @@ elif section == "Downloads":
         )
 
 
-def _light_autosave_revision_token():
-    """Return a cheap revision token without serializing the full project."""
-    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
-    registry_bits = []
-    if not registry.empty:
-        for _, row in registry.iterrows():
-            registry_bits.append((
-                safe_text(row.get("Company ID")),
-                safe_text(row.get("Management/Owner")),
-                safe_text(row.get("Company Status")),
-                safe_text(row.get("Prompt Updated")),
-            ))
-    working_state = st.session_state.get(S_WORKING)
-    working_count = len(working_state) if isinstance(working_state, pd.DataFrame) else 0
-    return (
-        int(st.session_state.get(S_EDIT_COUNT, 0) or 0),
-        working_count,
-        safe_text(st.session_state.get(S_PROJECT_NAME, "")),
-        safe_text(st.session_state.get(S_ACTIVE_COMPANY, "")),
-        tuple(registry_bits),
-    )
-
-
-# Save after meaningful changes only. Display-only reruns no longer serialize, hash,
-# and upload the entire workspace.
-_revision = _light_autosave_revision_token()
-if _revision != st.session_state.get("_db_last_autosave_revision"):
-    autosave_current_project()
-    st.session_state["_db_last_autosave_revision"] = _revision
+# Persist the latest completed state after every Streamlit rerun.
+autosave_current_project()
