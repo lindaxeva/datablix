@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Versioned Starting Data 2026.07.24-v30"
+DATABLIX_BUILD = "Project Source Research Package 2026.07.24-v31"
 
 # =========================================================
 # Configuration
@@ -2039,13 +2039,15 @@ def company_source_records_for_research(
 def build_research_package_bytes(
     company_name: str,
     prompt_text: str,
-    source_records: pd.DataFrame,
+    project_source_records: pd.DataFrame,
+    company_source_records: pd.DataFrame,
     research_template: pd.DataFrame,
     source_meta: dict | None = None,
 ) -> bytes:
-    """Create one portable research package containing prompt + source data + template."""
+    """Create a portable package using the current project-wide Starting Data."""
     company_stem = safe_filename(company_name)
     prompt_name = f"{company_stem}_website_research_prompt.txt"
+
     meta = (
         source_meta
         if isinstance(source_meta, dict)
@@ -2055,8 +2057,13 @@ def build_research_package_bytes(
         safe_text(meta.get("version_label", ""))
         or f"v{_safe_int(meta.get('version_number', 1), 1)}"
     )
-    source_name = (
-        f"{company_stem}_starting_source_records_"
+
+    project_source_name = (
+        f"project_starting_source_records_"
+        f"{safe_filename(source_version)}.csv"
+    )
+    company_source_name = (
+        f"{company_stem}_source_matches_"
         f"{safe_filename(source_version)}.csv"
     )
     template_name = f"{company_stem}_research_template.csv"
@@ -2069,64 +2076,91 @@ def build_research_package_bytes(
         safe_text(meta.get("assignment_sheet", ""))
         or "Not recorded"
     )
-    source_version = (
-        safe_text(meta.get("version_label", ""))
-        or f"v{_safe_int(meta.get('version_number', 1), 1)}"
+
+    company_match_count = (
+        len(company_source_records)
+        if isinstance(company_source_records, pd.DataFrame)
+        else 0
     )
 
     readme = f"""DATABLIX RESEARCH PACKAGE
 
-Company:
+ACTIVE COMPANY
 {company_name}
+
+CURRENT PROJECT SOURCE
+Source version: {source_version}
+Workbook: {workbook_name}
+Assignment sheet: {assignment_sheet}
+Project source records: {len(project_source_records):,}
+Company-specific source matches: {company_match_count:,}
 
 FILES
 1. {prompt_name}
-   The complete research instructions.
+   Complete research instructions for {company_name}.
 
-2. {source_name}
-   The original Starting Data records for this company.
-   These records are a reconciliation baseline only. They are NOT proof that a
-   property is still current.
+2. {project_source_name}
+   The CURRENT PROJECT-WIDE Starting Data. This file must be used for every
+   company research cycle. It is the project's source/reconciliation dataset.
 
-3. {template_name}
-   The required structure for the returned research CSV.
+3. {company_source_name if company_match_count else '[No separate company-match file]'}
+   A convenience slice containing source rows Datablix matched to the active
+   company. When no direct matches are found, use the project-wide source file
+   to identify aliases, renamed owners/managers, and related records.
 
-STARTING DATA
-Source version used for this research package: {source_version}
-Workbook: {workbook_name}
-Assignment sheet: {assignment_sheet}
-Starting source records in this package: {len(source_records):,}
+4. {template_name}
+   Required structure for the returned research CSV.
 
 HOW TO USE THIS PACKAGE
-1. Open your AI research tool.
-2. Upload BOTH:
-   - {prompt_name}
-   - {source_name}
-3. Tell the tool to follow the prompt and use the source CSV as the starting
-   reconciliation dataset.
-4. The tool must first determine what happened to each starting source record.
-5. It must then search for additional legitimate current properties missing from
-   the source CSV.
-6. Ask for the final result as a downloadable CSV using the required headings.
-7. Import that completed research CSV back into Datablix for human review.
+1. Upload the research prompt and the PROJECT source CSV to your AI research tool.
+2. Use the project source CSV for the active company, even though the file contains
+   records for the entire project.
+3. First identify/reconcile source rows belonging to {company_name}. Match by
+   Management/Owner and known aliases, then use address/postal code/property identity
+   to prevent false duplicates.
+4. Do NOT assume a source row is still current merely because it exists in the source.
+5. After source reconciliation, search current authoritative sources for additional
+   legitimate properties missing from the project source.
+6. Return the completed research as CSV using the required headings.
+7. Import the completed CSV back into Datablix for human review.
 
 IMPORTANT
-The source CSV represents what existed in the starting dataset. Do not assume all
-of those records remain current, and do not limit discovery to those records.
+The project-wide source is a STARTING POINT and duplicate/reconciliation reference.
+It is not a ceiling on discovery and is not proof that every listed property is current.
 """
 
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as package:
-        package.writestr(prompt_name, prompt_text.encode("utf-8"))
+    with zipfile.ZipFile(
+        buffer,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as package:
         package.writestr(
-            source_name,
-            source_records.to_csv(index=False).encode("utf-8-sig"),
+            prompt_name,
+            prompt_text.encode("utf-8"),
         )
+        package.writestr(
+            project_source_name,
+            project_source_records.to_csv(index=False).encode("utf-8-sig"),
+        )
+
+        if (
+            isinstance(company_source_records, pd.DataFrame)
+            and not company_source_records.empty
+        ):
+            package.writestr(
+                company_source_name,
+                company_source_records.to_csv(index=False).encode("utf-8-sig"),
+            )
+
         package.writestr(
             template_name,
             research_template.to_csv(index=False).encode("utf-8-sig"),
         )
-        package.writestr("README.txt", readme.encode("utf-8"))
+        package.writestr(
+            "README.txt",
+            readme.encode("utf-8"),
+        )
 
     return buffer.getvalue()
 
@@ -2198,7 +2232,7 @@ You are acting as a careful public-source rental-property research analyst. Rese
 Starting/known property records for this company:
 {known_records or '- No starting records are currently available for this company.'}
 
-IMPORTANT: When a companion starting-source CSV is supplied with this prompt, use the CSV as the detailed starting dataset. The text list above is only a quick identity summary. These records are a comparison and reconciliation checklist. They are NOT automatic proof that a property is still current, still managed by the company, or still belongs in the final directory.
+IMPORTANT: The companion PROJECT source CSV contains Starting Data for the entire project and must be used for this company research cycle. First identify the rows relevant to the active company using Management/Owner, aliases, address/postal code, and property identity. Any company-specific list shown above is only a convenience summary and may be incomplete. The project source is a comparison and reconciliation dataset, NOT automatic proof that a property is still current, still managed by the company, or still belongs in the final directory.
 
 ## Core principle
 Do NOT begin by collecting every property URL that happens to exist.
@@ -7483,22 +7517,31 @@ elif section == "Website scanner":
         working["Company ID"].astype("string").fillna("").str.strip().eq(company_id)
     ].copy()
 
-    source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
-    source_baseline = st.session_state.get(S_ORIGINAL)
-    has_source_baseline = (
-        isinstance(source_meta, dict)
-        and bool(source_meta)
-        and isinstance(source_baseline, pd.DataFrame)
-        and not source_baseline.empty
+    active_source_version = _active_source_version()
+    if isinstance(active_source_version, dict):
+        source_meta = dict(active_source_version.get("meta", {}))
+        project_source_records = active_source_version.get("records")
+    else:
+        source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
+        project_source_records = st.session_state.get(S_ORIGINAL)
+
+    if not isinstance(source_meta, dict):
+        source_meta = {}
+    if not isinstance(project_source_records, pd.DataFrame):
+        project_source_records = pd.DataFrame()
+
+    has_project_source = (
+        bool(source_meta)
+        and not project_source_records.empty
     )
 
     source_records_for_prompt = (
         company_source_records_for_research(
-            source_baseline,
+            project_source_records,
             company_id=company_id,
             company_name=company_name,
         )
-        if has_source_baseline
+        if has_project_source
         else pd.DataFrame()
     )
     source_lines = (
@@ -7520,8 +7563,12 @@ elif section == "Website scanner":
             else "v1"
         )
     )
-    source_records_filename = (
-        f"{safe_filename(company_name)}_starting_source_records_"
+    project_source_filename = (
+        f"project_starting_source_records_"
+        f"{safe_filename(active_source_version_label)}.csv"
+    )
+    company_source_filename = (
+        f"{safe_filename(company_name)}_source_matches_"
         f"{safe_filename(active_source_version_label)}.csv"
     )
     working_lines = prompt_record_identity_lines(
@@ -7534,26 +7581,34 @@ elif section == "Website scanner":
     if source_lines:
         known_default = "\n".join(source_lines)
         known_records_context = (
-            f"{len(source_lines):,} starting source record(s) were provided for this company "
-            "through the project's Starting Data workbook. The companion file "
-            f"'{source_records_filename}' contains the actual source rows and MUST be used with "
-            "this prompt. Reconcile every source row against current official inventory evidence "
-            "before deciding whether it remains current, is excluded, or corresponds to another "
-            "current property row."
+            f"The current Starting Data is PROJECT-WIDE and contains "
+            f"{len(project_source_records):,} source record(s). The companion file "
+            f"'{project_source_filename}' MUST be used for this company research cycle. "
+            f"Datablix also matched {len(source_records_for_prompt):,} source row(s) directly "
+            f"to {company_name}; those matches are listed below and may also be supplied in "
+            f"'{company_source_filename}'. Reconcile them against current official evidence, "
+            "then continue searching for additional current properties missing from the source."
         )
-        known_records_ui_label = "Starting source records for comparison"
+        known_records_ui_label = "Company matches from project Starting Data"
         known_records_help = (
-            "Pulled automatically from Starting Data for the active company. "
-            "These records must be checked, but they are not assumed to be current."
+            "These are convenience matches from the project-wide Starting Data. "
+            "The full project source is still used for every company."
         )
-    elif has_source_baseline:
+    elif has_project_source:
         known_default = ""
         known_records_context = (
-            "A Starting Data workbook is loaded, but no source building rows were matched to this "
-            "company. Treat current official inventory research as the discovery starting point."
+            f"The current Starting Data is PROJECT-WIDE and contains "
+            f"{len(project_source_records):,} source record(s). The companion file "
+            f"'{project_source_filename}' MUST still be used for {company_name}. "
+            "Datablix did not find a direct company-name match, so inspect the project source "
+            "for aliases, renamed owners/managers, related entities, and matching property "
+            "addresses before concluding that no source records exist for this company."
         )
-        known_records_ui_label = "Starting source records for comparison"
-        known_records_help = "No starting source records were matched to this active company."
+        known_records_ui_label = "Company matches from project Starting Data"
+        known_records_help = (
+            "No direct company-name matches were found automatically, but the project-wide "
+            "Starting Data remains available and must still be used for this company."
+        )
     elif working_lines:
         known_default = "\n".join(working_lines)
         known_records_context = (
@@ -7736,18 +7791,26 @@ elif section == "Website scanner":
         st.caption("Use the copy icon in the code block after finishing your edits above.")
         st.code(editable_prompt, language="markdown")
     prompt_download_name = f"{safe_filename(company_name)}_website_research_prompt.txt"
-    research_template_df = ai_research_template(company_name, company_website)
+    research_template_df = ai_research_template(
+        company_name,
+        company_website,
+    )
 
-    if not source_records_for_prompt.empty:
+    if has_project_source:
         package_bytes = build_research_package_bytes(
             company_name=company_name,
             prompt_text=editable_prompt,
-            source_records=source_records_for_prompt,
+            project_source_records=project_source_records,
+            company_source_records=source_records_for_prompt,
             research_template=research_template_df,
             source_meta=source_meta,
         )
+
         st.download_button(
-            f"Download research package — prompt + {len(source_records_for_prompt):,} source record(s)",
+            (
+                f"Download research package — "
+                f"{len(project_source_records):,} project source record(s)"
+            ),
             data=package_bytes,
             file_name=f"{safe_filename(company_name)}_research_package.zip",
             mime="application/zip",
@@ -7755,13 +7818,23 @@ elif section == "Website scanner":
             width="stretch",
             key=f"db_download_research_package_{company_id}_{prompt_fingerprint}",
         )
-        st.caption(
-            "Recommended: unzip the package and upload BOTH the research prompt and "
-            "starting-source CSV to your AI research tool. The package also includes "
-            "the required research template and a short README."
-        )
 
-        prompt_actions = st.columns(3)
+        if not source_records_for_prompt.empty:
+            st.caption(
+                f"The package includes the full project source plus "
+                f"{len(source_records_for_prompt):,} company-specific match(es), "
+                "the research prompt, template, and README."
+            )
+        else:
+            st.caption(
+                "The package includes the full project source, research prompt, template, "
+                "and README. No direct company-name matches were found automatically, so the "
+                "prompt instructs the AI to inspect the project source for aliases and address matches."
+            )
+
+        action_count = 4 if not source_records_for_prompt.empty else 3
+        prompt_actions = st.columns(action_count)
+
         prompt_actions[0].download_button(
             "Prompt only",
             data=editable_prompt.encode("utf-8"),
@@ -7770,19 +7843,33 @@ elif section == "Website scanner":
             width="stretch",
         )
         prompt_actions[1].download_button(
-            "Source records CSV",
-            data=csv_bytes(source_records_for_prompt),
-            file_name=source_records_filename,
+            "Project source CSV",
+            data=csv_bytes(project_source_records),
+            file_name=project_source_filename,
             mime="text/csv",
             width="stretch",
         )
-        prompt_actions[2].download_button(
+
+        if not source_records_for_prompt.empty:
+            prompt_actions[2].download_button(
+                "Company matches",
+                data=csv_bytes(source_records_for_prompt),
+                file_name=company_source_filename,
+                mime="text/csv",
+                width="stretch",
+            )
+            template_column = prompt_actions[3]
+        else:
+            template_column = prompt_actions[2]
+
+        template_column.download_button(
             "Research template",
             data=csv_bytes(research_template_df),
             file_name=f"{safe_filename(company_name)}_research_template.csv",
             mime="text/csv",
             width="stretch",
         )
+
     else:
         prompt_actions = st.columns(2)
         prompt_actions[0].download_button(
@@ -7800,14 +7887,14 @@ elif section == "Website scanner":
             width="stretch",
         )
         st.warning(
-            "No Starting Data source records are available for this company, so a source-data "
-            "research package cannot be created yet."
+            "No project Starting Data has been imported yet. Import Starting Data on the "
+            "Project page to create a source-aware research package."
         )
 
     st.info(
-        "For external AI research, use the prompt together with the starting-source CSV whenever "
-        "Starting Data is available. Ask the AI to reconcile the source first, find additional "
-        "current properties, and return the completed research as CSV."
+        "Starting Data is project-wide. For every company, use the research prompt together "
+        "with the current Project source CSV. Reconcile source records relevant to the company "
+        "first, then find additional current properties, and return the completed research as CSV."
     )
 
     st.divider()
