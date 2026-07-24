@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "CSV-Only Research Deliverables 2026.07.23-v12"
+DATABLIX_BUILD = "Orphan Page Eligibility Prompt 2026.07.23-v13"
 
 # =========================================================
 # Configuration
@@ -1866,7 +1866,22 @@ Use these values consistently:
 - Review — current status is uncertain because inventory evidence is incomplete, conflicting, blocked, or unavailable.
 - Excluded — not in current inventory.
 
-When BOTH a current city/property/portfolio index and a current human-readable HTML sitemap are available and a dedicated property page is absent from BOTH, treat that dedicated page as legacy/orphaned and mark it:
+### Property-row eligibility rule — apply BEFORE creating any property row
+A URL, page title, or dedicated property path is not enough to create a property record. Before creating a row, confirm that the page represents a meaningful property candidate using current inventory evidence and/or substantive property-specific information.
+
+Do NOT create a row in either the active CSV or the excluded-property CSV when ALL of the following are true:
+- the page is orphaned, legacy, isolated, or only discoverable through crawling/XML sitemap evidence;
+- it is not supported by a current city/property/portfolio page or current human-readable HTML sitemap;
+- it contains no meaningful property-specific information sufficient to establish a real building record; and
+- it contains only a generic title, navigation/template content, empty sections, redirects, placeholder text, or other non-property content.
+
+Such pages must be ignored as non-record pages. They must NOT be counted as properties, must NOT become Current or Review rows, must NOT appear in the active-properties CSV, and must NOT appear in the excluded-properties CSV merely because the URL exists. A URL alone is not a property record.
+
+Meaningful property evidence can include a reliable building/property name, street address, city/postal code, property-specific leasing/contact information, suite/floor-plan information, amenities, unit count, or substantive property description. Generic labels such as Home, Properties, Apartments, Contact Us, Amenities, Floor Plans, Availability, Learn More, or Welcome are not meaningful property evidence by themselves.
+
+If a page is supported by current official inventory evidence but its dedicated page is sparse, blank, or missing some details, keep the property as Current and research the missing fields from other permitted sources. Do not discard a legitimate current property just because its dedicated page is poorly populated.
+
+If an orphan/legacy page contains enough substantive property-specific evidence to identify a real building, evaluate its current-inventory status normally. When BOTH a current city/property/portfolio index and a current human-readable HTML sitemap are available and the dedicated property page is absent from BOTH, mark the identifiable property:
 Excluded — not in current inventory.
 
 Do not include excluded properties in the final active property count or final directory rows intended for import.
@@ -1902,7 +1917,7 @@ Clearly label secondary evidence in Supporting Evidence and keep the official co
 ### Phase 4 — Quality-check before delivery
 Before producing the final CSV file:
 1. Recheck every included property against current company inventory evidence.
-2. Remove Excluded legacy/orphaned properties from the active deliverable.
+2. Remove Excluded legacy/orphaned properties from the active deliverable and remove non-record orphan/empty pages from all property deliverables.
 3. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
 4. Verify every field before listing it under Missing Information.
 5. Check duplicates primarily by normalized street address and postal code, then property URL and building name plus city.
@@ -1958,6 +1973,8 @@ Field guidance:
 14. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
 15. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
 16. Record information that appears stale, archived, historical, or no longer current in Reviewer Notes and use inventory evidence to determine whether it belongs in the active directory.
+17. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it rather than creating a Current, Review, or Excluded property row.
+18. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain the property and research missing details elsewhere.
 
 ## Priority or company-specific instructions
 {priority_notes or 'No additional priorities were provided.'}
@@ -1981,7 +1998,7 @@ The primary CSV must:
 If Excluded legacy/orphaned properties are found, create a second CSV file named, for example:
 `company_name_excluded_properties.csv`
 
-Use the same exact headings where practical and include the exclusion status, evidence, exclusion reason, source URL, and reviewer notes. Do not mix excluded properties into the primary active-properties CSV.
+Use the same exact headings where practical and include the exclusion status, evidence, exclusion reason, source URL, and reviewer notes. Include only excluded pages that contain enough property-specific evidence to identify a real building. Do not create excluded-property rows for blank, generic, placeholder, or orphan URLs that contain no meaningful property details. Do not mix excluded properties into the primary active-properties CSV.
 
 ### Output behaviour
 - Generate actual downloadable `.csv` file(s) whenever the AI tool supports file creation.
@@ -5505,16 +5522,19 @@ elif section == "Website scanner":
         "Use official property pages, leasing pages, official PDFs, and official property websites for detailed fields. "
         "Technical XML sitemaps are discovery evidence only, not proof that a property is current. "
         "Use reliable third-party public sources only for genuine field gaps after a property is confirmed as current; clearly label them as secondary evidence. "
-        "Never use a third-party source to bring an excluded legacy property back into scope."
+        "Never use a third-party source to bring an excluded legacy property back into scope. "
+        "Ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence; a URL alone must never create a property row."
     )
     default_priority_notes = (
         "Establish the current Ontario inventory first. Exclude dedicated legacy property pages that are absent from both the current city/portfolio index "
-        "and current HTML sitemap when both authoritative sources are available. Recheck each valid property page for postal code, amenities, unit count, "
+        "and current HTML sitemap when both authoritative sources are available. Before creating any property row, ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence. "
+        "Keep legitimate current properties even when their dedicated page is sparse, and recheck each valid property across permitted sources for postal code, amenities, unit count, "
         "contact details, and other requested fields before declaring information missing. Preserve exact evidence and flag uncertain inventory for review."
     )
     default_output_notes = (
         "Return downloadable CSV file(s) only. Use one row per unique Current or Review property and keep the exact requested headings in the exact requested order. "
-        "Preserve blanks for genuinely unknown values. Do not mix Excluded legacy/orphaned properties into the active rows or active property count; place exclusions in a separate CSV only when needed. "
+        "Preserve blanks for genuinely unknown values. Do not mix Excluded legacy/orphaned properties into the active rows or active property count; place identifiable exclusions in a separate CSV only when needed. "
+        "Do not create any CSV row for orphan/empty/generic pages that lack meaningful property-specific evidence. "
         "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The primary CSV must be ready for direct Datablix import."
     )
 
