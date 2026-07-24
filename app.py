@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Storeys Form Alignment 2026.07.23-v23"
+DATABLIX_BUILD = "Source Baseline + Directory Entry Assistant 2026.07.23-v24"
 
 # =========================================================
 # Configuration
@@ -42,9 +42,9 @@ INTERNAL_COLUMNS = [
     "Current Inventory Status", "Inventory Evidence",
     "Found on City/Portfolio Page", "Found on HTML Sitemap",
     "Found on XML Sitemap", "Inventory Exclusion Reason",
-    "Directory Discovery Status", "Source URL", "Date Researched", "Researcher", "Research Status",
+    "Directory Discovery Status", "Directory Entry Status", "Source URL", "Date Researched", "Researcher", "Research Status",
     "Source Status", "Verification Status", "Missing Information",
-    "Reviewer Notes", "Record Decision",
+    "Reviewer Notes", "Record Decision", "Directory Entry Status",
 ]
 
 LISTING_COLUMNS = [
@@ -97,6 +97,7 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Found on XML Sitemap", "Found on XML Sitemap"),
     ("Inventory Exclusion Reason", "Inventory Exclusion Reason"),
     ("Directory Discovery Status", "Directory Discovery Status"),
+    ("Directory Entry Status", "Directory Entry Status"),
     ("Country", "Country"),
     ("Official Source URL", "Source URL"),
     ("Date Researched", "Date Researched"),
@@ -156,6 +157,7 @@ ALIASES = {
     "Found on XML Sitemap": ["Found on XML Sitemap", "On XML Sitemap"],
     "Inventory Exclusion Reason": ["Inventory Exclusion Reason", "Exclusion Reason"],
     "Directory Discovery Status": ["Directory Discovery Status", "Discovery Status", "Record Origin", "Directory Origin"],
+    "Directory Entry Status": ["Directory Entry Status", "Entry Status", "Directory Submission Status"],
     "Source URL": ["Source URL", "Official Source URL", "Research Source", "Website / Source URL"],
     "Date Researched": ["Date Researched", "Date Verified", "Verification Date", "Research Date"],
     "Researcher": ["Researcher", "Assigned To"],
@@ -197,11 +199,12 @@ VERIFICATION_STATUSES = ["Not Reviewed", "Needs Review", "Verified"]
 RECORD_DECISIONS = ["Undecided", "Keep", "Update", "Possible Duplicate", "Remove"]
 DISCOVERY_STATUSES = [
     "Needs Classification",
-    "Existing Client Record",
+    "Existing Source Record",
     "Newly Discovered",
     "Possible Duplicate",
     "Excluded / Not Current",
 ]
+DIRECTORY_ENTRY_STATUSES = ["Not Entered", "Entered", "Needs Correction"]
 
 COMPANY_STATUSES = [
     "Not started", "Researching", "Needs follow-up", "Ready for QA",
@@ -293,6 +296,8 @@ S_CLOUD_STATE_HASH = "db_cloud_state_hash"
 S_SKIP_CLOUD_RESTORE = "db_skip_cloud_restore"
 S_DEMO_MODE = "db_demo_mode"
 S_SHOW_AUTH = "db_show_auth"
+S_SOURCE_BASELINE_META = "db_source_baseline_meta"
+S_CLASSIFICATION_RULES = "db_classification_rules"
 
 AUTOSAVE_DIRECTORY = Path(
     os.environ.get("DATABLIX_AUTOSAVE_DIRECTORY", "/tmp/datablix_autosave")
@@ -309,6 +314,7 @@ AUTOSAVE_STATE_KEYS = [
     S_SOURCE_TYPE, S_SOURCE_REF, S_SELECTOR, S_EDIT_COUNT,
     S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY, S_QA_BASELINE, S_QA_BASELINE_META,
     S_PROJECT_LOADED, S_SCAN_HISTORY, S_SCAN_CANDIDATES, S_SCAN_PAGES,
+    S_SOURCE_BASELINE_META, S_CLASSIFICATION_RULES,
     S_CLOUD_PROJECT_ID, "db_section",
 ]
 
@@ -1218,10 +1224,19 @@ def normalize_workflow(df):
     out["Source Status"] = normalize_choice(out["Source Status"], SOURCE_STATUSES, "Not Checked", STATUS_ALIASES["Source Status"])
     out["Verification Status"] = normalize_choice(out["Verification Status"], VERIFICATION_STATUSES, "Not Reviewed", STATUS_ALIASES["Verification Status"])
     out["Record Decision"] = normalize_choice(out["Record Decision"], RECORD_DECISIONS, "Undecided", STATUS_ALIASES["Record Decision"])
+    # Migrate the earlier wording without losing saved project choices.
+    out["Directory Discovery Status"] = out["Directory Discovery Status"].replace(
+        {"Existing Client Record": "Existing Source Record"}
+    )
     out["Directory Discovery Status"] = normalize_choice(
         out["Directory Discovery Status"],
         DISCOVERY_STATUSES,
         "Needs Classification",
+    )
+    out["Directory Entry Status"] = normalize_choice(
+        out["Directory Entry Status"],
+        DIRECTORY_ENTRY_STATUSES,
+        "Not Entered",
     )
     out = synchronize_missing_information(out)
     for c in ["Researcher", "Missing Information", "Reviewer Notes"]:
@@ -1230,7 +1245,7 @@ def normalize_workflow(df):
 
 
 def _discovery_keys_for_row(row) -> set[str]:
-    """Return stable identity keys used only to compare research rows with the starting client data."""
+    """Return stable identity keys used to compare research rows with the starting source data."""
     name = norm_header(row.get("Building Name", ""))
     address = norm_header(row.get("Street Address", ""))
     city = norm_header(row.get("City", ""))
@@ -1246,24 +1261,23 @@ def _discovery_keys_for_row(row) -> set[str]:
 
 
 def classify_discovery_status(df, original=None):
-    """Classify records as existing, newly discovered, duplicate, or excluded.
+    """Compare research records with the project's starting source baseline.
 
-    Datablix compares the working record against the project's starting building
-    snapshot. Human choices are preserved unless the workflow explicitly marks a
-    record as duplicate or excluded.
+    A source match is marked Existing Source Record. An unmatched row is marked
+    Newly Discovered only when there is enough property identity and current/verified
+    evidence; otherwise it remains Needs Classification for human review.
     """
-    out = df.copy()
-    if "Directory Discovery Status" not in out.columns:
-        out["Directory Discovery Status"] = "Needs Classification"
-
+    out = normalize_workflow(df.copy())
     original_keys = set()
     if isinstance(original, pd.DataFrame) and not original.empty:
-        for _, original_row in original.iterrows():
+        source_frame = normalize_workflow(original.copy())
+        for _, original_row in source_frame.iterrows():
             original_keys.update(_discovery_keys_for_row(original_row))
 
     for idx, row in out.iterrows():
         decision = str(row.get("Record Decision", "") or "").strip()
         inventory_status = str(row.get("Current Inventory Status", "") or "").strip().lower()
+        verification_status = str(row.get("Verification Status", "") or "").strip()
         current_status = str(row.get("Directory Discovery Status", "") or "").strip()
 
         if decision == "Possible Duplicate":
@@ -1273,24 +1287,29 @@ def classify_discovery_status(df, original=None):
             out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
             continue
 
-        # If a record was previously marked duplicate/excluded but that workflow
-        # decision was reversed, recalculate its origin from the starting data.
-        needs_reclassification = (
-            current_status not in {"Existing Client Record", "Newly Discovered"}
-            or current_status in {"Possible Duplicate", "Excluded / Not Current"}
-        )
-        if not needs_reclassification:
-            continue
-
         if not original_keys:
-            out.at[idx, "Directory Discovery Status"] = "Needs Classification"
+            if current_status not in {"Newly Discovered", "Possible Duplicate", "Excluded / Not Current"}:
+                out.at[idx, "Directory Discovery Status"] = "Needs Classification"
             continue
 
         row_keys = _discovery_keys_for_row(row)
-        is_existing = bool(row_keys & original_keys)
-        out.at[idx, "Directory Discovery Status"] = (
-            "Existing Client Record" if is_existing else "Newly Discovered"
+        if row_keys & original_keys:
+            out.at[idx, "Directory Discovery Status"] = "Existing Source Record"
+            continue
+
+        # A missing source match alone is not enough to claim a new current building.
+        has_identity = bool(row_keys)
+        current_evidence = (
+            inventory_status.startswith("current")
+            or (
+                verification_status == "Verified"
+                and decision in {"Keep", "Update"}
+            )
         )
+        if has_identity and current_evidence:
+            out.at[idx, "Directory Discovery Status"] = "Newly Discovered"
+        elif current_status != "Newly Discovered":
+            out.at[idx, "Directory Discovery Status"] = "Needs Classification"
 
     return out
 
@@ -2137,6 +2156,7 @@ def append_external_research_results(
     mapped["Research Status"] = "Imported - Needs Review"
     mapped["Verification Status"] = "Needs Review"
     mapped["Record Decision"] = "Undecided"
+    mapped["Directory Entry Status"] = "Not Entered"
 
     current = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
     combined = pd.concat([current, mapped], ignore_index=True, sort=False)
@@ -2393,7 +2413,7 @@ def research_log(df):
         "Date Researched", "Source Age (Days)", "Freshness Status", "Researcher",
         "Research Status", "Source Status", "Verification Status",
         "Research Gap Count", "Research Gaps", "Missing Information",
-        "Reviewer Notes", "Record Decision", "Follow-up Priority",
+        "Reviewer Notes", "Record Decision", "Directory Entry Status", "Follow-up Priority",
         "Workflow Gap Count", "Workflow Gaps", "Record Readiness", "Export Status",
     ]
     return df[[c for c in columns if c in df.columns]].copy()
@@ -2476,7 +2496,7 @@ def project_summary(df):
         {"Metric": "Records with usable core identity", "Value": int(df["Core Gap Count"].eq(0).sum()), "Interpretation": "Records with management/owner, street address, and city."},
         {"Metric": "Verified records", "Value": int(df["Verification Status"].eq("Verified").sum()), "Interpretation": "Records marked as human-verified."},
         {"Metric": "Approved for Export", "Value": int(approved_for_export_mask(df).sum()), "Interpretation": "Records explicitly completed, human-verified, kept, and free of critical data blockers."},
-        {"Metric": "Newly discovered records", "Value": int(df["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in df.columns else 0, "Interpretation": "Building records not matched to the starting client dataset."},
+        {"Metric": "Newly discovered records", "Value": int(df["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in df.columns else 0, "Interpretation": "Building records not matched to the starting source dataset."},
         {"Metric": "Open research gaps", "Value": int(df["Research Gap Count"].sum()), "Interpretation": "Unconfirmed listing fields."},
     ])
 
@@ -2497,9 +2517,10 @@ def structure_recommendations():
         ("Research", "Date Researched", "Required for verified records", "Date", "Freshness trail", "Filter"),
         ("Research", "Researcher", "Required for verified records", "Controlled text", "Accountability", "Filter"),
         ("Research", "Verification Status", "Required", "Controlled status", "Human review outcome", "Filter"),
-        ("Research", "Directory Discovery Status", "Required for project audit", "Controlled status", "Distinguishes existing client records, newly discovered buildings, duplicates, and excluded records", "Filter"),
+        ("Research", "Directory Discovery Status", "Required for project audit", "Controlled status", "Distinguishes existing source records, newly discovered buildings, duplicates, and excluded records", "Filter"),
         ("Research", "Missing Information", "Automatically generated", "System text", "Lists current research fields that remain unconfirmed", "No"),
         ("Workflow", "Record Decision", "Required before final use", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
+        ("Workflow", "Directory Entry Status", "Required during final entry", "Controlled status", "Tracks Not Entered, Entered, or Needs Correction", "Filter"),
     ]
     return pd.DataFrame(rows, columns=["Field Group", "Field", "Requirement", "Recommended Type", "Purpose", "Platform Use"])
 
@@ -2688,7 +2709,7 @@ def company_progress_summary(qa_frame, registry=None):
             "Scope Type": company["Scope Type"],
             "Company Status": company["Company Status"],
             "Building Records": len(group),
-            "Existing Client Records": discovery_count(group, "Existing Client Record"),
+            "Existing Source Records": discovery_count(group, "Existing Source Record"),
             "Newly Discovered": discovery_count(group, "Newly Discovered"),
             "Needs Classification": discovery_count(group, "Needs Classification"),
             "Possible Duplicates": discovery_count(group, "Possible Duplicate"),
@@ -2697,6 +2718,7 @@ def company_progress_summary(qa_frame, registry=None):
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()) if not group.empty else 0,
             "Records Passing QA": int(group["QA Status"].eq("Pass").sum()) if not group.empty else 0,
             "Approved for Export": int(approved_for_export_mask(group).sum()) if not group.empty else 0,
+            "Entered in Directory": int(group["Directory Entry Status"].eq("Entered").sum()) if not group.empty else 0,
             "Open QA Issues": int(group["QA Flag Count"].sum()) if not group.empty else 0,
             "Open Field Gaps": int(group["Research Gap Count"].sum()) if not group.empty else 0,
             "Still in Review": int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()) if not group.empty else 0,
@@ -2715,7 +2737,7 @@ def company_progress_summary(qa_frame, registry=None):
             "Scope Type": "Imported",
             "Company Status": "Researching",
             "Building Records": len(group),
-            "Existing Client Records": discovery_count(group, "Existing Client Record"),
+            "Existing Source Records": discovery_count(group, "Existing Source Record"),
             "Newly Discovered": discovery_count(group, "Newly Discovered"),
             "Needs Classification": discovery_count(group, "Needs Classification"),
             "Possible Duplicates": discovery_count(group, "Possible Duplicate"),
@@ -2724,6 +2746,7 @@ def company_progress_summary(qa_frame, registry=None):
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
             "Records Passing QA": int(group["QA Status"].eq("Pass").sum()),
             "Approved for Export": int(approved_for_export_mask(group).sum()),
+            "Entered in Directory": int(group["Directory Entry Status"].eq("Entered").sum()),
             "Open QA Issues": int(group["QA Flag Count"].sum()),
             "Open Field Gaps": int(group["Research Gap Count"].sum()),
             "Still in Review": int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()),
@@ -2739,7 +2762,7 @@ def source_verification_tracker(qa_frame):
         "Directory Discovery Status", "Street Address", "City", "Postal Code",
         "Source URL", "Date Researched", "Researcher", "Source Status",
         "Verification Status", "Missing Information", "Reviewer Notes",
-        "Follow-up Priority", "Record Decision", "Export Status",
+        "Follow-up Priority", "Record Decision", "Directory Entry Status", "Export Status",
     ]
     available = [column for column in columns if column in qa_frame.columns]
     tracker = qa_frame[available].copy()
@@ -2811,6 +2834,7 @@ def directory_recommendations_with_coverage(qa_frame):
         "Directory Discovery Status": ["Directory Discovery Status"],
         "Missing Information": ["Missing Information"],
         "Record Decision": ["Record Decision"],
+        "Directory Entry Status": ["Directory Entry Status"],
     }
 
     coverage_values = []
@@ -2861,7 +2885,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
         },
         {
             "Section": "Duplicate and discovery method",
-            "Report Text": f"Records are compared against the starting client dataset using normalized address, postal-code, city, and building-name evidence. {new_records:,} current record(s) in this scope are classified as newly discovered.",
+            "Report Text": f"Records are compared against the starting source dataset using normalized address, postal-code, city, and building-name evidence. {new_records:,} current record(s) in this scope are classified as newly discovered.",
         },
         {
             "Section": "Verification method",
@@ -2889,8 +2913,10 @@ def methodology_and_limitations_report(qa_frame, scope_label):
 def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) -> str:
     """Create a copy-ready summary for the final project presentation."""
     approved = int(approved_for_export_mask(qa_frame).sum())
+    entered = int(qa_frame["Directory Entry Status"].eq("Entered").sum()) if "Directory Entry Status" in qa_frame.columns else 0
+    needs_correction = int(qa_frame["Directory Entry Status"].eq("Needs Correction").sum()) if "Directory Entry Status" in qa_frame.columns else 0
     still_review = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
-    existing = int(qa_frame["Directory Discovery Status"].eq("Existing Client Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    existing = int(qa_frame["Directory Discovery Status"].eq("Existing Source Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     discovered = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     needs_classification = int(qa_frame["Directory Discovery Status"].eq("Needs Classification").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     duplicates = int(qa_frame["Directory Discovery Status"].eq("Possible Duplicate").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
@@ -2916,7 +2942,7 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
 ## Scope and research coverage
 - Companies represented: {company_count}
 - Building records investigated: {len(qa_frame)}
-- Existing client records: {existing}
+- Existing source records: {existing}
 - Newly discovered records: {discovered}
 - Records still needing discovery classification: {needs_classification}
 - Possible duplicates flagged: {duplicates}
@@ -2924,6 +2950,8 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
 
 ## Review and delivery status
 - Approved for Export: {approved}
+- Entered in directory: {entered}
+- Directory entries needing correction: {needs_correction}
 - Still in review or follow-up: {still_review}
 - Current QA findings: {int(qa_frame['QA Flag Count'].sum()) if not qa_frame.empty else 0}
 
@@ -2968,12 +2996,13 @@ def report_summary(qa_frame, registry=None, scope_label="All companies", baselin
     if scope_label == "All companies" and not registry.empty:
         company_count = len(registry)
     approved_count = int(approved_for_export_mask(qa_frame).sum())
+    entered_count = int(qa_frame["Directory Entry Status"].eq("Entered").sum()) if "Directory Entry Status" in qa_frame.columns else 0
     issue_count = int(qa_frame["QA Flag Count"].sum())
     unresolved_count = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
     cities = sorted(set(resolved(qa_frame["City"]).dropna().astype(str).str.strip()))
     impact = quality_impact_summary(qa_frame, baseline)
     impact_map = dict(zip(impact["Metric"], impact["Value"]))
-    existing_count = int(qa_frame["Directory Discovery Status"].eq("Existing Client Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    existing_count = int(qa_frame["Directory Discovery Status"].eq("Existing Source Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     discovered_count = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     needs_classification_count = int(qa_frame["Directory Discovery Status"].eq("Needs Classification").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     duplicate_count = int(qa_frame["Directory Discovery Status"].eq("Possible Duplicate").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
@@ -2981,8 +3010,8 @@ def report_summary(qa_frame, registry=None, scope_label="All companies", baselin
 
     rows = [
         {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Building records analysed: {len(qa_frame):,}."},
-        {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {approved_count:,} records are currently Approved for Export after human review."},
-        {"Section": "Research contribution", "Report Text": f"The current scope contains {existing_count:,} existing client record(s), {discovered_count:,} newly discovered record(s), {needs_classification_count:,} record(s) still needing origin classification, {duplicate_count:,} possible duplicate(s), and {excluded_count:,} excluded/not-current record(s)."},
+        {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {approved_count:,} records are currently Approved for Export after human review, and {entered_count:,} records are marked Entered in the final directory."},
+        {"Section": "Research contribution", "Report Text": f"The current scope contains {existing_count:,} existing source record(s), {discovered_count:,} newly discovered record(s), {needs_classification_count:,} record(s) still needing origin classification, {duplicate_count:,} possible duplicate(s), and {excluded_count:,} excluded/not-current record(s)."},
         {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {unresolved_count:,} records still require correction, verification, a decision, or documented follow-up."},
         {"Section": "Quality impact", "Report Text": f"The saved baseline contains {int(impact_map.get('Baseline issues', 0)):,} issues. {int(impact_map.get('Baseline issues resolved', 0)):,} no longer appear after revalidation, producing an issue-resolution rate of {float(impact_map.get('Issue-resolution rate', 0)):.1f}%."},
         {"Section": "Method", "Report Text": "Companies were researched separately using an inventory-first public-source method. Structured CSV research results and scanner cross-checks were imported as candidates, then reviewed by a person before approval."},
@@ -3002,7 +3031,9 @@ def project_info_dataframe(qa_frame, registry):
         {"Setting": "Building Records", "Value": len(qa_frame)},
         {"Setting": "Approved for Export", "Value": int(approved_for_export_mask(qa_frame).sum())},
         {"Setting": "Source", "Value": st.session_state.get(S_SOURCE_TYPE, "Workspace")},
-        {"Setting": "Datablix Project Format", "Value": "1"},
+        {"Setting": "Source Baseline Records", "Value": int((st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("source_records", 0) or 0)},
+        {"Setting": "Source Assignment Sheet", "Value": str((st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("assignment_sheet", "") or "")},
+        {"Setting": "Datablix Project Format", "Value": "2"},
     ])
 
 
@@ -3031,10 +3062,23 @@ def project_workbook_bytes():
     baseline = st.session_state.get(S_QA_BASELINE)
     if not isinstance(baseline, pd.DataFrame):
         baseline = pd.DataFrame()
+    source_baseline = st.session_state.get(S_ORIGINAL)
+    source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
+    if not isinstance(source_meta, dict) or not source_meta:
+        source_baseline = pd.DataFrame()
+    if not isinstance(source_baseline, pd.DataFrame):
+        source_baseline = pd.DataFrame()
+    classification_rules = st.session_state.get(S_CLASSIFICATION_RULES)
+    if not isinstance(classification_rules, pd.DataFrame):
+        classification_rules = pd.DataFrame()
+    source_meta_frame = pd.DataFrame([source_meta]) if isinstance(source_meta, dict) and source_meta else pd.DataFrame()
     sheets = {
         "Project Info": project_info_dataframe(qa_frame, registry),
         "Company Registry": registry,
         "Working Data": working,
+        "Source Baseline": source_baseline,
+        "Source Baseline Meta": source_meta_frame,
+        "Classification Rules": classification_rules,
         "Current QA": qa_frame,
         "Company Analysis": company_progress_summary(qa_frame, registry) if not qa_frame.empty else pd.DataFrame(),
         "Quality Baseline": baseline,
@@ -3060,6 +3104,34 @@ def load_project_workbook(uploaded):
             if column not in working.columns:
                 working[column] = pd.NA
         working = ensure_ids(normalize_workflow(working))
+        source_baseline = (
+            prepare_data(pd.read_excel(workbook, sheet_name="Source Baseline"))
+            if "Source Baseline" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        if not source_baseline.empty:
+            for column in INTERNAL_COLUMNS:
+                if column not in source_baseline.columns:
+                    source_baseline[column] = pd.NA
+            source_baseline = ensure_ids(normalize_workflow(source_baseline))
+        source_meta_sheet = (
+            pd.read_excel(workbook, sheet_name="Source Baseline Meta")
+            if "Source Baseline Meta" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        source_meta = (
+            {
+                str(key): ("" if pd.isna(value) else value)
+                for key, value in source_meta_sheet.iloc[0].to_dict().items()
+            }
+            if not source_meta_sheet.empty
+            else {}
+        )
+        classification_rules = (
+            pd.read_excel(workbook, sheet_name="Classification Rules")
+            if "Classification Rules" in workbook.sheet_names
+            else pd.DataFrame()
+        )
         registry = (
             pd.read_excel(workbook, sheet_name="Company Registry")
             if "Company Registry" in workbook.sheet_names
@@ -3137,6 +3209,10 @@ def load_project_workbook(uploaded):
     )
     st.session_state[S_PROJECT_NAME] = project_name
     st.session_state[S_COMPANIES] = registry
+    if isinstance(source_baseline, pd.DataFrame) and not source_baseline.empty:
+        st.session_state[S_ORIGINAL] = source_baseline
+    st.session_state[S_SOURCE_BASELINE_META] = source_meta
+    st.session_state[S_CLASSIFICATION_RULES] = classification_rules
     st.session_state[S_QA_BASELINE] = baseline
     st.session_state[S_QA_BASELINE_META] = baseline_meta
     st.session_state[S_SCAN_HISTORY] = scan_history
@@ -3197,6 +3273,8 @@ def open_workspace(
         st.session_state[S_SCAN_HISTORY] = pd.DataFrame()
         st.session_state[S_SCAN_CANDIDATES] = pd.DataFrame()
         st.session_state[S_SCAN_PAGES] = pd.DataFrame()
+        st.session_state[S_SOURCE_BASELINE_META] = {}
+        st.session_state[S_CLASSIFICATION_RULES] = pd.DataFrame()
         st.session_state[S_PROJECT_LOADED] = True
         st.session_state[S_CLOUD_PROJECT_ID] = str(uuid.uuid4())
         st.session_state.pop(S_CLOUD_STATE_HASH, None)
@@ -3375,6 +3453,406 @@ def load_upload(uploaded, sheet=None):
         ),
     )
     return "building_records"
+
+
+
+SOURCE_WORKBOOK_RESERVED_SHEETS = {
+    "apartmentbuildings",
+    "listofcompanies",
+    "buildingclassifications",
+    "projectinfo",
+    "companyregistry",
+    "workingdata",
+    "currentqa",
+}
+
+
+def source_assignment_sheet_candidates(uploaded) -> list[str]:
+    """Return likely researcher/assignment tabs from a multi-sheet source workbook."""
+    names = excel_sheet_names(uploaded)
+    candidates = [
+        name for name in names
+        if norm_header(name) not in SOURCE_WORKBOOK_RESERVED_SHEETS
+    ]
+    return candidates or names
+
+
+def _clean_assignment_company_name(value: str) -> str:
+    """Reduce explanatory assignment labels to the actual company name."""
+    clean = re.sub(r"\s+", " ", str(value or "")).strip()
+    clean = re.sub(r"\s+is\s+also\s+.*$", "", clean, flags=re.IGNORECASE).strip()
+    return clean
+
+
+def _company_core_key(value: str) -> str:
+    """Create a conservative matching key for company-name variants."""
+    clean = _clean_assignment_company_name(value).lower()
+    tokens = re.findall(r"[a-z0-9]+", clean)
+    stopwords = {
+        "the", "property", "properties", "management", "manager", "managers",
+        "apartment", "apartments", "reit", "land", "holdings", "holding",
+        "group", "inc", "incorporated", "ltd", "limited", "corp", "corporation",
+        "company", "companies", "service", "services", "realty", "real", "estate",
+    }
+    core = [token for token in tokens if token not in stopwords]
+    return "".join(core) if core else "".join(tokens)
+
+
+def _company_core_matches(left: str, right: str) -> bool:
+    a = _company_core_key(left)
+    b = _company_core_key(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return min(len(a), len(b)) >= 4 and (a in b or b in a)
+
+
+def _assignment_registry_from_block_sheet(data: bytes, sheet_name: str) -> pd.DataFrame:
+    """Read block-style assignment tabs where each company occupies one group of rows."""
+    raw = pd.read_excel(
+        io.BytesIO(data),
+        sheet_name=sheet_name,
+        header=None,
+        engine="openpyxl",
+    )
+    if raw.empty:
+        raise ValueError("The selected assignment sheet is empty.")
+
+    first_column = raw.iloc[:, 0].tolist()
+    blocks = []
+    current = []
+    for value in first_column:
+        if pd.isna(value) or not str(value).strip():
+            if current:
+                blocks.append(current)
+                current = []
+            continue
+        current.append(str(value).strip())
+    if current:
+        blocks.append(current)
+
+    rows = []
+    for block in blocks:
+        if not block:
+            continue
+        raw_name = block[0]
+        company_name = _clean_assignment_company_name(raw_name)
+        if not company_name:
+            continue
+
+        # The first company website in the block is retained as a starting reference.
+        urls = [
+            value for value in block
+            if str(value).strip().lower().startswith(("http://", "https://"))
+        ]
+        website = next(
+            (
+                url for url in urls
+                if "fifty-five-plus.com/apartment" not in url.lower()
+            ),
+            urls[0] if urls else "",
+        )
+        note = ""
+        if company_name != raw_name:
+            note = f"Assignment label: {raw_name}"
+
+        rows.append({
+            "Company ID": "",
+            "Management/Owner": company_name,
+            "Main Website": website,
+            "Scope Type": "Initial assignment",
+            "Date Assigned": date.today().isoformat(),
+            "Company Status": "Not started",
+            "Notes": note,
+        })
+
+    if not rows:
+        raise ValueError(
+            "Datablix could not identify company blocks in the selected assignment sheet."
+        )
+    return pd.DataFrame(rows)
+
+
+def _merge_assignment_registry(existing, incoming) -> pd.DataFrame:
+    """Merge an assignment list into the current registry while preserving existing IDs and prompts."""
+    registry = normalize_company_registry(existing)
+    incoming = incoming.copy()
+
+    for _, row in incoming.iterrows():
+        name = str(row.get("Management/Owner", "") or "").strip()
+        if not name:
+            continue
+
+        match_index = None
+        for idx, existing_row in registry.iterrows():
+            if _company_core_matches(name, existing_row.get("Management/Owner", "")):
+                match_index = idx
+                break
+
+        if match_index is not None:
+            if not str(registry.at[match_index, "Main Website"] or "").strip():
+                registry.at[match_index, "Main Website"] = str(row.get("Main Website", "") or "").strip()
+            registry.at[match_index, "Scope Type"] = "Initial assignment"
+            if not str(registry.at[match_index, "Date Assigned"] or "").strip():
+                registry.at[match_index, "Date Assigned"] = str(row.get("Date Assigned", "") or "").strip()
+            incoming_note = str(row.get("Notes", "") or "").strip()
+            if incoming_note and incoming_note not in str(registry.at[match_index, "Notes"] or ""):
+                existing_note = str(registry.at[match_index, "Notes"] or "").strip()
+                registry.at[match_index, "Notes"] = (
+                    f"{existing_note} | {incoming_note}" if existing_note else incoming_note
+                )
+            continue
+
+        new_row = {column: "" for column in COMPANY_COLUMNS}
+        for column in COMPANY_COLUMNS:
+            if column in row.index and not is_unresolved(row.get(column)):
+                new_row[column] = row.get(column)
+        new_row["Company ID"] = next_company_id(registry)
+        new_row["Management/Owner"] = name
+        new_row["Scope Type"] = "Initial assignment"
+        new_row["Company Status"] = str(row.get("Company Status", "Not started") or "Not started")
+        registry = pd.concat([registry, pd.DataFrame([new_row])], ignore_index=True)
+
+    return normalize_company_registry(registry)
+
+
+def _registry_match_index(owner_name: str, registry: pd.DataFrame):
+    for idx, row in registry.iterrows():
+        if _company_core_matches(owner_name, row.get("Management/Owner", "")):
+            return idx
+    return None
+
+
+def _parse_classification_rules(data: bytes, sheet_name: str | None) -> pd.DataFrame:
+    if not sheet_name:
+        return pd.DataFrame(columns=["Type", "Typical Height"])
+    raw = pd.read_excel(
+        io.BytesIO(data),
+        sheet_name=sheet_name,
+        header=None,
+        engine="openpyxl",
+    )
+    if raw.empty or raw.shape[1] < 2:
+        return pd.DataFrame(columns=["Type", "Typical Height"])
+
+    header_row = None
+    for idx in raw.index:
+        first = norm_header(raw.iloc[idx, 0])
+        second = norm_header(raw.iloc[idx, 1])
+        if first == "type" and "height" in second:
+            header_row = idx
+            break
+    if header_row is None:
+        return pd.DataFrame(columns=["Type", "Typical Height"])
+
+    rows = []
+    for idx in range(header_row + 1, len(raw)):
+        type_value = raw.iloc[idx, 0]
+        height_value = raw.iloc[idx, 1]
+        if pd.isna(type_value):
+            continue
+        type_text = str(type_value).strip()
+        if not type_text:
+            continue
+        rows.append({
+            "Type": type_text,
+            "Typical Height": "" if pd.isna(height_value) else str(height_value).strip(),
+        })
+    return pd.DataFrame(rows)
+
+
+def _source_baseline_from_workbook(data: bytes, assignment_sheet: str, existing_registry=None):
+    """Extract assigned companies, their starting building records, and classification rules."""
+    with pd.ExcelFile(io.BytesIO(data), engine="openpyxl") as workbook:
+        sheet_names = workbook.sheet_names
+
+    building_sheet = next(
+        (name for name in sheet_names if "apartmentbuildings" in norm_header(name)),
+        None,
+    )
+    if not building_sheet:
+        raise ValueError(
+            "Datablix could not find the source building sheet. "
+            "Expected a worksheet named similar to 'Apartment Buildings'."
+        )
+
+    classification_sheet = next(
+        (name for name in sheet_names if "buildingclassifications" in norm_header(name)),
+        None,
+    )
+
+    incoming_registry = _assignment_registry_from_block_sheet(data, assignment_sheet)
+    registry = _merge_assignment_registry(existing_registry, incoming_registry)
+
+    source_df = pd.read_excel(
+        io.BytesIO(data),
+        sheet_name=building_sheet,
+        engine="openpyxl",
+    )
+    source_df = prepare_data(source_df)
+    validate_input(source_df)
+    mapped, mapping = map_schema(source_df)
+
+    matched_rows = []
+    for idx, row in mapped.iterrows():
+        match_index = _registry_match_index(
+            str(row.get("Management/Owner", "") or ""),
+            registry,
+        )
+        if match_index is None:
+            continue
+        company = registry.loc[match_index]
+        copied = row.copy()
+        copied["Company ID"] = company["Company ID"]
+        copied["Management/Owner"] = company["Management/Owner"]
+        matched_rows.append(copied)
+
+    baseline = (
+        pd.DataFrame(matched_rows)
+        if matched_rows
+        else pd.DataFrame(columns=mapped.columns)
+    )
+    for column in INTERNAL_COLUMNS:
+        if column not in baseline.columns:
+            baseline[column] = pd.NA
+
+    baseline = normalize_workflow(baseline)
+    baseline["Directory Discovery Status"] = "Existing Source Record"
+    baseline["Directory Entry Status"] = "Not Entered"
+    baseline["Research Status"] = "Imported - Needs Review"
+    baseline["Verification Status"] = "Needs Review"
+    baseline["Record Decision"] = "Undecided"
+    baseline = ensure_ids(baseline)
+
+    rules = _parse_classification_rules(data, classification_sheet)
+    return baseline, registry, rules, mapping, building_sheet
+
+
+def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFrame:
+    """Preserve current research while adding unmatched source records and marking source matches."""
+    current = normalize_workflow(current.copy()) if isinstance(current, pd.DataFrame) else normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
+    baseline = normalize_workflow(baseline.copy())
+
+    if current.empty:
+        return classify_discovery_status(ensure_ids(baseline), baseline)
+
+    out = current.copy()
+    fill_fields = [
+        "Management/Owner", "Street Address", "Address Line 2", "City", "Province",
+        "Postal Code", "Country", "Phone", "Primary Email", "Secondary Email",
+        "Website", "Number of Apartments", "Number of Storeys",
+        "Building Classification", "Source URL",
+    ]
+
+    current_key_map = {}
+    for idx, row in out.iterrows():
+        for key in _discovery_keys_for_row(row):
+            current_key_map.setdefault(key, []).append(idx)
+
+    rows_to_add = []
+    for _, source_row in baseline.iterrows():
+        source_keys = _discovery_keys_for_row(source_row)
+        matches = []
+        for key in source_keys:
+            matches.extend(current_key_map.get(key, []))
+        matches = list(dict.fromkeys(matches))
+
+        if matches:
+            target = matches[0]
+            out.at[target, "Directory Discovery Status"] = "Existing Source Record"
+            if is_unresolved(out.at[target, "Directory Entry Status"]):
+                out.at[target, "Directory Entry Status"] = "Not Entered"
+            for field in fill_fields:
+                if field in out.columns and field in source_row.index:
+                    if is_unresolved(out.at[target, field]) and not is_unresolved(source_row.get(field)):
+                        out.at[target, field] = source_row.get(field)
+            if is_unresolved(out.at[target, "Company ID"]):
+                out.at[target, "Company ID"] = source_row.get("Company ID")
+        else:
+            rows_to_add.append(source_row)
+
+    if rows_to_add:
+        out = pd.concat([out, pd.DataFrame(rows_to_add)], ignore_index=True, sort=False)
+
+    # Force any stale origin label to be reconsidered against this source baseline.
+    out["Directory Discovery Status"] = out["Directory Discovery Status"].replace(
+        {"Existing Client Record": "Existing Source Record"}
+    )
+    out = ensure_ids(normalize_workflow(out))
+    return classify_discovery_status(out, baseline)
+
+
+def import_source_baseline_workbook(uploaded, assignment_sheet: str) -> dict:
+    """Apply a multi-sheet source workbook to the current project without discarding research work."""
+    data = uploaded.getvalue()
+    current_registry = st.session_state.get(S_COMPANIES, empty_company_registry())
+    baseline, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
+        data,
+        assignment_sheet,
+        current_registry,
+    )
+    if baseline.empty:
+        raise ValueError(
+            "No source building records matched the companies in the selected assignment sheet."
+        )
+
+    current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
+    merged = _merge_source_baseline_with_working(current, baseline)
+
+    # Re-link all rows to the merged assignment registry using tolerant company-name matching.
+    for idx, row in merged.iterrows():
+        match_index = _registry_match_index(
+            str(row.get("Management/Owner", "") or ""),
+            registry,
+        )
+        if match_index is not None:
+            company = registry.loc[match_index]
+            merged.at[idx, "Company ID"] = company["Company ID"]
+            merged.at[idx, "Management/Owner"] = company["Management/Owner"]
+
+    merged = ensure_ids(normalize_workflow(merged))
+    merged = classify_discovery_status(merged, baseline)
+
+    st.session_state[S_ORIGINAL] = baseline.copy()
+    st.session_state[S_WORKING] = merged
+    st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+    st.session_state[S_MAPPING] = mapping
+    st.session_state[S_SOURCE_TYPE] = "Source baseline workbook"
+    st.session_state[S_SOURCE_REF] = uploaded.name
+    st.session_state[S_SHEET] = assignment_sheet
+    st.session_state[S_CLASSIFICATION_RULES] = rules
+    st.session_state[S_SOURCE_BASELINE_META] = {
+        "workbook_name": uploaded.name,
+        "assignment_sheet": assignment_sheet,
+        "building_sheet": building_sheet,
+        "imported_at": datetime.now().isoformat(timespec="seconds"),
+        "assigned_companies": len(registry.loc[registry["Scope Type"].eq("Initial assignment")]),
+        "source_records": len(baseline),
+        "classification_rules": len(rules),
+    }
+    st.session_state[S_PROJECT_LOADED] = True
+    if st.session_state.get(S_FILE) in {None, "", "blank-workspace"}:
+        st.session_state[S_FILE] = (
+            "source-baseline:"
+            + hashlib.sha256(data).hexdigest()
+            + f":{assignment_sheet}"
+        )
+        st.session_state[S_NAME] = uploaded.name
+
+    if not registry.empty:
+        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "") or "").strip()
+        if active_id not in set(registry["Company ID"].astype(str)):
+            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
+
+    autosave_current_project()
+    meta = st.session_state[S_SOURCE_BASELINE_META]
+    return {
+        "assigned_companies": int(meta["assigned_companies"]),
+        "source_records": int(meta["source_records"]),
+        "working_records": len(merged),
+        "classification_rules": int(meta["classification_rules"]),
+    }
 
 
 def load_google(url, selector="", force=False):
@@ -3595,6 +4073,33 @@ def save_edits(edited, columns):
         f"Changes saved. Quality checks refreshed; {approved_count:,} record(s) "
         "are currently Approved for Export."
     )
+
+
+def update_directory_entry_status(record_id: str, status: str) -> bool:
+    """Update one approved record's final directory-entry tracking status."""
+    if status not in DIRECTORY_ENTRY_STATUSES:
+        return False
+    working = st.session_state.get(S_WORKING)
+    if not isinstance(working, pd.DataFrame) or working.empty:
+        return False
+    mask = working["Record ID"].astype(str).eq(str(record_id))
+    if int(mask.sum()) != 1:
+        return False
+    working.loc[mask, "Directory Entry Status"] = status
+    st.session_state[S_WORKING] = normalize_workflow(working)
+    st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
+    autosave_current_project()
+    return True
+
+
+def directory_entry_record_label(row) -> str:
+    """Create a compact navigation label for the directory-entry assistant."""
+    parts = []
+    for field in ["Building Name", "Street Address", "City"]:
+        value = row.get(field, "")
+        if not is_unresolved(value):
+            parts.append(str(value).strip())
+    return " · ".join(parts) if parts else str(row.get("Record ID", "Record"))
 
 
 # =========================================================
@@ -5332,6 +5837,97 @@ if section == "Research projects & companies":
     with st.container(border=True):
         render_project_company_analytics(project_registry, working)
 
+    # One-time source baseline setup. This is separate from company research imports.
+    source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
+    if not isinstance(source_meta, dict):
+        source_meta = {}
+    with st.container(border=True):
+        st.markdown("### Source baseline")
+        if source_meta:
+            st.success("Source baseline ready. Continue company research against this starting point.")
+            source_metrics = st.columns(3)
+            source_metrics[0].metric(
+                "Assigned companies",
+                f"{int(source_meta.get('assigned_companies', 0) or 0):,}",
+            )
+            source_metrics[1].metric(
+                "Existing source records",
+                f"{int(source_meta.get('source_records', 0) or 0):,}",
+            )
+            source_metrics[2].metric(
+                "Classification rules",
+                f"{int(source_meta.get('classification_rules', 0) or 0):,}",
+            )
+            st.caption(
+                f"Workbook: {source_meta.get('workbook_name', 'Source workbook')} · "
+                f"Assignment sheet: {source_meta.get('assignment_sheet', '')}"
+            )
+            rules = st.session_state.get(S_CLASSIFICATION_RULES)
+            if isinstance(rules, pd.DataFrame) and not rules.empty:
+                with st.expander("View source building-classification rules"):
+                    st.dataframe(rules, width="stretch", hide_index=True)
+        else:
+            st.info(
+                "Start here once: import the original source workbook so Datablix can "
+                "separate existing source records from genuinely new discoveries."
+            )
+
+        with st.expander(
+            "Import or update source baseline workbook",
+            expanded=not bool(source_meta),
+        ):
+            st.write(
+                "Upload the original multi-sheet workbook, then choose your assignment sheet. "
+                "Datablix reads the assignment, Apartment Buildings, and Building Classifications "
+                "sheets together. Existing research is preserved and matched to the source baseline."
+            )
+            source_workbook_upload = st.file_uploader(
+                "Original source workbook",
+                type=["xlsx"],
+                key=f"db_source_baseline_upload_{project_context_token}",
+            )
+            if source_workbook_upload is not None:
+                try:
+                    assignment_options = source_assignment_sheet_candidates(
+                        source_workbook_upload
+                    )
+                except Exception as error:
+                    assignment_options = []
+                    st.error(str(error))
+
+                if assignment_options:
+                    source_assignment_sheet = st.selectbox(
+                        "Your assignment sheet",
+                        assignment_options,
+                        key=f"db_source_assignment_sheet_{project_context_token}",
+                        help="Choose the worksheet containing the companies assigned to you.",
+                    )
+                    if has_records:
+                        st.caption(
+                            "Your current research records will not be discarded. Datablix will "
+                            "match them to the source records, preserve your reviewed values, and "
+                            "add only source records that are not already represented."
+                        )
+                    if st.button(
+                        "Import source baseline",
+                        type="primary",
+                        width="stretch",
+                        key=f"db_import_source_baseline_{project_context_token}",
+                    ):
+                        try:
+                            result = import_source_baseline_workbook(
+                                source_workbook_upload,
+                                source_assignment_sheet,
+                            )
+                            st.session_state[S_FLASH] = (
+                                f"Source baseline ready: {result['assigned_companies']:,} assigned "
+                                f"companies and {result['source_records']:,} existing source records. "
+                                "Current research was preserved and matched."
+                            )
+                            st.rerun()
+                        except Exception as error:
+                            st.error(str(error))
+
     with st.expander("Edit project name", expanded=False):
         with st.form(f"db_project_name_form_{project_context_token}"):
             project_name_main = st.text_input(
@@ -6278,12 +6874,12 @@ elif section == "Review records":
     if has_records and not review_scope_qa.empty:
         approved_now = int(approved_for_export_mask(review_scope_qa).sum())
         still_now = int((~approved_for_export_mask(review_scope_qa) & ~review_scope_qa["Record Decision"].eq("Remove")).sum())
-        existing_now = int(review_scope_qa["Directory Discovery Status"].eq("Existing Client Record").sum())
+        existing_now = int(review_scope_qa["Directory Discovery Status"].eq("Existing Source Record").sum())
         discovered_now = int(review_scope_qa["Directory Discovery Status"].eq("Newly Discovered").sum())
         needs_origin_now = int(review_scope_qa["Directory Discovery Status"].eq("Needs Classification").sum())
         summary_cols = st.columns(5)
         summary_cols[0].metric("Company records", f"{len(review_scope_qa):,}")
-        summary_cols[1].metric("Existing client", f"{existing_now:,}")
+        summary_cols[1].metric("Existing source", f"{existing_now:,}")
         summary_cols[2].metric("Newly discovered", f"{discovered_now:,}")
         summary_cols[3].metric("Approved for Export", f"{approved_now:,}")
         summary_cols[4].metric("Still in review", f"{still_now:,}")
@@ -6293,7 +6889,7 @@ elif section == "Review records":
         )
         if needs_origin_now:
             st.info(
-                f"{needs_origin_now:,} record(s) still need discovery classification because Datablix could not safely determine whether they were in the starting client building list."
+                f"{needs_origin_now:,} record(s) still need discovery classification because Datablix could not safely determine whether they were in the starting source building list."
             )
 
         search_col, focus_col = st.columns([2, 1])
@@ -6362,7 +6958,7 @@ elif section == "Review records":
             discovery_filter = filter_row2[2].multiselect(
                 "Discovery status",
                 sorted(display_values(review_scope_qa["Directory Discovery Status"]).unique()),
-                help="Compare existing client records with newly discovered, duplicate, or excluded records.",
+                help="Compare existing source records with newly discovered, duplicate, or excluded records.",
             )
 
         if quality_filter:
@@ -6429,7 +7025,8 @@ elif section == "Review records":
                     ],
                     "Research and verification": [
                         "Directory Discovery Status", "Research Status",
-                        "Verification Status", "Record Decision", "Reviewer Notes",
+                        "Verification Status", "Record Decision",
+                        "Directory Entry Status", "Reviewer Notes",
                     ],
                 }
                 preset = st.selectbox(
@@ -6446,6 +7043,7 @@ elif section == "Review records":
                             "Building Name", "Management/Owner", "Phone", "Primary Email",
                             "Website", "Directory Discovery Status", "Research Status",
                             "Verification Status", "Record Decision",
+                            "Directory Entry Status",
                         ],
                         key="db_custom_edit_fields",
                     )
@@ -6519,7 +7117,7 @@ elif section == "Review records":
                             "Directory Discovery Status",
                             options=DISCOVERY_STATUSES,
                             required=True,
-                            help="Existing Client Record means it matches the starting client dataset; Newly Discovered means Datablix did not find a starting-data match.",
+                            help="Existing Source Record means it matches the starting source dataset; Newly Discovered means Datablix did not find a starting-data match.",
                         ),
                         "Research Status": st.column_config.SelectboxColumn(
                             "Research Status", options=RESEARCH_STATUSES, required=True
@@ -6532,6 +7130,12 @@ elif section == "Review records":
                         ),
                         "Record Decision": st.column_config.SelectboxColumn(
                             "Record Decision", options=RECORD_DECISIONS, required=True
+                        ),
+                        "Directory Entry Status": st.column_config.SelectboxColumn(
+                            "Directory Entry Status",
+                            options=DIRECTORY_ENTRY_STATUSES,
+                            required=True,
+                            help="Track whether this approved listing has been entered into the final directory.",
                         ),
                     },
                     key=(
@@ -6624,18 +7228,22 @@ elif section == "Analysis & report":
     if scope_mode == "All companies" and not registry.empty:
         company_count_metric = len(registry)
     existing_metric = int(
-        analysis_qa["Directory Discovery Status"].eq("Existing Client Record").sum()
+        analysis_qa["Directory Discovery Status"].eq("Existing Source Record").sum()
     )
     discovered_metric = int(
         analysis_qa["Directory Discovery Status"].eq("Newly Discovered").sum()
     )
 
-    metric_columns = st.columns(5)
+    entered_metric = int(
+        analysis_qa["Directory Entry Status"].eq("Entered").sum()
+    )
+    metric_columns = st.columns(6)
     metric_columns[0].metric("Companies", f"{company_count_metric:,}")
     metric_columns[1].metric("Building records", f"{len(analysis_qa):,}")
-    metric_columns[2].metric("Existing client", f"{existing_metric:,}")
+    metric_columns[2].metric("Existing source", f"{existing_metric:,}")
     metric_columns[3].metric("Newly discovered", f"{discovered_metric:,}")
     metric_columns[4].metric("Approved for Export", f"{int(approved_for_export_mask(analysis_qa).sum()):,}")
+    metric_columns[5].metric("Entered", f"{entered_metric:,}")
 
     st.markdown("### Project deliverables")
     st.caption(
@@ -7010,7 +7618,156 @@ elif section == "Downloads":
         preview_metrics[1].metric("Selected columns", f"{len(selected_columns):,}")
         st.dataframe(export_table.head(250), width="stretch", hide_index=True, height=500)
 
-        st.subheader("5. Download")
+        st.subheader("5. Directory Entry Assistant")
+        st.caption(
+            "Use this after review. Copy each field into the final directory form, "
+            "submit the building, then mark the record Entered so Datablix tracks what remains."
+        )
+
+        assistant_records = scope_qa.loc[
+            approved_for_export_mask(scope_qa)
+        ].copy()
+        if assistant_records.empty:
+            st.info(
+                "No approved records are available for directory entry in this scope yet."
+            )
+        else:
+            assistant_records = assistant_records.sort_values(
+                ["Management/Owner", "Building Name", "Street Address"],
+                kind="stable",
+            ).reset_index(drop=True)
+
+            entered_count = int(
+                assistant_records["Directory Entry Status"].eq("Entered").sum()
+            )
+            correction_count = int(
+                assistant_records["Directory Entry Status"].eq("Needs Correction").sum()
+            )
+            remaining_count = max(len(assistant_records) - entered_count, 0)
+
+            entry_metrics = st.columns(4)
+            entry_metrics[0].metric("Approved", f"{len(assistant_records):,}")
+            entry_metrics[1].metric("Entered", f"{entered_count:,}")
+            entry_metrics[2].metric("Remaining", f"{remaining_count:,}")
+            entry_metrics[3].metric("Needs correction", f"{correction_count:,}")
+
+            scope_token = hashlib.sha256(
+                f"{export_scope_mode}|{export_company_id or 'project'}".encode("utf-8")
+            ).hexdigest()[:10]
+            entry_index_key = f"db_directory_entry_index_{scope_token}"
+            try:
+                entry_index = int(st.session_state.get(entry_index_key, 0))
+            except (TypeError, ValueError):
+                entry_index = 0
+            entry_index = max(0, min(entry_index, len(assistant_records) - 1))
+            st.session_state[entry_index_key] = entry_index
+
+            nav_left, nav_middle, nav_right = st.columns([1, 2, 1])
+            if nav_left.button(
+                "Previous record",
+                width="stretch",
+                disabled=entry_index <= 0,
+                key=f"db_entry_previous_{scope_token}",
+            ):
+                st.session_state[entry_index_key] = max(entry_index - 1, 0)
+                st.rerun()
+            nav_middle.markdown(
+                f"<div style='text-align:center;padding-top:.55rem'><strong>"
+                f"Record {entry_index + 1:,} of {len(assistant_records):,}"
+                f"</strong></div>",
+                unsafe_allow_html=True,
+            )
+            if nav_right.button(
+                "Next record",
+                width="stretch",
+                disabled=entry_index >= len(assistant_records) - 1,
+                key=f"db_entry_next_{scope_token}",
+            ):
+                st.session_state[entry_index_key] = min(
+                    entry_index + 1, len(assistant_records) - 1
+                )
+                st.rerun()
+
+            entry_row = assistant_records.iloc[entry_index]
+            record_id = str(entry_row.get("Record ID", "") or "").strip()
+            entry_label = directory_entry_record_label(entry_row)
+            current_entry_status = str(
+                entry_row.get("Directory Entry Status", "Not Entered")
+                or "Not Entered"
+            ).strip()
+            if current_entry_status not in DIRECTORY_ENTRY_STATUSES:
+                current_entry_status = "Not Entered"
+
+            with st.container(border=True):
+                st.markdown(f"#### {escape(entry_label)}")
+                if current_entry_status == "Entered":
+                    st.success("Directory Entry Status: Entered")
+                elif current_entry_status == "Needs Correction":
+                    st.warning("Directory Entry Status: Needs Correction")
+                else:
+                    st.info("Directory Entry Status: Not Entered")
+
+                st.caption(
+                    "Each code box has a copy control. The fields are shown in the same order as the directory form."
+                )
+
+                listing_values = []
+                for listing_label, source_field in LISTING_FIELD_MAP:
+                    value = (
+                        formatted_location(entry_row)
+                        if source_field is None
+                        else entry_row.get(source_field, "")
+                    )
+                    clean_value = _excel_display_value(value)
+                    listing_values.append((listing_label, clean_value))
+                    st.markdown(f"**{listing_label}**")
+                    st.code(clean_value or " ", language=None)
+
+                st.markdown("**Copy full record**")
+                st.caption(
+                    "This tab-separated line follows the same 10-field order and is useful for spreadsheets or backup notes."
+                )
+                st.code(
+                    "\t".join(value for _, value in listing_values),
+                    language=None,
+                )
+
+                status_actions = st.columns(3)
+                if status_actions[0].button(
+                    "Mark Entered & Next",
+                    type="primary",
+                    width="stretch",
+                    key=f"db_entry_mark_entered_{scope_token}_{record_id}",
+                ):
+                    if update_directory_entry_status(record_id, "Entered"):
+                        if entry_index < len(assistant_records) - 1:
+                            st.session_state[entry_index_key] = entry_index + 1
+                        st.session_state[S_FLASH] = (
+                            f"Marked {entry_label} as Entered."
+                        )
+                        st.rerun()
+                if status_actions[1].button(
+                    "Needs Correction",
+                    width="stretch",
+                    key=f"db_entry_mark_correction_{scope_token}_{record_id}",
+                ):
+                    if update_directory_entry_status(record_id, "Needs Correction"):
+                        st.session_state[S_FLASH] = (
+                            f"Marked {entry_label} as needing correction."
+                        )
+                        st.rerun()
+                if status_actions[2].button(
+                    "Reset to Not Entered",
+                    width="stretch",
+                    key=f"db_entry_reset_{scope_token}_{record_id}",
+                ):
+                    if update_directory_entry_status(record_id, "Not Entered"):
+                        st.session_state[S_FLASH] = (
+                            f"Reset {entry_label} to Not Entered."
+                        )
+                        st.rerun()
+
+        st.subheader("6. Download")
         scope_filename = safe_filename(export_scope_label)
         suffix = "approved" if export_record_mode == "Approved for Export" else "all_records"
         export_filename = f"{scope_filename}_{suffix}_selected_columns.csv"
