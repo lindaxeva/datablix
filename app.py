@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Single Research CSV Mode 2026.07.24-v36"
+DATABLIX_BUILD = "Website Research + Datablix Compare 2026.07.24-v37"
 
 # =========================================================
 # Configuration
@@ -2177,29 +2177,27 @@ def build_company_website_research_prompt(
     company_name: str,
     company_website: str,
     geographic_scope: str,
-    known_records: str,
-    known_records_context: str,
     priority_notes: str,
     source_policy: str,
     output_notes: str,
 ) -> str:
-    """Create one comprehensive, editable, provider-neutral research prompt."""
-    return f"""# Datablix Inventory-First Company Research Prompt
+    """Create a website-only research prompt. Source comparison happens in Datablix after import."""
+    return f"""# Datablix Website-Only Company Research Prompt
 
-You are acting as a careful public-source rental-property research analyst. Research the company below and produce exactly ONE downloadable consolidated CSV file that can be imported into Datablix for data-quality review and human verification. The single CSV must contain every identifiable Current, Review, and Excluded/legacy property record for this company using one shared schema. Do not split the research result into multiple CSV files.
+You are acting as a careful public-source rental-property research analyst. Research the company below and produce exactly ONE downloadable consolidated CSV file for import into Datablix.
+
+IMPORTANT WORKFLOW BOUNDARY:
+- Research the company's CURRENT public website/inventory independently.
+- Do NOT compare the research against any Datablix Starting Data, project workbook, existing Datablix records, prior research file, or known-record list.
+- Do NOT decide whether a property is new to the project, already exists in the project source, or is a project duplicate.
+- Datablix will perform that comparison AFTER this CSV is imported.
+
+Your job here is to establish what the company's current public web presence supports, collect the requested fields, document evidence, and return one clean research CSV.
 
 ## Company context
 - Company or management owner: {company_name or '[enter company name]'}
 - Official company website: {company_website or '[enter official website]'}
 - Geographic scope: {geographic_scope or 'Ontario, Canada'}
-
-## Starting record context
-{known_records_context}
-
-Starting/known property records for this company:
-{known_records or '- No starting records are currently available for this company.'}
-
-IMPORTANT: The companion PROJECT source CSV contains Starting Data for the entire project and must be used for this company research cycle. First identify the rows relevant to the active company using Management/Owner, aliases, address/postal code, and property identity. Any company-specific list shown above is only a convenience summary and may be incomplete. The project source is a comparison and reconciliation dataset, NOT automatic proof that a property is still current, still managed by the company, or still belongs in the final directory.
 
 ## Core principle
 Do NOT begin by collecting every property URL that happens to exist.
@@ -2210,34 +2208,17 @@ A dedicated property URL that still loads is NOT, by itself, proof that the prop
 
 ## Research workflow
 
-### Phase 0 — Reconcile the starting source records
-Before broad property discovery, use the starting/known records above as a checklist.
-
-For EACH starting source record:
-1. Look for the same property in the company's current official inventory.
-2. Match identity primarily by normalized street address and postal code.
-3. Use property URL and building name plus city as supporting identity evidence.
-4. Do not treat a changed building name, branding change, or slightly different address formatting as a new property when the underlying property identity is the same.
-5. If current official evidence supports the property, retain ONE current property row.
-6. If current official evidence indicates it is no longer in the active inventory, classify it as Excluded and document why.
-7. If the evidence is incomplete, conflicting, blocked, or unavailable, classify it as Review rather than guessing.
-8. Do not create a duplicate row simply because the starting source record and current website use different labels for the same building.
-
-After reconciling the starting records, continue searching the company's current official inventory for additional in-scope properties that are NOT represented in the starting source records.
-
-A legitimate current property found outside the starting source records is a potential newly discovered property. Include it when supported by current inventory evidence. Do not let the starting list limit discovery.
-
 ### Phase 1 — Establish the current company inventory
 Start with current official inventory/navigation sources whenever they exist, especially:
 1. current city or location pages;
 2. current property-search or portfolio pages;
 3. the company's current human-readable HTML sitemap;
-4. current community/building index pages;
+4. current community/building index pages; and
 5. current official property pages linked from those inventory sources.
 
-Use technical XML sitemaps as DISCOVERY evidence, not automatic proof that a property is current. XML sitemaps can contain old, orphaned, archived, or otherwise stale URLs.
+Use technical XML sitemaps as DISCOVERY evidence, not automatic proof that a property is current. XML sitemaps can contain old, orphaned, archived, or stale URLs.
 
-For every candidate property, record:
+For every meaningful property candidate, record:
 - Current Inventory Status;
 - Inventory Evidence;
 - Found on City/Portfolio Page;
@@ -2248,31 +2229,28 @@ For every candidate property, record:
 Use these values consistently:
 - Current — supported by current official inventory evidence.
 - Review — current status is uncertain because inventory evidence is incomplete, conflicting, blocked, or unavailable.
-- Excluded — not in current inventory.
+- Excluded — an identifiable property appears on the website/domain but current official inventory evidence supports that it is no longer in the active inventory.
 
 ### Property-row eligibility rule — apply BEFORE creating any property row
-A URL, page title, or dedicated property path is not enough to create a property record. Before creating a row, confirm that the page represents a meaningful property candidate using current inventory evidence and/or substantive property-specific information.
+A URL, page title, or dedicated property path is not enough to create a property record. Confirm that the page represents a meaningful physical property candidate using current inventory evidence and/or substantive property-specific information.
 
-Do NOT create a row in the consolidated research CSV when ALL of the following are true:
+Do NOT create a CSV row when ALL of the following are true:
 - the page is orphaned, legacy, isolated, or only discoverable through crawling/XML sitemap evidence;
 - it is not supported by a current city/property/portfolio page or current human-readable HTML sitemap;
 - it contains no meaningful property-specific information sufficient to establish a real building record; and
 - it contains only a generic title, navigation/template content, empty sections, redirects, placeholder text, or other non-property content.
 
-Such pages must be ignored as non-record pages. They must NOT be counted as properties and must NOT become Current, Review, or Excluded rows merely because the URL exists. A URL alone is not a property record.
+Such pages are non-record pages. Ignore them. A URL alone is not a property record.
 
 Meaningful property evidence can include a reliable building/property name, street address, city/postal code, property-specific leasing/contact information, suite/floor-plan information, amenities, unit count, or substantive property description. Generic labels such as Home, Properties, Apartments, Contact Us, Amenities, Floor Plans, Availability, Learn More, or Welcome are not meaningful property evidence by themselves.
 
-If a page is supported by current official inventory evidence but its dedicated page is sparse, blank, or missing some details, keep the property as Current and research the missing fields from other permitted sources. Do not discard a legitimate current property just because its dedicated page is poorly populated.
+If a property is supported by current official inventory evidence but its dedicated page is sparse, blank, or missing details, keep the property as Current and research missing fields from other permitted sources. Do not discard a legitimate current property because its dedicated page is poorly populated.
 
-If an orphan/legacy page contains enough substantive property-specific evidence to identify a real building, evaluate its current-inventory status normally. When BOTH a current city/property/portfolio index and a current human-readable HTML sitemap are available and the dedicated property page is absent from BOTH, mark the identifiable property:
-Excluded — not in current inventory.
+If an identifiable orphan/legacy property contains substantive property-specific evidence, evaluate its current website-inventory status. When BOTH a current city/property/portfolio index and a current human-readable HTML sitemap are available and the property is absent from BOTH, it may be marked Excluded — not in current inventory, with clear evidence.
 
-Keep identifiable Excluded properties in the single research CSV for audit/reconciliation, but do not count them as active properties or treat them as final directory entries. Their exclusion reason and supporting evidence must remain visible in the same file.
+If an authoritative inventory source is missing, blocked, obviously incomplete, or unavailable, do not exclude solely because of absence from that one source. Use Review and explain the limitation.
 
-If one of the authoritative inventory sources is missing, blocked, obviously incomplete, or unavailable, do not exclude solely because of absence from that one source. Mark the property for review and explain the limitation.
-
-### Phase 2 — Research confirmed/current properties deeply
+### Phase 2 — Research Current properties deeply
 For each Current property, inspect the complete relevant official property content before declaring any field missing. Check, where available:
 - property overview;
 - address/location information;
@@ -2291,29 +2269,28 @@ For each Current property, inspect the complete relevant official property conte
 
 Missing means researched and not found — not merely missed during the first extraction pass.
 
-### Phase 3 — Use secondary public sources only for genuine gaps
-After a property has been confirmed as Current, reliable third-party public sources may be used only to fill fields that remain genuinely unavailable from current official sources, when permitted by the source policy below.
+### Phase 3 — Use secondary public sources only for genuine field gaps
+After a property has been confirmed as Current from official inventory evidence, reliable third-party public sources may be used only to fill fields that remain genuinely unavailable from current official sources, when permitted by the source policy below.
 
-A third-party source must NEVER bring an Excluded legacy/orphaned property back into scope.
+A third-party source must NEVER override current official inventory evidence about whether a property belongs to the company's current portfolio.
 
 Clearly label secondary evidence in Supporting Evidence and keep the official company/property source as the primary basis for property identity and current-inventory status.
 
-### Phase 4 — Quality-check before delivery
-Before producing the final single CSV file:
+### Phase 4 — Quality-check the website research before delivery
+Before producing the final CSV:
 1. Recheck every identifiable property against current company inventory evidence.
-2. Reconcile every starting source record as Current, Review, Excluded, or matched to another row representing the same physical property.
-3. Confirm that legitimate current properties discovered outside the starting source list have not been missed.
-4. Keep identifiable Excluded/legacy properties in the same consolidated CSV with Current Inventory Status = Excluded and a clear Inventory Exclusion Reason. Remove only non-record orphan/empty pages that fail the property-row eligibility rule.
-5. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
-6. Verify every field before listing it under Missing Information.
-7. Check duplicates primarily by normalized street address and postal code, then property URL and building name plus city.
-8. Ensure the consolidated CSV has ONE row per unique identifiable physical property. If a starting-source row and current website row refer to the same property under different names or formatting, reconcile them into one row and explain the match in Reviewer Notes or Supporting Evidence.
-9. If two records may be duplicates but identity cannot be safely resolved, keep one Review row per genuinely distinct candidate and explain the duplicate concern; do not silently merge or create redundant copies.
-10. Check that City, Province, and Postal Code agree.
-11. Ensure every populated value is traceable to public evidence.
-12. Distinguish official-source findings from secondary-source findings.
-13. Keep genuine unresolved information separate from extraction failures.
-14. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
+2. Confirm that legitimate current properties visible through current official navigation/index sources have not been missed.
+3. Keep identifiable Excluded/legacy properties only when they are meaningful property records and their website-inventory exclusion is supported; omit non-record orphan/empty pages.
+4. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
+5. Verify every field before listing it under Missing Information.
+6. Remove duplicate rows created by the WEBSITE RESEARCH ITSELF, primarily using normalized street address and postal code, then property URL and building name plus city.
+7. Ensure ONE row per unique identifiable physical property in this website-research result.
+8. Check that City, Province, and Postal Code agree.
+9. Ensure every populated value is traceable to public evidence.
+10. Distinguish official-source findings from secondary-source findings.
+11. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
+
+Do NOT compare any row with Datablix Starting Data during this quality check. Datablix handles project-level existing/new/duplicate comparison after import.
 
 ## Source policy
 {source_policy}
@@ -2321,7 +2298,7 @@ Before producing the final single CSV file:
 Official company and official property sources are the primary evidence. Do not silently rely on search-result snippets, social media, forums, user-generated listings, scraped directories, or unverified third-party sources.
 
 ## Fields to collect for each property
-Return one row per unique identifiable property, including CURRENT, REVIEW, and identifiable EXCLUDED/legacy properties. Excluded rows remain in the same CSV for audit and reconciliation but are not active directory entries.
+Return one row per unique identifiable property discovered through this website-research process, including Current, Review, and meaningful Excluded/legacy website records when supported.
 
 Use these exact column headings:
 
@@ -2332,9 +2309,9 @@ Field guidance:
 - Management/Owner: the selected company unless official evidence clearly identifies another responsible entity; note conflicts.
 - Property Website: the official property-specific homepage.
 - Company Website: the official corporate or management-company homepage.
-- Source URL: the strongest exact official page supporting the property's identity/current status.
-- Current Inventory Status: Current, Review, or Excluded — not in current inventory.
-- Inventory Evidence: explain the official inventory source(s) supporting the status.
+- Source URL: the strongest exact official page supporting the property's identity/current website status.
+- Current Inventory Status: Current, Review, or Excluded — not in current website inventory.
+- Inventory Evidence: explain the official website inventory source(s) supporting the status.
 - Found on City/Portfolio Page: Yes, No, or Unknown.
 - Found on HTML Sitemap: Yes, No, or Unknown.
 - Found on XML Sitemap: Yes, No, or Unknown. XML presence alone does not prove current status.
@@ -2342,30 +2319,27 @@ Field guidance:
 - Supporting Evidence: concise field-level evidence notes and additional supporting URLs separated with semicolons. Clearly label secondary sources.
 - Confidence: High, Medium, or Low based on strength and agreement of evidence.
 - Missing Information: list only fields that were actively checked and could not be confirmed.
-- Reviewer Notes: conflicts, assumptions, duplicate concerns, limitations, special cases, and follow-up needs.
+- Reviewer Notes: conflicts, assumptions, website limitations, special cases, and follow-up needs.
 
 ## Mandatory research and data-quality rules
 1. Never invent, estimate, infer, or fill a field merely to make the dataset look complete.
 2. When information is not publicly confirmed after a reasonable check, leave the field blank and record it under Missing Information.
-3. Absence of an amenity or feature does not mean “No.” Use No only when a source explicitly states that the feature is unavailable, not offered, or prohibited.
+3. Absence of an amenity or feature does not mean No. Use No only when a source explicitly states that the feature is unavailable, not offered, or prohibited.
 4. A dedicated property page existing on the company's domain does not by itself establish that the property is current.
-5. Do not use a third-party listing to resurrect a property that current official inventory evidence excludes.
+5. Do not use a third-party listing to bring a property into current scope when current official inventory evidence does not support it.
 6. Do not use generic labels such as Contact Us, Home, Properties, Apartments, Communities, Amenities, Floor Plans, Availability, Learn More, or Welcome as a building name.
 7. Distinguish a company contact page from a property page. A corporate office address is not automatically a rental-property address.
 8. Keep Property Website, Company Website, and Source URL separate.
 9. Preserve conflicting values and explain the conflict instead of choosing one without evidence.
-10. Check duplicates by normalized street address and postal code first, then property website, building name plus city, and other identity evidence.
+10. Deduplicate only within this website-research result. Do not compare against Datablix/project source records.
 11. Do not merge separate buildings merely because they belong to one complex. Do not split one building merely because several source pages describe it.
 12. Keep only properties inside the stated geographic scope. Put uncertain locations in Reviewer Notes and Current Inventory Status = Review rather than silently guessing.
 13. Validate Canadian postal-code formatting where available, but do not manufacture missing postal codes.
 14. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
 15. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
-16. Treat the starting source records as historical/start-state evidence only. Re-verify them; do not automatically carry them forward as current.
-17. Do not label a property as newly discovered merely because its current name or URL differs from the starting source. Compare normalized address, postal code, property identity, and management evidence first.
-18. Record information that appears stale, archived, historical, or no longer current in Reviewer Notes and use inventory evidence to determine whether it belongs in the active directory.
-19. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it rather than creating a Current, Review, or Excluded property row.
-20. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain the property and research missing details elsewhere.
-21. The starting source list is a reconciliation checklist, not a ceiling. Continue searching current authoritative inventory sources for legitimate properties missing from the source.
+16. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it.
+17. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain it and research missing details elsewhere.
+18. Do not classify a property as Existing Source Record, Newly Discovered, or Possible Duplicate relative to the project. Datablix assigns project-comparison status after import.
 
 ## Priority or company-specific instructions
 {priority_notes or 'No additional priorities were provided.'}
@@ -2373,43 +2347,33 @@ Field guidance:
 ## Required deliverable — EXACTLY ONE consolidated CSV file
 Create exactly ONE downloadable CSV file for this company. Do not create or return an Excel workbook, Google Sheet, JSON file, PDF, Word document, Markdown table, HTML table, ZIP of research results, or multiple CSV files.
 
-### Required single file
-Name the file clearly for the company, for example:
-`company_name_research_results.csv`
+Name the file clearly, for example:
+`company_name_website_research_results.csv`
 
 The single CSV must:
 - contain one unique identifiable physical property per row;
 - use the exact column headings listed above, in the exact order provided;
-- contain Current, Review, and identifiable Excluded/legacy properties together in the same file;
-- use `Current Inventory Status` to distinguish Current, Review, and Excluded rows;
-- populate `Inventory Exclusion Reason` for Excluded/legacy rows;
-- preserve `Inventory Evidence`, `Source URL`, `Supporting Evidence`, and `Reviewer Notes` so every status decision is auditable;
-- preserve blank cells for genuinely unresolved values;
+- contain Current, Review, and meaningful identifiable Excluded/legacy website records together when applicable;
+- use Current Inventory Status to distinguish Current, Review, and Excluded website-inventory status;
+- preserve Inventory Evidence, Source URL, Supporting Evidence, and Reviewer Notes so every website-research conclusion is auditable;
+- preserve blank cells for genuinely unresolved values; and
 - remain directly importable into Datablix without restructuring.
 
-### Reconciliation and duplicate handling inside the same file
-- Do not create a separate reconciliation file.
-- Do not create a separate active-properties file.
-- Do not create a separate excluded-properties or legacy-properties file.
-- Do not create a separate duplicate-record file.
-- When a starting-source record matches a current website record for the same physical property, reconcile them into ONE row rather than duplicating the property. Explain important name/address/URL differences in Reviewer Notes or Supporting Evidence.
-- When an identifiable legacy property is no longer current, keep that property in the same CSV with `Current Inventory Status = Excluded` and explain why.
-- When evidence is genuinely conflicting or identity is unresolved, use `Current Inventory Status = Review` and explain the uncertainty rather than forcing a decision.
-- Blank, generic, placeholder, or orphan URLs that do not establish a meaningful property record must be omitted entirely rather than added as Excluded rows.
+Do not add project-comparison columns or conclusions. Datablix will compare this file with the current project Starting Data after import.
 
 ### Output behaviour
-- Generate exactly one actual downloadable `.csv` file whenever the AI tool supports file creation.
+- Generate exactly one actual downloadable .csv file whenever the AI tool supports file creation.
 - Do not substitute a narrative report for the CSV.
 - Do not paste a Markdown table instead of creating the CSV file.
 - Do not provide Excel or Google Sheets as alternatives.
 - Do not attach any second research-results file.
 - Keep commentary outside the file to an absolute minimum.
-- If the platform cannot create an attached/downloadable file, return the contents of that one CSV as raw RFC-style CSV text in a fenced `csv` code block as the fallback, with no surrounding narrative beyond a one-line limitation notice.
+- If the platform cannot create an attached/downloadable file, return the contents of that one CSV as raw RFC-style CSV text in a fenced csv code block as the fallback, with no surrounding narrative beyond a one-line limitation notice.
 
-Single-CSV format rule: This requirement overrides any conflicting output-format instruction in saved company notes or elsewhere in this prompt. Company-specific instructions may change research priorities or content, but they must not change the requirement to return exactly ONE consolidated `.csv` research-results file.
+Single-CSV format rule: This requirement overrides any conflicting output-format instruction in saved company notes or elsewhere in this prompt. Company-specific instructions may change research priorities or content, but they must not change the requirement to return exactly ONE consolidated .csv research-results file.
 
 Additional output instructions:
-{output_notes or 'Return exactly one clean, evidence-based consolidated CSV file, ready for direct import into Datablix.'}
+{output_notes or 'Return exactly one clean, evidence-based website-research CSV file, ready for direct import into Datablix.'}
 """
 
 def append_external_research_results(
@@ -2446,6 +2410,17 @@ def append_external_research_results(
     current = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
     combined = pd.concat([current, mapped], ignore_index=True, sort=False)
     combined = ensure_ids(normalize_workflow(prepare_data(combined)))
+
+    # Project-level source comparison belongs in Datablix, not in the AI prompt.
+    active_source = _active_source_version()
+    active_source_records = (
+        active_source.get("records")
+        if isinstance(active_source, dict)
+        else pd.DataFrame()
+    )
+    if isinstance(active_source_records, pd.DataFrame) and not active_source_records.empty:
+        combined = classify_discovery_status(combined, active_source_records)
+
     st.session_state[S_WORKING] = combined
     return len(mapped)
 
@@ -4519,6 +4494,30 @@ def _active_source_version() -> dict | None:
     return versions[-1] if versions else None
 
 
+def clear_current_starting_source() -> tuple[bool, str]:
+    """Remove all Starting Data from the project while preserving research records."""
+    had_source = bool(_source_versions_state() or st.session_state.get(S_SOURCE_BASELINE_META))
+    st.session_state[S_SOURCE_VERSIONS] = []
+    st.session_state[S_ORIGINAL] = pd.DataFrame(columns=INTERNAL_COLUMNS)
+    st.session_state[S_SOURCE_BASELINE_META] = {}
+    st.session_state[S_CLASSIFICATION_RULES] = pd.DataFrame()
+    st.session_state[S_SOURCE_TYPE] = ""
+    st.session_state[S_SOURCE_REF] = ""
+    st.session_state[S_SHEET] = ""
+
+    current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
+    if isinstance(current, pd.DataFrame):
+        st.session_state[S_WORKING] = classify_discovery_status(
+            ensure_ids(normalize_workflow(current.copy())),
+            None,
+        )
+
+    autosave_current_project()
+    if had_source:
+        return True, "Starting Data removed. Your research records were preserved."
+    return False, "No Starting Data was loaded."
+
+
 def _source_versions_meta_frame(versions: list[dict]) -> pd.DataFrame:
     rows = []
     for version in versions:
@@ -4775,7 +4774,11 @@ def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.Data
 
 
 def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dict:
-    """Add versioned project-wide Starting Data without requiring a special workbook layout."""
+    """Replace the project's Starting Data with one current baseline.
+
+    Previous source files/baselines are removed from project state. Existing research
+    records are preserved and reclassified against the new baseline.
+    """
     data = uploaded.getvalue()
     source_hash = hashlib.sha256(data).hexdigest()
     current_registry = st.session_state.get(S_COMPANIES, empty_company_registry())
@@ -4783,71 +4786,25 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
     project_source, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
         data, assignment_sheet, current_registry
     )
-    versions = _source_versions_state()
 
-    existing_match = next(
-        (v for v in versions if safe_text(v.get("meta", {}).get("source_hash", "")) == source_hash),
-        None,
+    previous_versions = _source_versions_state()
+    replaced_existing = bool(previous_versions or st.session_state.get(S_SOURCE_BASELINE_META))
+
+    relevant = (
+        _source_records_for_project_companies(project_source, registry)
+        if not project_source.empty
+        else pd.DataFrame()
     )
-    if existing_match is not None:
-        # Older Datablix versions may have saved the structured source without
-        # retaining the original workbook bytes. Re-importing the same source
-        # hydrates that historical version instead of creating a duplicate.
-        if not isinstance(existing_match.get("raw_bytes"), (bytes, bytearray)) or not existing_match.get("raw_bytes"):
-            existing_match["raw_bytes"] = bytes(data)
-            existing_match["raw_filename"] = uploaded.name
-            if isinstance(existing_match.get("meta"), dict):
-                existing_match["meta"]["raw_source_available"] = True
-                existing_match["meta"]["workbook_name"] = uploaded.name
+    source_mode = (
+        "Structured records + original file"
+        if not project_source.empty
+        else "Original project source file"
+    )
 
-        for version in versions:
-            active = int(version.get("version_number", 0)) == int(existing_match.get("version_number", 0))
-            version["is_active"] = active
-            if isinstance(version.get("meta"), dict):
-                version["meta"]["is_active"] = active
-        st.session_state[S_SOURCE_VERSIONS] = versions
-
-        existing_records = existing_match.get("records", pd.DataFrame())
-        if not isinstance(existing_records, pd.DataFrame):
-            existing_records = pd.DataFrame()
-        st.session_state[S_ORIGINAL] = existing_records.copy()
-        st.session_state[S_SOURCE_BASELINE_META] = dict(existing_match.get("meta", {}))
-        existing_rules = existing_match.get("rules", pd.DataFrame())
-        st.session_state[S_CLASSIFICATION_RULES] = existing_rules.copy() if isinstance(existing_rules, pd.DataFrame) else pd.DataFrame()
-
-        current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
-        relevant = _source_records_for_project_companies(existing_records, current_registry)
-        if not relevant.empty:
-            st.session_state[S_WORKING] = ensure_ids(
-                normalize_workflow(_merge_source_baseline_with_working(current, relevant))
-            )
-        autosave_current_project()
-        meta = existing_match.get("meta", {})
-        return {
-            "assigned_companies": _safe_int(meta.get("assigned_companies", len(current_registry))),
-            "source_records": _safe_int(meta.get("source_records", len(existing_records))),
-            "project_company_source_records": _safe_int(meta.get("project_company_source_records", len(relevant))),
-            "working_records": len(st.session_state.get(S_WORKING, current)),
-            "classification_rules": _safe_int(meta.get("classification_rules", 0)),
-            "version_number": int(existing_match.get("version_number", 1)),
-            "version_label": safe_text(existing_match.get("version_label", "v1")),
-            "source_mode": safe_text(meta.get("source_mode", "Structured records" if not existing_records.empty else "Original project source file")),
-            "duplicate_version": True,
-        }
-
-    next_number = max((int(v.get("version_number", 0)) for v in versions), default=0) + 1
-    version_label = f"v{next_number}"
-    for version in versions:
-        version["is_active"] = False
-        if isinstance(version.get("meta"), dict):
-            version["meta"]["is_active"] = False
-
-    relevant = _source_records_for_project_companies(project_source, registry) if not project_source.empty else pd.DataFrame()
-    source_mode = "Structured records + original file" if not project_source.empty else "Original project source file"
     meta = {
-        "version_number": next_number,
-        "version_label": version_label,
-        "is_original": next_number == 1,
+        "version_number": 1,
+        "version_label": "Current",
+        "is_original": True,
         "is_active": True,
         "workbook_name": uploaded.name,
         "assignment_sheet": safe_text(assignment_sheet),
@@ -4861,54 +4818,63 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
         "source_mode": source_mode,
         "raw_source_available": True,
     }
-    versions.append({
-        "version_number": next_number,
-        "version_label": version_label,
-        "is_original": next_number == 1,
+
+    current_source = {
+        "version_number": 1,
+        "version_label": "Current",
+        "is_original": True,
         "is_active": True,
         "meta": dict(meta),
         "records": project_source.copy(),
         "rules": rules.copy(),
         "raw_bytes": bytes(data),
         "raw_filename": uploaded.name,
-    })
-    st.session_state[S_SOURCE_VERSIONS] = versions
+    }
 
+    # One project = one current Starting Data source. Replacing it removes all older source files.
+    st.session_state[S_SOURCE_VERSIONS] = [current_source]
+
+    # Starting Data remains a comparison baseline; do not inject source rows into research results.
     current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
-    merged = _merge_source_baseline_with_working(current, relevant) if not relevant.empty else ensure_ids(normalize_workflow(current.copy()))
-    if not project_source.empty:
-        merged = classify_discovery_status(merged, project_source)
+    research_records = ensure_ids(normalize_workflow(current.copy()))
+    research_records = classify_discovery_status(
+        research_records,
+        project_source if not project_source.empty else None,
+    )
 
     st.session_state[S_ORIGINAL] = project_source.copy()
-    st.session_state[S_WORKING] = merged
+    st.session_state[S_WORKING] = research_records
     st.session_state[S_COMPANIES] = normalize_company_registry(registry)
     st.session_state[S_MAPPING] = mapping if isinstance(mapping, pd.DataFrame) else pd.DataFrame()
-    st.session_state[S_SOURCE_TYPE] = "Versioned project source file"
+    st.session_state[S_SOURCE_TYPE] = "Current project source file"
     st.session_state[S_SOURCE_REF] = uploaded.name
     st.session_state[S_SHEET] = safe_text(assignment_sheet)
     st.session_state[S_CLASSIFICATION_RULES] = rules
     st.session_state[S_SOURCE_BASELINE_META] = dict(meta)
     st.session_state[S_PROJECT_LOADED] = True
+
     if st.session_state.get(S_FILE) in {None, "", "blank-workspace"}:
         st.session_state[S_FILE] = "project-source:" + source_hash
         st.session_state[S_NAME] = uploaded.name
+
     if not registry.empty:
         active_id = safe_text(st.session_state.get(S_ACTIVE_COMPANY, ""))
         if active_id not in set(registry["Company ID"].astype(str)):
             st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
+
     autosave_current_project()
     return {
         "assigned_companies": len(registry),
         "source_records": len(project_source),
         "project_company_source_records": len(relevant),
-        "working_records": len(merged),
+        "working_records": len(research_records),
         "classification_rules": len(rules),
-        "version_number": next_number,
-        "version_label": version_label,
+        "version_number": 1,
+        "version_label": "Current",
         "source_mode": source_mode,
         "duplicate_version": False,
+        "replaced_existing": replaced_existing,
     }
-
 
 def load_google(url, selector="", force=False):
     df, data, name, sheet = read_google_sheet(url, selector)
@@ -6950,212 +6916,58 @@ if section == "Research projects & companies":
                 or f"v{_safe_int(source_meta.get('version_number', 1), 1)}"
             )
 
-            original_version = (
-                next(
-                    (
-                        version
-                        for version in source_versions
-                        if version.get("is_original")
-                    ),
-                    None,
-                )
-                if source_versions
-                else None
+            st.success(
+                f"Starting data ready · {workbook_name} · {source_count:,} structured record(s)"
             )
-
-            original_meta = (
-                original_version.get("meta", {})
-                if isinstance(original_version, dict)
-                else source_meta
-            )
-            original_count = _safe_int(
-                original_meta.get(
-                    "source_records",
-                    source_count,
-                )
-            )
-
-            if len(source_versions) > 1:
-                st.success(
-                    f"Starting data ready · Current source "
-                    f"{current_version} · Project source file preserved · "
-                    "Original v1 preserved"
-                )
-            else:
-                st.success(
-                    f"Starting data ready · Source "
-                    f"{current_version} (original & current) · Project source file preserved"
-                )
-
             st.caption(
-                f"Assignment: {assignment_name or 'Not recorded'} · "
-                f"Current workbook: {workbook_name}"
+                "This is the only current Starting Data baseline for the project. "
+                "AI website research does not receive this file; Datablix compares imported research against it afterward."
             )
 
-            with st.expander(
-                "View starting data details",
-                expanded=False,
-            ):
-                source_metrics = st.columns(3)
-                source_metrics[0].metric(
-                    "Original structured rows",
-                    f"{original_count:,}",
-                )
-                source_metrics[1].metric(
-                    "Current structured rows",
-                    f"{source_count:,}",
-                )
-                source_metrics[2].metric(
-                    "Source versions",
-                    f"{max(len(source_versions), 1):,}",
-                )
-
+            with st.expander("View starting data details", expanded=False):
+                source_metrics = st.columns(2)
+                source_metrics[0].metric("Current structured rows", f"{source_count:,}")
+                source_metrics[1].metric("Assigned companies", f"{assigned_count:,}")
                 st.caption(
-                    "The original source remains preserved as the "
-                    "project starting point. The newest imported "
-                    "source becomes the current reconciliation dataset "
-                    "used by new research packages."
+                    f"Assignment: {assignment_name or 'Not recorded'} · Current workbook: {workbook_name}"
                 )
+                rules = st.session_state.get(S_CLASSIFICATION_RULES)
+                if isinstance(rules, pd.DataFrame) and not rules.empty:
+                    st.markdown("**Current building classification rules**")
+                    st.dataframe(rules, width="stretch", hide_index=True)
 
-                if source_versions:
-                    history = _source_versions_meta_frame(
-                        source_versions
-                    ).copy()
-
-                    if not history.empty:
-                        history["Role"] = history.apply(
-                            lambda row: (
-                                "Original + Current"
-                                if bool(row["Is Original"])
-                                and bool(row["Is Active"])
-                                else "Original"
-                                if bool(row["Is Original"])
-                                else "Current"
-                                if bool(row["Is Active"])
-                                else "Previous"
-                            ),
-                            axis=1,
-                        )
-
-                        st.markdown("**Source version history**")
-                        st.dataframe(
-                            history[
-                                [
-                                    "Version",
-                                    "Role",
-                                    "Workbook",
-                                    "Imported At",
-                                    "Assigned Companies",
-                                    "Source Records",
-                                    "Source Mode",
-                                ]
-                            ],
-                            width="stretch",
-                            hide_index=True,
-                        )
-
-                rules = st.session_state.get(
-                    S_CLASSIFICATION_RULES
-                )
-                if (
-                    isinstance(rules, pd.DataFrame)
-                    and not rules.empty
-                ):
-                    st.markdown(
-                        "**Current building classification rules**"
-                    )
-                    st.dataframe(
-                        rules,
-                        width="stretch",
-                        hide_index=True,
-                    )
-
-            previous_versions = [
-                version
-                for version in source_versions
-                if not bool(version.get("is_active"))
-            ]
-
-            with st.expander("Manage source files", expanded=False):
-                st.markdown("**Current source**")
+            with st.expander("Manage current source", expanded=False):
                 st.code(
-                    f"{current_version} · {workbook_name} · {source_count:,} records",
+                    f"{workbook_name} · {source_count:,} records",
                     language=None,
                 )
                 st.caption(
-                    "The current source is protected because new research packages "
-                    "use it automatically."
+                    "Replacing this source automatically removes all older Starting Data files/baselines. "
+                    "Your saved research records are preserved and re-compared against the replacement source."
                 )
+                remove_source_confirm = st.checkbox(
+                    "Confirm removal of the current Starting Data",
+                    key="db_remove_current_source_confirm",
+                )
+                if st.button(
+                    "Remove current source",
+                    type="secondary",
+                    disabled=not remove_source_confirm,
+                    key="db_remove_current_source_button",
+                    width="stretch",
+                ):
+                    removed, message = clear_current_starting_source()
+                    if removed:
+                        st.session_state[S_FLASH] = message
+                        st.rerun()
+                    st.info(message)
 
-                st.markdown("**Previous sources**")
-
-                if previous_versions:
-                    delete_options = {
-                        (
-                            f"{safe_text(version.get('version_label', '')) or 'Source'}"
-                            f" · {safe_text(version.get('meta', {}).get('workbook_name', '')) or 'Workbook'}"
-                            f" · {_safe_int(version.get('meta', {}).get('source_records', 0)):,} records"
-                        ): int(version.get("version_number", 0) or 0)
-                        for version in previous_versions
-                    }
-
-                    selected_delete_label = st.selectbox(
-                        "Select a previous source to delete",
-                        options=list(delete_options.keys()),
-                        key="db_delete_source_version_select",
-                    )
-                    selected_delete_number = delete_options[
-                        selected_delete_label
-                    ]
-
-                    st.warning(
-                        "Deleting a previous source removes that saved source version "
-                        "from the project. Your current source and working research "
-                        "records are not deleted."
-                    )
-
-                    delete_confirm = st.checkbox(
-                        "Confirm deletion of the selected previous source",
-                        key="db_delete_source_version_confirm",
-                    )
-
-                    if st.button(
-                        "Delete previous source",
-                        type="secondary",
-                        disabled=not delete_confirm,
-                        key="db_delete_source_version_button",
-                        width="stretch",
-                    ):
-                        result = _delete_source_version(
-                            selected_delete_number
-                        )
-                        if result.get("deleted"):
-                            st.session_state[S_FLASH] = (
-                                f"Deleted previous source "
-                                f"{result['version_label']}. "
-                                "Current source and research records were preserved."
-                            )
-                            st.rerun()
-                        else:
-                            st.error(
-                                result.get(
-                                    "reason",
-                                    "The source version could not be deleted.",
-                                )
-                            )
-                else:
-                    st.info(
-                        "No previous source versions to delete yet. "
-                        "After you add an updated source, the older source will appear here."
-                    )
-
-            starting_data_expander_label = "Add updated source"
+            starting_data_expander_label = "Replace starting data"
             starting_data_expanded = False
         else:
             st.info(
-                "Start here once: import the original source workbook before beginning "
-                "company research. Datablix will use it as the source baseline for existing "
-                "versus newly discovered records."
+                "Import the current project-wide Starting Data once. Datablix keeps it as a comparison baseline; "
+                "the AI website-research prompt stays independent of it."
             )
             starting_data_expander_label = "Import starting data"
             starting_data_expanded = True
@@ -7165,10 +6977,14 @@ if section == "Research projects & companies":
             expanded=starting_data_expanded,
         ):
             st.write(
-                "Upload the project-wide Starting Data file. It can be a multi-sheet workbook "
-                "or a single-sheet workbook. Datablix keeps the original file for every company "
-                "research package and extracts structured building rows when possible."
+                "Upload the project-wide Starting Data workbook. Datablix will keep only this current source "
+                "for comparison. Replacing an existing source removes the old source baseline but preserves research records."
             )
+            if source_meta:
+                st.warning(
+                    "Replacing Starting Data will remove all previously saved source files/baselines for this project. "
+                    "Your company research, evidence, notes, and review work will remain."
+                )
             source_workbook_upload = st.file_uploader(
                 "Project source file",
                 type=["xlsx"],
@@ -7213,28 +7029,24 @@ if section == "Research projects & companies":
                         "your reviewed values."
                     )
 
-                import_label = "Add updated source" if source_meta else "Import starting data"
+                import_label = "Replace starting data" if source_meta else "Import starting data"
                 if st.button(import_label, type="primary", width="stretch", key=f"db_import_source_baseline_{project_context_token}"):
                     try:
                         result = import_source_baseline_workbook(source_workbook_upload, source_assignment_sheet)
-                        if result.get("duplicate_version"):
-                            st.session_state[S_FLASH] = f"Source {result['version_label']} is already saved and is now the current project source."
+                        structured_count = int(result.get("source_records", 0) or 0)
+                        relevant_count = int(result.get("project_company_source_records", 0) or 0)
+                        action_word = "replaced" if result.get("replaced_existing") else "imported"
+                        if structured_count:
+                            st.session_state[S_FLASH] = (
+                                f"Starting Data {action_word}. Datablix parsed {structured_count:,} project source row(s), "
+                                f"with {relevant_count:,} matching the current project companies. "
+                                "This is now the only source baseline; saved research was preserved and re-compared against it."
+                            )
                         else:
-                            structured_count = int(result.get("source_records", 0) or 0)
-                            relevant_count = int(result.get("project_company_source_records", 0) or 0)
-                            if structured_count:
-                                st.session_state[S_FLASH] = (
-                                    f"Source {result['version_label']} saved as the current project source. "
-                                    f"Datablix parsed {structured_count:,} project source row(s), with "
-                                    f"{relevant_count:,} matching the current project companies. The "
-                                    "original source file is preserved for every company research package."
-                                )
-                            else:
-                                st.session_state[S_FLASH] = (
-                                    f"Source {result['version_label']} saved as the current project-wide source file. "
-                                    "Datablix could not reliably convert it into building rows, so the original "
-                                    "file will be supplied directly in every company research package instead of being rejected."
-                                )
+                            st.session_state[S_FLASH] = (
+                                f"Starting Data {action_word}. The uploaded workbook is now the only source baseline. "
+                                "Datablix could not reliably convert it into structured building rows, so automatic record comparison may be limited."
+                            )
                         st.rerun()
                     except Exception as error:
                         st.error("Starting data import could not be completed. " + str(error))
@@ -7825,148 +7637,52 @@ elif section == "Website scanner":
     ].copy()
 
     active_source_version = _active_source_version()
-    if isinstance(active_source_version, dict):
-        source_meta = dict(active_source_version.get("meta", {}))
-        project_source_records = active_source_version.get("records")
-        raw_project_source_bytes = active_source_version.get("raw_bytes", b"")
-        raw_project_source_filename = safe_text(active_source_version.get("raw_filename", source_meta.get("workbook_name", "")))
-    else:
-        source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
-        project_source_records = st.session_state.get(S_ORIGINAL)
-        raw_project_source_bytes = b""
-        raw_project_source_filename = safe_text(source_meta.get("workbook_name", "") if isinstance(source_meta, dict) else "")
-
-    if not isinstance(source_meta, dict):
-        source_meta = {}
-    if not isinstance(project_source_records, pd.DataFrame):
-        project_source_records = pd.DataFrame()
-    if not isinstance(raw_project_source_bytes, (bytes, bytearray)):
-        raw_project_source_bytes = b""
-
-    has_project_source = bool(source_meta) and (
-        not project_source_records.empty or bool(raw_project_source_bytes)
+    source_meta = (
+        dict(active_source_version.get("meta", {}))
+        if isinstance(active_source_version, dict)
+        else {}
     )
-
-    source_records_for_prompt = (
-        company_source_records_for_research(
-            project_source_records,
-            company_id=company_id,
-            company_name=company_name,
-        )
-        if has_project_source
+    project_source_records = (
+        active_source_version.get("records")
+        if isinstance(active_source_version, dict)
         else pd.DataFrame()
     )
-    source_lines = (
-        prompt_record_identity_lines(
-            source_records_for_prompt,
-            company_id=company_id,
-            company_name=company_name,
-            limit=150,
-        )
-        if not source_records_for_prompt.empty
-        else []
-    )
-    active_source_version_label = (
-        safe_text(source_meta.get("version_label", ""))
-        or (
-            f"v{_safe_int(source_meta.get('version_number', 1), 1)}"
-            if isinstance(source_meta, dict)
-            and source_meta
-            else "v1"
-        )
-    )
-    project_source_filename = (
-        Path(raw_project_source_filename).name
-        if raw_project_source_filename
-        else f"project_starting_source_records_{safe_filename(active_source_version_label)}.csv"
-    )
-    company_source_filename = (
-        f"{safe_filename(company_name)}_source_matches_"
-        f"{safe_filename(active_source_version_label)}.csv"
-    )
-    working_lines = prompt_record_identity_lines(
-        company_rows,
-        company_id=company_id,
-        company_name=company_name,
-        limit=150,
-    )
+    if not isinstance(project_source_records, pd.DataFrame):
+        project_source_records = pd.DataFrame()
+    has_project_source = bool(source_meta) and not project_source_records.empty
 
-    if source_lines:
-        known_default = "\n".join(source_lines)
-        known_records_context = (
-            f"The current Starting Data is PROJECT-WIDE. The companion project source file "
-            f"'{project_source_filename}' MUST be used for this company research cycle. "
-            f"Datablix parsed {len(project_source_records):,} structured source row(s) from it. "
-            f"Datablix also matched {len(source_records_for_prompt):,} source row(s) directly "
-            f"to {company_name}; those matches are listed below and may also be supplied in "
-            f"'{company_source_filename}'. Reconcile them against current official evidence, "
-            "then continue searching for additional current properties missing from the source."
-        )
-        known_records_ui_label = "Company matches from project Starting Data"
-        known_records_help = (
-            "These are convenience matches from the project-wide Starting Data. "
-            "The full project source is still used for every company."
-        )
-    elif has_project_source:
-        known_default = ""
-        known_records_context = (
-            f"The current Starting Data is PROJECT-WIDE. The companion project source file "
-            f"'{project_source_filename}' MUST still be used for {company_name}. "
-            f"Datablix parsed {len(project_source_records):,} structured source row(s) from it. "
-            "Datablix did not find a direct company-name match, so inspect the project source "
-            "for aliases, renamed owners/managers, related entities, and matching property "
-            "addresses before concluding that no source records exist for this company."
-        )
-        known_records_ui_label = "Company matches from project Starting Data"
-        known_records_help = (
-            "No direct company-name matches were found automatically, but the project-wide "
-            "Starting Data remains available and must still be used for this company."
-        )
-    elif working_lines:
-        known_default = "\n".join(working_lines)
-        known_records_context = (
-            "No Starting Data baseline is currently available for this company. The records below "
-            "are existing Datablix workspace records and should be checked for duplicate identity "
-            "during research."
-        )
-        known_records_ui_label = "Known Datablix records for duplicate checking"
-        known_records_help = (
-            "No Starting Data baseline is available, so current workspace records are used only "
-            "as duplicate-check context."
+    if has_project_source:
+        st.info(
+            f"Datablix has a current Starting Data baseline with {len(project_source_records):,} structured record(s). "
+            "It is NOT included in this AI prompt. Datablix will compare the imported research CSV against it afterward."
         )
     else:
-        known_default = ""
-        known_records_context = (
-            "No Starting Data baseline or existing Datablix property records are currently "
-            "available for this company. Establish the current inventory from authoritative sources."
-        )
-        known_records_ui_label = "Starting source records for comparison"
-        known_records_help = (
-            "Import Starting Data on the Project page to provide original source records."
+        st.warning(
+            "No structured Starting Data baseline is currently available. Website research can still proceed, "
+            "but Datablix cannot classify imported rows as existing versus newly discovered until a source is loaded."
         )
 
     default_scope = "Ontario, Canada"
     default_source_policy = (
-        "Use Starting Data records as a reconciliation checklist, not proof of current inventory. "
         "Use current official city/property-search/portfolio pages and the current human-readable HTML sitemap first to establish active inventory. "
         "Use official property pages, leasing pages, official PDFs, and official property websites for detailed fields. "
         "Technical XML sitemaps are discovery evidence only, not proof that a property is current. "
         "Use reliable third-party public sources only for genuine field gaps after a property is confirmed as current; clearly label them as secondary evidence. "
-        "Never use a third-party source to bring an excluded legacy property back into scope. "
+        "Never let a third-party source override current official inventory evidence. "
         "Ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence; a URL alone must never create a property row."
     )
     default_priority_notes = (
-        "Reconcile every Starting Data record for this company, then establish the complete current Ontario inventory and search for additional current properties missing from the source. "
-        "Exclude dedicated legacy property pages that are absent from both the current city/portfolio index "
-        "and current HTML sitemap when both authoritative sources are available. Before creating any property row, ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence. "
+        "Establish the complete current Ontario inventory from the company's current official website structure. "
+        "Exclude meaningful legacy property pages only when current website inventory evidence supports exclusion. "
+        "Before creating any property row, ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence. "
         "Keep legitimate current properties even when their dedicated page is sparse, and recheck each valid property across permitted sources for postal code, amenities, unit count, "
         "contact details, and other requested fields before declaring information missing. Preserve exact evidence and flag uncertain inventory for review."
     )
     default_output_notes = (
-        "Return downloadable CSV file(s) only. Use one row per unique Current or Review property and keep the exact requested headings in the exact requested order. "
-        "Preserve blanks for genuinely unknown values. Do not mix Excluded legacy/orphaned properties into the active rows or active property count; place identifiable exclusions in a separate CSV only when needed. "
+        "Return exactly one downloadable CSV file only. Use one row per unique identifiable physical property and keep the exact requested headings in the exact requested order. "
+        "Preserve blanks for genuinely unknown values. Keep Current, Review, and meaningful identifiable Excluded website records in the same CSV when applicable. "
         "Do not create any CSV row for orphan/empty/generic pages that lack meaningful property-specific evidence. "
-        "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The primary CSV must be ready for direct Datablix import."
+        "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The CSV must be ready for direct Datablix import."
     )
 
     saved_scope = str(active_company.get("Prompt Scope", "") or "").strip() or default_scope
@@ -7982,23 +7698,7 @@ elif section == "Website scanner":
         help="Saved separately for this company.",
     )
 
-    # Starting/known records are live context, not a saved prompt field.
-    # Starting Data is preferred so research reconciles the original source before discovery.
-    known_records = known_default
-    known_signature = hashlib.sha256(known_records.encode("utf-8")).hexdigest()[:10]
-    known_key_prefix = f"db_prompt_known_{company_id}_"
-    known_key = f"{known_key_prefix}{known_signature}"
-    for session_key in list(st.session_state.keys()):
-        if str(session_key).startswith(known_key_prefix) and session_key != known_key:
-            st.session_state.pop(session_key, None)
-    prompt_right.text_area(
-        known_records_ui_label,
-        value=known_records or "No starting source records are available for this company yet.",
-        height=120,
-        disabled=True,
-        key=known_key,
-        help=known_records_help,
-    )
+    prompt_right.caption("Starting Data comparison is handled inside Datablix after you import the completed CSV.")
 
     source_policy = prompt_left.text_area(
         "Source policy",
@@ -8026,8 +7726,6 @@ elif section == "Website scanner":
         company_name=company_name,
         company_website=company_website,
         geographic_scope=geographic_scope,
-        known_records=known_records,
-        known_records_context=known_records_context,
         priority_notes=priority_notes,
         source_policy=source_policy,
         output_notes=output_notes,
@@ -8049,12 +7747,12 @@ elif section == "Website scanner":
         height=650,
         key=master_prompt_key,
         help=(
-            "Automatically rebuilt when the selected company, website, known records, or saved prompt settings change. "
+            "Automatically rebuilt when the selected company, website, or saved prompt settings change. "
             "For persistent custom rules, edit the fields above and save them to the company workspace."
         ),
     )
     st.caption(
-        "The company name, website and known-record context refresh automatically. "
+        "The company name and website refresh automatically. Starting Data is intentionally excluded from the AI prompt. "
         "Persistent research rules are stored separately per company; the full prompt saved below is an audit snapshot."
     )
 
@@ -8109,97 +7807,34 @@ elif section == "Website scanner":
         company_website,
     )
 
-    if has_project_source:
-        package_bytes = build_research_package_bytes(
-            company_name=company_name,
-            prompt_text=editable_prompt,
-            project_source_records=project_source_records,
-            company_source_records=source_records_for_prompt,
-            research_template=research_template_df,
-            source_meta=source_meta,
-            raw_source_bytes=bytes(raw_project_source_bytes),
-            raw_source_filename=raw_project_source_filename,
-        )
+    prompt_actions = st.columns(2)
+    prompt_actions[0].download_button(
+        "Download website research prompt",
+        data=editable_prompt.encode("utf-8"),
+        file_name=prompt_download_name,
+        mime="text/plain",
+        type="primary",
+        width="stretch",
+        key=f"db_download_prompt_{company_id}_{prompt_fingerprint}",
+    )
+    prompt_actions[1].download_button(
+        "Download CSV template",
+        data=csv_bytes(research_template_df),
+        file_name=f"{safe_filename(company_name)}_research_template.csv",
+        mime="text/csv",
+        width="stretch",
+        key=f"db_download_template_{company_id}_{prompt_fingerprint}",
+    )
 
-        st.download_button(
-            (
-                "Download research package — prompt + project source"
-            ),
-            data=package_bytes,
-            file_name=f"{safe_filename(company_name)}_research_package.zip",
-            mime="application/zip",
-            type="primary",
-            width="stretch",
-            key=f"db_download_research_package_{company_id}_{prompt_fingerprint}",
-        )
-
-        if not source_records_for_prompt.empty:
-            st.caption(
-                f"The package includes the full project source plus "
-                f"{len(source_records_for_prompt):,} company-specific match(es), "
-                "the research prompt, template, and README."
-            )
-        else:
-            st.caption(
-                "The package includes the original project source file, research prompt, template, "
-                "and README. If Datablix cannot parse or directly match source rows, the original "
-                "source file is still included for the AI to inspect."
-            )
-
-        individual_actions = [("Prompt only", "prompt")]
-        if raw_project_source_bytes:
-            individual_actions.append(("Project source file", "raw"))
-        if not project_source_records.empty:
-            individual_actions.append(("Parsed source CSV", "parsed"))
-        if not source_records_for_prompt.empty:
-            individual_actions.append(("Company matches", "matches"))
-        individual_actions.append(("Research template", "template"))
-
-        prompt_actions = st.columns(len(individual_actions))
-        for column, (label, action_type) in zip(prompt_actions, individual_actions):
-            if action_type == "prompt":
-                column.download_button(label, data=editable_prompt.encode("utf-8"), file_name=prompt_download_name, mime="text/plain", width="stretch")
-            elif action_type == "raw":
-                raw_name = Path(raw_project_source_filename).name if raw_project_source_filename else f"project_source_{safe_filename(active_source_version_label)}.xlsx"
-                column.download_button(label, data=bytes(raw_project_source_bytes), file_name=raw_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
-            elif action_type == "parsed":
-                column.download_button(label, data=csv_bytes(project_source_records), file_name=f"project_starting_source_records_{safe_filename(active_source_version_label)}.csv", mime="text/csv", width="stretch")
-            elif action_type == "matches":
-                column.download_button(label, data=csv_bytes(source_records_for_prompt), file_name=company_source_filename, mime="text/csv", width="stretch")
-            else:
-                column.download_button(label, data=csv_bytes(research_template_df), file_name=f"{safe_filename(company_name)}_research_template.csv", mime="text/csv", width="stretch")
-
-    else:
-        prompt_actions = st.columns(2)
-        prompt_actions[0].download_button(
-            "Download prompt",
-            data=editable_prompt.encode("utf-8"),
-            file_name=prompt_download_name,
-            mime="text/plain",
-            width="stretch",
-        )
-        prompt_actions[1].download_button(
-            "Download CSV template",
-            data=csv_bytes(research_template_df),
-            file_name=f"{safe_filename(company_name)}_research_template.csv",
-            mime="text/csv",
-            width="stretch",
-        )
-        st.warning(
-            "No project Starting Data has been imported yet. Import Starting Data on the "
-            "Project page to create a source-aware research package."
-        )
-
-    st.info(
-        "Starting Data is project-wide. For every company, use the research prompt together "
-        "with the current Project source CSV. Reconcile source records relevant to the company "
-        "first, then find additional current properties, and return exactly one consolidated research CSV containing Current, Review, and identifiable Excluded records."
+    st.caption(
+        "Do not upload the project Starting Data to the AI research tool. Research the website independently, "
+        "then import the completed CSV here. Datablix performs the project-source comparison after import."
     )
 
     st.divider()
     st.subheader("2. Import the single completed CSV research deliverable")
     st.caption(
-        "Exactly one consolidated CSV is the required research-deliverable format. Datablix can still open legacy Excel or Google Sheets inputs when needed, but new AI research should return one CSV containing Current, Review, and identifiable Excluded records together. Imported findings remain unverified and continue through mapping, quality checks, duplicate review, and human approval."
+        "Exactly one consolidated CSV is the required research-deliverable format. The AI file contains website research only. When imported, Datablix maps the rows, compares them against the current Starting Data baseline, flags existing/new/possible-review cases, and then sends them through quality checks and human approval."
     )
     import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
     with import_tabs[0]:
@@ -8237,7 +7872,7 @@ elif section == "Website scanner":
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
                 st.session_state[S_FLASH] = (
-                    f"Imported {added_count:,} research row(s) for {company_name}. Review identity, evidence, duplicates, and missing information next."
+                    f"Imported {added_count:,} website-research row(s) for {company_name}. Datablix compared them with the current Starting Data when available; review the comparison, evidence, duplicates, and missing information next."
                 )
                 go_to("Review records")
                 st.rerun()
@@ -8270,7 +7905,7 @@ elif section == "Website scanner":
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
                 st.session_state[S_FLASH] = (
-                    f"Imported {added_count:,} Google Sheets row(s) for {company_name}. Review the findings before verification."
+                    f"Imported {added_count:,} Google Sheets research row(s) for {company_name}. Datablix compared them with the current Starting Data when available; review the findings before verification."
                 )
                 go_to("Review records")
                 st.rerun()
