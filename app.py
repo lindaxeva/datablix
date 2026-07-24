@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Orphan Page Eligibility Prompt 2026.07.23-v13"
+DATABLIX_BUILD = "Approved Export Flow 2026.07.23-v14"
 
 # =========================================================
 # Configuration
@@ -2154,6 +2154,22 @@ def qa_checks(df):
         if row["Research Gap Count"]: return "Ready with Documented Gaps"
         return "Ready to Use"
     out["Record Readiness"] = out.apply(readiness, axis=1)
+
+    # One clear business-facing export decision. A human-approved record can be
+    # exported when review is complete, verification is complete, the reviewer
+    # decided to keep it, and no critical identity/data issue remains. Warnings
+    # and documented research gaps stay visible for audit purposes but do not
+    # silently remove an otherwise approved record from export.
+    approved_for_export = (
+        out["Research Status"].eq("Completed")
+        & out["Verification Status"].eq("Verified")
+        & out["Record Decision"].eq("Keep")
+        & out["Critical Issue Count"].eq(0)
+    )
+    out["Export Status"] = "Still in Review"
+    out.loc[approved_for_export, "Export Status"] = "Approved for Export"
+    out.loc[out["Record Decision"].eq("Remove"), "Export Status"] = "Excluded"
+
     out["Follow-up Priority"] = out.apply(
         lambda r: "None" if r["Record Readiness"] in ["Ready to Use", "Ready with Documented Gaps", "Ready with Reviewed Warnings", "Excluded from Listings"]
         else "High" if r["Critical Issue Count"] or r["Record Readiness"] in ["Duplicate Review", "Needs Follow-up"]
@@ -2259,8 +2275,21 @@ def render_listing_preview(df, limit=5):
         )
 
 
+def approved_for_export_mask(df):
+    """Return records a reviewer has explicitly approved for CSV export."""
+    if "Export Status" in df.columns:
+        return df["Export Status"].eq("Approved for Export")
+    return (
+        df["Research Status"].eq("Completed")
+        & df["Verification Status"].eq("Verified")
+        & df["Record Decision"].eq("Keep")
+        & df.get("Critical Issue Count", pd.Series(0, index=df.index)).eq(0)
+    )
+
+
 def ready_mask(df):
-    return df["Record Readiness"].isin(["Ready to Use", "Ready with Documented Gaps", "Ready with Reviewed Warnings"])
+    """Backward-compatible alias for the user-facing approved-for-export state."""
+    return approved_for_export_mask(df)
 
 
 def research_log(df):
@@ -2271,7 +2300,7 @@ def research_log(df):
         "Research Status", "Source Status", "Verification Status",
         "Research Gap Count", "Research Gaps", "Missing Information",
         "Reviewer Notes", "Record Decision", "Follow-up Priority",
-        "Workflow Gap Count", "Workflow Gaps", "Record Readiness",
+        "Workflow Gap Count", "Workflow Gaps", "Record Readiness", "Export Status",
     ]
     return df[[c for c in columns if c in df.columns]].copy()
 
@@ -2288,10 +2317,10 @@ def owner_summary(df):
             "Records with Website": int((~unresolved_mask(group["Website"])).sum()),
             "Records with Apartment Count": int((~unresolved_mask(group["Number of Apartments"])).sum()),
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
-            "Ready Records": int(ready_mask(group).sum()),
-            "Listings Needing Follow-up": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()),
+            "Approved for Export": int(approved_for_export_mask(group).sum()),
+            "Still in Review": int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()),
         })
-    return pd.DataFrame(rows).sort_values(["Listings Needing Follow-up", "Building Records"], ascending=[False, False]).reset_index(drop=True) if rows else pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(["Still in Review", "Building Records"], ascending=[False, False]).reset_index(drop=True) if rows else pd.DataFrame()
 
 
 def draft_profiles(df):
@@ -2352,7 +2381,7 @@ def project_summary(df):
         {"Metric": "Management/owner organizations", "Value": resolved(df["Management/Owner"]).dropna().astype(str).str.strip().nunique(), "Interpretation": "Distinct recorded organizations."},
         {"Metric": "Records with usable core identity", "Value": int(df["Core Gap Count"].eq(0).sum()), "Interpretation": "Records with management/owner, street address, and city."},
         {"Metric": "Verified records", "Value": int(df["Verification Status"].eq("Verified").sum()), "Interpretation": "Records marked as human-verified."},
-        {"Metric": "Listings ready to use", "Value": int(ready_mask(df).sum()), "Interpretation": "Rental property listings accepted for use, including those with documented gaps."},
+        {"Metric": "Approved for Export", "Value": int(approved_for_export_mask(df).sum()), "Interpretation": "Records explicitly completed, human-verified, kept, and free of critical data blockers."},
         {"Metric": "Open research gaps", "Value": int(df["Research Gap Count"].sum()), "Interpretation": "Unconfirmed listing fields."},
     ])
 
@@ -2558,10 +2587,10 @@ def company_progress_summary(qa_frame, registry=None):
             "Completed Records": int(group["Research Status"].eq("Completed").sum()) if not group.empty else 0,
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()) if not group.empty else 0,
             "Records Passing QA": int(group["QA Status"].eq("Pass").sum()) if not group.empty else 0,
-            "Ready Records": int(ready_mask(group).sum()) if not group.empty else 0,
+            "Approved for Export": int(approved_for_export_mask(group).sum()) if not group.empty else 0,
             "Open QA Issues": int(group["QA Flag Count"].sum()) if not group.empty else 0,
             "Open Field Gaps": int(group["Research Gap Count"].sum()) if not group.empty else 0,
-            "Follow-up Records": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()) if not group.empty else 0,
+            "Still in Review": int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()) if not group.empty else 0,
         })
     unregistered = qa_frame.loc[
         ~qa_frame["Company ID"].astype(str).isin(represented_ids)
@@ -2578,10 +2607,10 @@ def company_progress_summary(qa_frame, registry=None):
             "Completed Records": int(group["Research Status"].eq("Completed").sum()),
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
             "Records Passing QA": int(group["QA Status"].eq("Pass").sum()),
-            "Ready Records": int(ready_mask(group).sum()),
+            "Approved for Export": int(approved_for_export_mask(group).sum()),
             "Open QA Issues": int(group["QA Flag Count"].sum()),
             "Open Field Gaps": int(group["Research Gap Count"].sum()),
-            "Follow-up Records": int((~ready_mask(group) & ~group["Record Readiness"].eq("Excluded from Listings")).sum()),
+            "Still in Review": int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()),
         })
     return pd.DataFrame(rows)
 
@@ -2591,15 +2620,15 @@ def report_summary(qa_frame, registry=None, scope_label="All companies", baselin
     company_count = int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
     if scope_label == "All companies" and not registry.empty:
         company_count = len(registry)
-    ready_count = int(ready_mask(qa_frame).sum())
+    approved_count = int(approved_for_export_mask(qa_frame).sum())
     issue_count = int(qa_frame["QA Flag Count"].sum())
-    unresolved_count = int((~ready_mask(qa_frame) & ~qa_frame["Record Readiness"].eq("Excluded from Listings")).sum())
+    unresolved_count = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
     cities = sorted(set(resolved(qa_frame["City"]).dropna().astype(str).str.strip()))
     impact = quality_impact_summary(qa_frame, baseline)
     impact_map = dict(zip(impact["Metric"], impact["Value"]))
     rows = [
         {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Building records analysed: {len(qa_frame):,}."},
-        {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {ready_count:,} records are currently ready to use or ready with documented gaps."},
+        {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {approved_count:,} records are currently Approved for Export after human review."},
         {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {unresolved_count:,} records still require correction, verification, a decision, or documented follow-up."},
         {"Section": "Quality impact", "Report Text": f"The saved baseline contains {int(impact_map.get('Baseline issues', 0)):,} issues. {int(impact_map.get('Baseline issues resolved', 0)):,} no longer appear after revalidation, producing an issue-resolution rate of {float(impact_map.get('Issue-resolution rate', 0)):.1f}%."},
         {"Section": "Method", "Report Text": "Companies were researched separately, scanner findings were reviewed by a person, approved records were consolidated into one master project, and quality checks were run at company and project levels."},
@@ -2617,7 +2646,7 @@ def project_info_dataframe(qa_frame, registry):
         {"Setting": "Saved At", "Value": datetime.now().isoformat(timespec="seconds")},
         {"Setting": "Companies in Scope", "Value": len(registry)},
         {"Setting": "Building Records", "Value": len(qa_frame)},
-        {"Setting": "Listings Ready", "Value": int(ready_mask(qa_frame).sum())},
+        {"Setting": "Approved for Export", "Value": int(approved_for_export_mask(qa_frame).sum())},
         {"Setting": "Source", "Value": st.session_state.get(S_SOURCE_TYPE, "Workspace")},
         {"Setting": "Datablix Project Format", "Value": "1"},
     ])
@@ -3206,16 +3235,11 @@ def save_edits(edited, columns):
     working["Postal Code"] = working["Postal Code"].apply(postal_code)
     st.session_state[S_WORKING] = normalize_workflow(prepare_data(working))
     st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-    approved_count = int(
-        (
-            st.session_state[S_WORKING]["Research Status"].eq("Completed")
-            & st.session_state[S_WORKING]["Verification Status"].eq("Verified")
-            & st.session_state[S_WORKING]["Record Decision"].eq("Keep")
-        ).sum()
-    )
+    refreshed_qa = qa_checks(st.session_state[S_WORKING].copy())
+    approved_count = int(approved_for_export_mask(refreshed_qa).sum())
     st.session_state[S_FLASH] = (
         f"Changes saved. Quality checks refreshed; {approved_count:,} record(s) "
-        "currently have final human approval (Completed + Verified + Keep)."
+        "are currently Approved for Export."
     )
 
 
@@ -3418,7 +3442,7 @@ def render_review_quality_baseline(qa_frame: pd.DataFrame) -> str | None:
 
 
 def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | None) -> None:
-    """Show live after-review quality progress directly beneath the record editor."""
+    """Show live review progress and a direct path to exporting approved records."""
     if not company_id:
         return
     company_qa = qa_frame.loc[
@@ -3428,10 +3452,43 @@ def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | Non
         return
 
     st.divider()
-    st.markdown("### Quality progress")
+    st.markdown("### Review progress")
     st.caption(
-        "These live results update after every saved review. The starting baseline above does not change."
+        "Use one clear finish line: Approved for Export. A record reaches it after Completed + Verified + Keep with no critical data blocker."
     )
+
+    total_records = len(company_qa)
+    approved_count = int(approved_for_export_mask(company_qa).sum())
+    excluded_count = int(company_qa["Record Decision"].eq("Remove").sum())
+    still_reviewing = int(
+        (~approved_for_export_mask(company_qa) & ~company_qa["Record Decision"].eq("Remove")).sum()
+    )
+
+    live_metrics = st.columns(4)
+    live_metrics[0].metric("Total records", f"{total_records:,}")
+    live_metrics[1].metric("Approved for Export", f"{approved_count:,}")
+    live_metrics[2].metric("Still in review", f"{still_reviewing:,}")
+    live_metrics[3].metric("Excluded", f"{excluded_count:,}")
+
+    if approved_count:
+        st.success(
+            f"{approved_count:,} of {total_records:,} record(s) are approved for export for this company."
+        )
+        if st.button(
+            f"Export {approved_count:,} approved record(s)",
+            type="primary",
+            width="stretch",
+            key=f"db_review_export_approved_{company_id}",
+        ):
+            st.session_state["db_export_scope_mode"] = "One company"
+            st.session_state["db_export_company"] = str(company_id)
+            st.session_state["db_custom_export_scope"] = "Approved for Export"
+            go_to("Downloads")
+            st.rerun()
+    else:
+        st.info(
+            "No records are approved for export yet. Finish the review fields for the records you want to deliver."
+        )
 
     baseline = st.session_state.get(S_QA_BASELINE)
     if not isinstance(baseline, pd.DataFrame):
@@ -3446,12 +3503,13 @@ def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | Non
 
     impact = quality_impact_summary(company_qa, company_baseline)
     impact_map = dict(zip(impact["Metric"], impact["Value"]))
-    live_metrics = st.columns(5)
-    live_metrics[0].metric("Verified", f"{int(company_qa['Verification Status'].eq('Verified').sum()):,}")
-    live_metrics[1].metric("Critical", f"{int(company_qa['QA Status'].eq('Critical').sum()):,}")
-    live_metrics[2].metric("Warnings", f"{int(company_qa['Warning Count'].sum()):,}")
-    live_metrics[3].metric("Open gaps", f"{int(company_qa['Research Gap Count'].sum()):,}")
-    live_metrics[4].metric("Ready to use", f"{int(ready_mask(company_qa).sum()):,}")
+
+    st.markdown("#### Quality progress")
+    quality_metrics = st.columns(4)
+    quality_metrics[0].metric("Critical issues", f"{int(company_qa['QA Status'].eq('Critical').sum()):,}")
+    quality_metrics[1].metric("Warnings", f"{int(company_qa['Warning Count'].sum()):,}")
+    quality_metrics[2].metric("Open research gaps", f"{int(company_qa['Research Gap Count'].sum()):,}")
+    quality_metrics[3].metric("Human verified", f"{int(company_qa['Verification Status'].eq('Verified').sum()):,}")
 
     if quality_baseline_exists(company_id):
         progress_metrics = st.columns(4)
@@ -3472,13 +3530,14 @@ def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | Non
                 st.dataframe(issues, width="stretch", hide_index=True)
             attention_columns = [
                 "Record ID", "Working Record Label", "QA Status", "QA Flags",
-                "Research Gaps", "Follow-up Priority", "Record Readiness",
+                "Research Gaps", "Follow-up Priority", "Record Readiness", "Export Status",
             ]
+            attention_columns = [c for c in attention_columns if c in company_qa.columns]
             attention = company_qa[
-                ~ready_mask(company_qa)
-                & ~company_qa["Record Readiness"].eq("Excluded from Listings")
+                ~approved_for_export_mask(company_qa)
+                & ~company_qa["Record Decision"].eq("Remove")
             ][attention_columns]
-            st.markdown("#### Records needing attention")
+            st.markdown("#### Records still in review")
             st.dataframe(attention, width="stretch", hide_index=True, height=360)
         with detail_tabs[1]:
             st.dataframe(research_log(company_qa).head(250), width="stretch", hide_index=True, height=460)
@@ -3520,7 +3579,7 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
     follow_up_count = int(qa_frame["Record Readiness"].isin([
         "Duplicate Review", "Needs Follow-up", "Fix Critical Data"
     ]).sum())
-    ready_count = int(ready_mask(qa_frame).sum())
+    approved_count = int(approved_for_export_mask(qa_frame).sum())
 
     if critical_count:
         return (
@@ -3543,7 +3602,8 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
             "Review records",
             "Verify candidates",
         )
-    if ready_count < len(qa_frame):
+    active_count = int((~qa_frame["Record Decision"].eq("Remove")).sum())
+    if approved_count < active_count:
         return (
             "Check progress and remaining gaps",
             "See which research is incomplete, which details are missing, and how fresh each source is.",
@@ -3552,7 +3612,7 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
         )
     return (
         "Export your selected columns",
-        "Every record is ready. Choose the fields you need and download a CSV.",
+        "Every active record is approved for export. Choose the fields you need and download a CSV.",
         "Downloads",
         "Open custom export",
     )
@@ -5328,7 +5388,7 @@ elif section == "Overview":
     render_page_heading(
         "WORKSPACE",
         "Workspace overview",
-        "See what has been collected, what needs attention, and what is ready to use.",
+        "See what has been collected, what still needs review, and what is approved for export.",
     )
 
     next_title, next_copy, next_section, next_button = recommended_next_action(qa)
@@ -5378,7 +5438,7 @@ elif section == "Overview":
     else:
         metric_columns = st.columns(4)
         metric_columns[0].metric("Records", f"{len(qa):,}")
-        metric_columns[1].metric("Listings ready to use", f"{int(ready_mask(qa).sum()):,}")
+        metric_columns[1].metric("Approved for Export", f"{int(approved_for_export_mask(qa).sum()):,}")
         metric_columns[2].metric(
             "Need attention",
             f"{int((~ready_mask(qa) & ~qa['Record Readiness'].eq('Excluded from Listings')).sum()):,}",
@@ -5838,9 +5898,21 @@ elif section == "Review records":
         "A blank means the information has not been confirmed; it does not automatically mean the feature or detail is unavailable.",
     )
 
-    filtered = qa.copy() if has_records else pd.DataFrame()
+    review_scope_qa = (
+        qa.loc[qa["Company ID"].astype(str).eq(str(review_quality_company_id))].copy()
+        if has_records and review_quality_company_id
+        else qa.copy() if has_records else pd.DataFrame()
+    )
+    filtered = review_scope_qa.copy()
 
-    if has_records:
+    if has_records and not review_scope_qa.empty:
+        approved_now = int(approved_for_export_mask(review_scope_qa).sum())
+        still_now = int((~approved_for_export_mask(review_scope_qa) & ~review_scope_qa["Record Decision"].eq("Remove")).sum())
+        summary_cols = st.columns(3)
+        summary_cols[0].metric("Company records", f"{len(review_scope_qa):,}")
+        summary_cols[1].metric("Approved for Export", f"{approved_now:,}")
+        summary_cols[2].metric("Still in review", f"{still_now:,}")
+
         search_col, focus_col = st.columns([2, 1])
         search_text = search_col.text_input(
             "Search records",
@@ -5849,14 +5921,14 @@ elif section == "Review records":
         )
         focus = focus_col.selectbox(
             "Focus",
-            ["Needs attention", "All records", "Ready for review", "Verified", "Ready to use"],
+            ["Still in review", "All records", "Ready for review", "Verified", "Approved for Export"],
             key="db_review_focus",
         )
 
-        mask = pd.Series(True, index=qa.index)
+        mask = pd.Series(True, index=review_scope_qa.index)
         if search_text.strip():
             search_blob = (
-                qa[[
+                review_scope_qa[[
                     "Record ID", "Building Name", "Management/Owner", "Street Address",
                     "City", "Postal Code", "Primary Email", "Phone"
                 ]]
@@ -5867,57 +5939,57 @@ elif section == "Review records":
             )
             mask &= search_blob.str.contains(search_text.strip().lower(), regex=False)
 
-        if focus == "Needs attention":
-            mask &= ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
+        if focus == "Still in review":
+            mask &= ~approved_for_export_mask(review_scope_qa) & ~review_scope_qa["Record Decision"].eq("Remove")
         elif focus == "Ready for review":
-            mask &= qa["Research Status"].eq("Ready for Review") | qa["Verification Status"].eq("Needs Review")
+            mask &= review_scope_qa["Research Status"].eq("Ready for Review") | review_scope_qa["Verification Status"].eq("Needs Review")
         elif focus == "Verified":
-            mask &= qa["Verification Status"].eq("Verified")
-        elif focus == "Ready to use":
-            mask &= ready_mask(qa)
+            mask &= review_scope_qa["Verification Status"].eq("Verified")
+        elif focus == "Approved for Export":
+            mask &= approved_for_export_mask(review_scope_qa)
 
         with st.expander("More filters"):
             filter_row1 = st.columns(3)
             quality_filter = filter_row1[0].multiselect(
                 "Listing quality",
-                sorted(display_values(qa["QA Status"]).unique()),
+                sorted(display_values(review_scope_qa["QA Status"]).unique()),
                 help="Leave blank to include every quality status.",
             )
             owner_filter = filter_row1[1].multiselect(
                 "Management or owner",
-                sorted(display_values(qa["Management/Owner"]).unique()),
+                sorted(display_values(review_scope_qa["Management/Owner"]).unique()),
                 help="Leave blank to include every organization.",
             )
             research_filter = filter_row1[2].multiselect(
                 "Research status",
-                sorted(display_values(qa["Research Status"]).unique()),
+                sorted(display_values(review_scope_qa["Research Status"]).unique()),
                 help="Leave blank to include every research status.",
             )
             filter_row2 = st.columns(2)
             verification_filter = filter_row2[0].multiselect(
                 "Verification status",
-                sorted(display_values(qa["Verification Status"]).unique()),
+                sorted(display_values(review_scope_qa["Verification Status"]).unique()),
                 help="Leave blank to include every verification status.",
             )
             readiness_filter = filter_row2[1].multiselect(
                 "Record readiness",
-                sorted(display_values(qa["Record Readiness"]).unique()),
+                sorted(display_values(review_scope_qa["Record Readiness"]).unique()),
                 help="Leave blank to include every readiness status.",
             )
 
         if quality_filter:
-            mask &= display_values(qa["QA Status"]).isin(quality_filter)
+            mask &= display_values(review_scope_qa["QA Status"]).isin(quality_filter)
         if owner_filter:
-            mask &= display_values(qa["Management/Owner"]).isin(owner_filter)
+            mask &= display_values(review_scope_qa["Management/Owner"]).isin(owner_filter)
         if research_filter:
-            mask &= display_values(qa["Research Status"]).isin(research_filter)
+            mask &= display_values(review_scope_qa["Research Status"]).isin(research_filter)
         if verification_filter:
-            mask &= display_values(qa["Verification Status"]).isin(verification_filter)
+            mask &= display_values(review_scope_qa["Verification Status"]).isin(verification_filter)
         if readiness_filter:
-            mask &= display_values(qa["Record Readiness"]).isin(readiness_filter)
+            mask &= display_values(review_scope_qa["Record Readiness"]).isin(readiness_filter)
 
-        filtered = qa.loc[mask].copy()
-        st.caption(f"Showing {len(filtered):,} of {len(qa):,} records.")
+        filtered = review_scope_qa.loc[mask].copy()
+        st.caption(f"Showing {len(filtered):,} of {len(review_scope_qa):,} records for the selected company.")
 
         review_tabs = st.tabs(["Review queue", "Edit fields"])
 
@@ -5934,7 +6006,7 @@ elif section == "Review records":
                     "Record ID", "Working Record Label", "Management/Owner",
                     "Street Address", "City", "Postal Code", "Research Status",
                     "Verification Status", "QA Status", "QA Flags", "Research Gaps",
-                    "Follow-up Priority", "Record Readiness",
+                    "Follow-up Priority", "Record Readiness", "Export Status",
                 ]
                 inspect = filtered[inspect_columns].rename(
                     columns={
@@ -6000,14 +6072,14 @@ elif section == "Review records":
                 )
                 context = ["Record ID", "Working Record Label"] + edit_fields + [
                     "Source URL", "Check Source", "Missing Information", "Research Gaps",
-                    "QA Status", "Record Readiness"
+                    "QA Status", "Record Readiness", "Export Status"
                 ]
                 context = list(dict.fromkeys(c for c in context if c in filtered.columns))
                 locked = [
                     c for c in context
                     if c in [
                         "Record ID", "Working Record Label", "Check Source",
-                        "Missing Information", "Research Gaps", "QA Status", "Record Readiness"
+                        "Missing Information", "Research Gaps", "QA Status", "Record Readiness", "Export Status"
                     ]
                 ]
                 edited = st.data_editor(
@@ -6080,7 +6152,7 @@ elif section == "Review records":
                     )
                 with save_note:
                     st.caption(
-                        "Saving updates the working copy, refreshes quality checks, and synchronizes Missing Information automatically."
+                        "Saving updates the working copy, refreshes quality checks, and recalculates Approved for Export automatically."
                     )
                 if save_changes:
                     save_edits(edited, [c for c in edit_fields if c in edited.columns])
@@ -6152,7 +6224,7 @@ elif section == "Analysis & report":
     metric_columns = st.columns(5)
     metric_columns[0].metric("Companies", f"{analysis_qa['Company ID'].astype(str).replace('', pd.NA).dropna().nunique():,}")
     metric_columns[1].metric("Building records", f"{len(analysis_qa):,}")
-    metric_columns[2].metric("Ready records", f"{int(ready_mask(analysis_qa).sum()):,}")
+    metric_columns[2].metric("Approved for Export", f"{int(approved_for_export_mask(analysis_qa).sum()):,}")
     metric_columns[3].metric("Records passing QA", f"{int(analysis_qa['QA Status'].eq('Pass').sum()):,}")
     metric_columns[4].metric("Open QA issues", f"{int(analysis_qa['QA Flag Count'].sum()):,}")
 
@@ -6221,38 +6293,108 @@ elif section == "Analysis & report":
 elif section == "Downloads":
     render_page_heading(
         "EXPORT",
-        "Custom CSV export",
-        "Choose which records and columns you want, preview the exact table, then download only that CSV.",
+        "Export approved records",
+        "Choose the company or project scope, confirm which reviewed records to include, select the columns, preview the exact CSV, then download it.",
     )
     st.caption(f"Workspace build: {DATABLIX_BUILD}")
 
-    st.subheader("1. Choose records")
-    export_scope = st.radio(
-        "Records to include",
-        ["Ready records only", "All project records"],
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    available = registry.loc[
+        registry["Company ID"].astype(str).isin(set(qa["Company ID"].astype(str)))
+    ].copy() if not registry.empty else registry
+
+    st.subheader("1. Choose export scope")
+    scope_options = ["One company", "Entire project"]
+    if st.session_state.get("db_export_scope_mode") not in scope_options:
+        st.session_state["db_export_scope_mode"] = "One company" if not available.empty else "Entire project"
+    export_scope_mode = st.radio(
+        "Scope",
+        scope_options,
         horizontal=True,
-        key="db_custom_export_scope",
-    )
-    export_source = (
-        qa.loc[ready_mask(qa)].copy()
-        if export_scope == "Ready records only"
-        else qa.copy()
+        key="db_export_scope_mode",
+        help="Use One company for the company you just reviewed. Use Entire project only when you intentionally want records from every company.",
     )
 
-    st.subheader("2. Choose columns")
+    export_company_id = None
+    export_scope_label = str(st.session_state.get(S_PROJECT_NAME, "Datablix project")).strip() or "Datablix project"
+    scope_qa = qa.copy()
+
+    if export_scope_mode == "One company":
+        if available.empty:
+            st.warning("No company-linked records are available to export yet.")
+            st.stop()
+        company_ids = available["Company ID"].astype(str).tolist()
+        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        current_export_company = str(st.session_state.get("db_export_company", "")).strip()
+        if current_export_company not in company_ids:
+            st.session_state["db_export_company"] = active_id if active_id in company_ids else company_ids[0]
+        export_company_id = st.selectbox(
+            "Company",
+            company_ids,
+            format_func=lambda company_id: company_label(
+                available.loc[available["Company ID"].eq(company_id)].iloc[0]
+            ),
+            key="db_export_company",
+        )
+        company_row = available.loc[available["Company ID"].eq(export_company_id)].iloc[0]
+        export_scope_label = str(company_row["Management/Owner"]).strip() or export_company_id
+        scope_qa = qa.loc[qa["Company ID"].astype(str).eq(str(export_company_id))].copy()
+
+    approved_count = int(approved_for_export_mask(scope_qa).sum())
+    excluded_count = int(scope_qa["Record Decision"].eq("Remove").sum())
+    still_reviewing = int((~approved_for_export_mask(scope_qa) & ~scope_qa["Record Decision"].eq("Remove")).sum())
+
+    scope_metrics = st.columns(4)
+    scope_metrics[0].metric("Records in scope", f"{len(scope_qa):,}")
+    scope_metrics[1].metric("Approved for Export", f"{approved_count:,}")
+    scope_metrics[2].metric("Still in review", f"{still_reviewing:,}")
+    scope_metrics[3].metric("Excluded", f"{excluded_count:,}")
+
+    st.subheader("2. Choose records")
+    record_options = ["Approved for Export", "All records"]
+    if st.session_state.get("db_custom_export_scope") not in record_options:
+        st.session_state["db_custom_export_scope"] = "Approved for Export"
+    export_record_mode = st.radio(
+        "Records to include",
+        record_options,
+        horizontal=True,
+        key="db_custom_export_scope",
+        help="Approved for Export means Completed + Verified + Keep with no critical data blocker.",
+    )
+    export_source = (
+        scope_qa.loc[approved_for_export_mask(scope_qa)].copy()
+        if export_record_mode == "Approved for Export"
+        else scope_qa.copy()
+    )
+
+    if export_record_mode == "Approved for Export":
+        if approved_count:
+            st.success(
+                f"{approved_count:,} of {len(scope_qa):,} record(s) in {export_scope_label} are approved for export."
+            )
+        else:
+            st.warning(
+                "No records in this scope are approved for export yet. Return to Review & Quality and complete the records you want to deliver."
+            )
+
+    st.subheader("3. Choose columns")
     exportable_columns = [
         column for column in working.columns
         if column in export_source.columns
     ]
     for derived_column in [
-        "Record Readiness", "QA Status", "QA Flags", "QA Flag Count",
+        "Export Status", "Record Readiness", "QA Status", "QA Flags", "QA Flag Count",
         "Research Gaps", "Research Gap Count", "Follow-up Priority",
     ]:
         if derived_column in export_source.columns and derived_column not in exportable_columns:
             exportable_columns.append(derived_column)
 
     default_columns = [
-        column for column in ["Building Name", "Street Address", "Postal Code"]
+        column for column in [
+            "Building Name", "Street Address", "City", "Postal Code",
+            "Building Classification", "Number of Apartments", "Management/Owner",
+            "Phone", "Primary Email", "Website",
+        ]
         if column in exportable_columns
     ]
 
@@ -6275,26 +6417,32 @@ elif section == "Downloads":
         "Columns to include",
         options=exportable_columns,
         key="db_custom_export_columns",
-        help="The CSV will use exactly these columns in the order shown here.",
+        help="The CSV will contain exactly these columns in the order shown here.",
     )
 
-    st.subheader("3. Preview")
-    if not selected_columns:
+    st.subheader("4. Preview")
+    if export_source.empty:
+        st.info("There are no records to preview for the selected export choice.")
+    elif not selected_columns:
         st.warning("Choose at least one column to create the CSV.")
     else:
         export_table = export_source[selected_columns].copy()
         preview_metrics = st.columns(2)
-        preview_metrics[0].metric("Rows", f"{len(export_table):,}")
-        preview_metrics[1].metric("Columns", f"{len(selected_columns):,}")
+        preview_metrics[0].metric("Rows to download", f"{len(export_table):,}")
+        preview_metrics[1].metric("Selected columns", f"{len(selected_columns):,}")
         st.dataframe(export_table.head(250), width="stretch", hide_index=True, height=500)
 
-        st.subheader("4. Download")
-        export_filename = (
-            safe_filename(st.session_state.get(S_PROJECT_NAME, "datablix"))
-            + "_selected_columns.csv"
+        st.subheader("5. Download")
+        scope_filename = safe_filename(export_scope_label)
+        suffix = "approved" if export_record_mode == "Approved for Export" else "all_records"
+        export_filename = f"{scope_filename}_{suffix}_selected_columns.csv"
+        button_label = (
+            f"Download {len(export_table):,} approved record(s) — CSV"
+            if export_record_mode == "Approved for Export"
+            else f"Download {len(export_table):,} record(s) — CSV"
         )
         st.download_button(
-            "Download selected columns — CSV",
+            button_label,
             data=csv_bytes(export_table),
             file_name=export_filename,
             mime="text/csv",
@@ -6302,6 +6450,7 @@ elif section == "Downloads":
             width="stretch",
             key="db_download_custom_export",
         )
+
 
 # Persist the latest completed state after every Streamlit rerun.
 autosave_current_project()
