@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Project Source File Mode 2026.07.24-v35"
+DATABLIX_BUILD = "Single Research CSV Mode 2026.07.24-v36"
 
 # =========================================================
 # Configuration
@@ -2096,8 +2096,10 @@ def build_research_package_bytes(
         "4. Do not assume a source entry is current merely because it appears in the source.",
         "5. Reconcile relevant source entries first.",
         "6. Then search current authoritative sources for additional legitimate properties missing from the project source.",
-        "7. Return the completed research as CSV using the required headings.",
-        "8. Import that CSV back into Datablix for human review.",
+        "7. Return exactly ONE completed research CSV using the required headings.",
+        "8. Keep Current, Review, and identifiable Excluded/legacy properties in that same CSV; use status and evidence fields to distinguish them.",
+        "9. Do not create separate active, excluded, legacy, duplicate, or reconciliation CSV files.",
+        "10. Import that one consolidated CSV back into Datablix for human review.",
         "",
         "FILES",
         f"- {prompt_name}: company-specific research instructions.",
@@ -2112,6 +2114,7 @@ def build_research_package_bytes(
         "",
         "IMPORTANT",
         "The original project source file is the authoritative starting reference for this research cycle. Structured CSV extracts are conveniences only and may not capture every sheet, note, alias, or layout element in the original source file.",
+        "The required research OUTPUT is exactly one consolidated company research CSV. The ZIP may contain multiple INPUT/reference files, but the AI research result must be one CSV only.",
     ]
     readme = "\n".join(readme_lines)
 
@@ -2183,7 +2186,7 @@ def build_company_website_research_prompt(
     """Create one comprehensive, editable, provider-neutral research prompt."""
     return f"""# Datablix Inventory-First Company Research Prompt
 
-You are acting as a careful public-source rental-property research analyst. Research the company below and produce downloadable CSV file deliverables that can be imported into Datablix for data-quality review and human verification. CSV is the required output format.
+You are acting as a careful public-source rental-property research analyst. Research the company below and produce exactly ONE downloadable consolidated CSV file that can be imported into Datablix for data-quality review and human verification. The single CSV must contain every identifiable Current, Review, and Excluded/legacy property record for this company using one shared schema. Do not split the research result into multiple CSV files.
 
 ## Company context
 - Company or management owner: {company_name or '[enter company name]'}
@@ -2250,13 +2253,13 @@ Use these values consistently:
 ### Property-row eligibility rule — apply BEFORE creating any property row
 A URL, page title, or dedicated property path is not enough to create a property record. Before creating a row, confirm that the page represents a meaningful property candidate using current inventory evidence and/or substantive property-specific information.
 
-Do NOT create a row in either the active CSV or the excluded-property CSV when ALL of the following are true:
+Do NOT create a row in the consolidated research CSV when ALL of the following are true:
 - the page is orphaned, legacy, isolated, or only discoverable through crawling/XML sitemap evidence;
 - it is not supported by a current city/property/portfolio page or current human-readable HTML sitemap;
 - it contains no meaningful property-specific information sufficient to establish a real building record; and
 - it contains only a generic title, navigation/template content, empty sections, redirects, placeholder text, or other non-property content.
 
-Such pages must be ignored as non-record pages. They must NOT be counted as properties, must NOT become Current or Review rows, must NOT appear in the active-properties CSV, and must NOT appear in the excluded-properties CSV merely because the URL exists. A URL alone is not a property record.
+Such pages must be ignored as non-record pages. They must NOT be counted as properties and must NOT become Current, Review, or Excluded rows merely because the URL exists. A URL alone is not a property record.
 
 Meaningful property evidence can include a reliable building/property name, street address, city/postal code, property-specific leasing/contact information, suite/floor-plan information, amenities, unit count, or substantive property description. Generic labels such as Home, Properties, Apartments, Contact Us, Amenities, Floor Plans, Availability, Learn More, or Welcome are not meaningful property evidence by themselves.
 
@@ -2265,7 +2268,7 @@ If a page is supported by current official inventory evidence but its dedicated 
 If an orphan/legacy page contains enough substantive property-specific evidence to identify a real building, evaluate its current-inventory status normally. When BOTH a current city/property/portfolio index and a current human-readable HTML sitemap are available and the dedicated property page is absent from BOTH, mark the identifiable property:
 Excluded — not in current inventory.
 
-Do not include excluded properties in the final active property count or final directory rows intended for import.
+Keep identifiable Excluded properties in the single research CSV for audit/reconciliation, but do not count them as active properties or treat them as final directory entries. Their exclusion reason and supporting evidence must remain visible in the same file.
 
 If one of the authoritative inventory sources is missing, blocked, obviously incomplete, or unavailable, do not exclude solely because of absence from that one source. Mark the property for review and explain the limitation.
 
@@ -2296,20 +2299,21 @@ A third-party source must NEVER bring an Excluded legacy/orphaned property back 
 Clearly label secondary evidence in Supporting Evidence and keep the official company/property source as the primary basis for property identity and current-inventory status.
 
 ### Phase 4 — Quality-check before delivery
-Before producing the final CSV file:
-1. Recheck every included property against current company inventory evidence.
-2. Reconcile every starting source record: Current, Review, Excluded, or matched to another current row representing the same property.
+Before producing the final single CSV file:
+1. Recheck every identifiable property against current company inventory evidence.
+2. Reconcile every starting source record as Current, Review, Excluded, or matched to another row representing the same physical property.
 3. Confirm that legitimate current properties discovered outside the starting source list have not been missed.
-4. Remove Excluded legacy/orphaned properties from the active deliverable and remove non-record orphan/empty pages from all property deliverables.
+4. Keep identifiable Excluded/legacy properties in the same consolidated CSV with Current Inventory Status = Excluded and a clear Inventory Exclusion Reason. Remove only non-record orphan/empty pages that fail the property-row eligibility rule.
 5. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
 6. Verify every field before listing it under Missing Information.
 7. Check duplicates primarily by normalized street address and postal code, then property URL and building name plus city.
-8. Ensure the final active CSV has ONE row per unique property, even when the starting source and current website use different names or formatting.
-9. Check that City, Province, and Postal Code agree.
-10. Ensure every populated value is traceable to public evidence.
-11. Distinguish official-source findings from secondary-source findings.
-12. Keep genuine unresolved information separate from extraction failures.
-13. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
+8. Ensure the consolidated CSV has ONE row per unique identifiable physical property. If a starting-source row and current website row refer to the same property under different names or formatting, reconcile them into one row and explain the match in Reviewer Notes or Supporting Evidence.
+9. If two records may be duplicates but identity cannot be safely resolved, keep one Review row per genuinely distinct candidate and explain the duplicate concern; do not silently merge or create redundant copies.
+10. Check that City, Province, and Postal Code agree.
+11. Ensure every populated value is traceable to public evidence.
+12. Distinguish official-source findings from secondary-source findings.
+13. Keep genuine unresolved information separate from extraction failures.
+14. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
 
 ## Source policy
 {source_policy}
@@ -2317,7 +2321,7 @@ Before producing the final CSV file:
 Official company and official property sources are the primary evidence. Do not silently rely on search-result snippets, social media, forums, user-generated listings, scraped directories, or unverified third-party sources.
 
 ## Fields to collect for each property
-Return one row per unique CURRENT or REVIEW property. Do not return Excluded properties as active directory rows.
+Return one row per unique identifiable property, including CURRENT, REVIEW, and identifiable EXCLUDED/legacy properties. Excluded rows remain in the same CSV for audit and reconciliation but are not active directory entries.
 
 Use these exact column headings:
 
@@ -2366,39 +2370,46 @@ Field guidance:
 ## Priority or company-specific instructions
 {priority_notes or 'No additional priorities were provided.'}
 
-## Required deliverable — CSV files only
-Create the research deliverable as downloadable CSV file(s) only. Do not create or return an Excel workbook, Google Sheet, JSON file, PDF, Word document, Markdown table, or HTML table.
+## Required deliverable — EXACTLY ONE consolidated CSV file
+Create exactly ONE downloadable CSV file for this company. Do not create or return an Excel workbook, Google Sheet, JSON file, PDF, Word document, Markdown table, HTML table, ZIP of research results, or multiple CSV files.
 
-### Required primary file
-Create one primary CSV file named clearly for the company, for example:
-`company_name_active_properties.csv`
+### Required single file
+Name the file clearly for the company, for example:
+`company_name_research_results.csv`
 
-The primary CSV must:
-- contain one property per row;
+The single CSV must:
+- contain one unique identifiable physical property per row;
 - use the exact column headings listed above, in the exact order provided;
-- contain only Current and Review properties;
-- exclude legacy/orphaned properties from the active rows and active property count;
+- contain Current, Review, and identifiable Excluded/legacy properties together in the same file;
+- use `Current Inventory Status` to distinguish Current, Review, and Excluded rows;
+- populate `Inventory Exclusion Reason` for Excluded/legacy rows;
+- preserve `Inventory Evidence`, `Source URL`, `Supporting Evidence`, and `Reviewer Notes` so every status decision is auditable;
 - preserve blank cells for genuinely unresolved values;
 - remain directly importable into Datablix without restructuring.
 
-### Excluded-property file
-If Excluded legacy/orphaned properties are found, create a second CSV file named, for example:
-`company_name_excluded_properties.csv`
-
-Use the same exact headings where practical and include the exclusion status, evidence, exclusion reason, source URL, and reviewer notes. Include only excluded pages that contain enough property-specific evidence to identify a real building. Do not create excluded-property rows for blank, generic, placeholder, or orphan URLs that contain no meaningful property details. Do not mix excluded properties into the primary active-properties CSV.
+### Reconciliation and duplicate handling inside the same file
+- Do not create a separate reconciliation file.
+- Do not create a separate active-properties file.
+- Do not create a separate excluded-properties or legacy-properties file.
+- Do not create a separate duplicate-record file.
+- When a starting-source record matches a current website record for the same physical property, reconcile them into ONE row rather than duplicating the property. Explain important name/address/URL differences in Reviewer Notes or Supporting Evidence.
+- When an identifiable legacy property is no longer current, keep that property in the same CSV with `Current Inventory Status = Excluded` and explain why.
+- When evidence is genuinely conflicting or identity is unresolved, use `Current Inventory Status = Review` and explain the uncertainty rather than forcing a decision.
+- Blank, generic, placeholder, or orphan URLs that do not establish a meaningful property record must be omitted entirely rather than added as Excluded rows.
 
 ### Output behaviour
-- Generate actual downloadable `.csv` file(s) whenever the AI tool supports file creation.
+- Generate exactly one actual downloadable `.csv` file whenever the AI tool supports file creation.
 - Do not substitute a narrative report for the CSV.
 - Do not paste a Markdown table instead of creating the CSV file.
 - Do not provide Excel or Google Sheets as alternatives.
-- Keep commentary outside the files to an absolute minimum.
-- If the platform cannot create an attached/downloadable file, return raw RFC-style CSV text in a fenced `csv` code block as the fallback, with no surrounding narrative beyond a one-line limitation notice.
+- Do not attach any second research-results file.
+- Keep commentary outside the file to an absolute minimum.
+- If the platform cannot create an attached/downloadable file, return the contents of that one CSV as raw RFC-style CSV text in a fenced `csv` code block as the fallback, with no surrounding narrative beyond a one-line limitation notice.
 
-CSV-only format rule: This requirement overrides any conflicting output-format instruction in saved company notes or elsewhere in this prompt. Company-specific instructions may change research priorities or content, but they must not change the required `.csv` output format.
+Single-CSV format rule: This requirement overrides any conflicting output-format instruction in saved company notes or elsewhere in this prompt. Company-specific instructions may change research priorities or content, but they must not change the requirement to return exactly ONE consolidated `.csv` research-results file.
 
 Additional output instructions:
-{output_notes or 'Return clean, evidence-based CSV file(s) only, ready for direct import into Datablix.'}
+{output_notes or 'Return exactly one clean, evidence-based consolidated CSV file, ready for direct import into Datablix.'}
 """
 
 def append_external_research_results(
@@ -8008,7 +8019,7 @@ elif section == "Website scanner":
         value=saved_output_notes,
         height=105,
         key=f"db_prompt_output_{company_id}",
-        help="Persistent company-specific content rules. The CSV-only output format is enforced by the master prompt and cannot be overridden here.",
+        help="Persistent company-specific content rules. The exactly-one consolidated CSV output format is enforced by the master prompt and cannot be overridden here.",
     )
 
     generated_prompt = build_company_website_research_prompt(
@@ -8182,13 +8193,13 @@ elif section == "Website scanner":
     st.info(
         "Starting Data is project-wide. For every company, use the research prompt together "
         "with the current Project source CSV. Reconcile source records relevant to the company "
-        "first, then find additional current properties, and return the completed research as CSV."
+        "first, then find additional current properties, and return exactly one consolidated research CSV containing Current, Review, and identifiable Excluded records."
     )
 
     st.divider()
-    st.subheader("2. Import the completed CSV research deliverable")
+    st.subheader("2. Import the single completed CSV research deliverable")
     st.caption(
-        "CSV is the required research-deliverable format. Datablix can still open legacy Excel or Google Sheets inputs when needed, but new AI research should be returned as CSV. Imported findings remain unverified and continue through mapping, quality checks, duplicate review, and human approval."
+        "Exactly one consolidated CSV is the required research-deliverable format. Datablix can still open legacy Excel or Google Sheets inputs when needed, but new AI research should return one CSV containing Current, Review, and identifiable Excluded records together. Imported findings remain unverified and continue through mapping, quality checks, duplicate review, and human approval."
     )
     import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
     with import_tabs[0]:
