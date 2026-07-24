@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Source Baseline + Directory Entry Assistant 2026.07.23-v24"
+DATABLIX_BUILD = "Starting Data Placement 2026.07.23-v26"
 
 # =========================================================
 # Configuration
@@ -999,6 +999,43 @@ def is_unresolved(value):
     return norm_scalar(value) in UNRESOLVED
 
 
+def coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return one column per label, keeping the first resolved value across duplicates.
+
+    Some saved/imported workbooks can contain duplicate labels after schema mapping.
+    Pandas returns a DataFrame rather than a Series for df["column"] in that case,
+    which breaks string operations such as .str.strip(). This helper repairs that
+    condition before normalization.
+    """
+    if not isinstance(df, pd.DataFrame):
+        return df
+    out = df.copy()
+    if not out.columns.duplicated().any():
+        return out
+
+    result = pd.DataFrame(index=out.index)
+    seen = []
+    for column in out.columns:
+        if column not in seen:
+            seen.append(column)
+
+    for column in seen:
+        positions = [i for i, label in enumerate(out.columns) if label == column]
+        combined = out.iloc[:, positions[0]].copy()
+
+        for pos in positions[1:]:
+            candidate = out.iloc[:, pos]
+            blank_mask = (
+                combined.isna()
+                | combined.astype("string").fillna("").str.strip().eq("")
+            )
+            combined = combined.where(~blank_mask, candidate)
+
+        result[column] = combined
+
+    return result
+
+
 def unresolved_mask(series):
     text = series.astype("string").fillna("").str.strip().str.lower()
     return series.isna() | text.isin(UNRESOLVED)
@@ -1013,6 +1050,7 @@ def resolved(series):
 def prepare_data(df):
     out = df.copy()
     out.columns = [str(c).strip() for c in out.columns]
+    out = coalesce_duplicate_columns(out)
     return out.replace(r"^\s*$", pd.NA, regex=True)
 
 
@@ -1216,7 +1254,7 @@ def synchronize_missing_information(df):
 
 
 def normalize_workflow(df):
-    out = df.copy()
+    out = coalesce_duplicate_columns(df.copy())
     for c in INTERNAL_COLUMNS:
         if c not in out.columns:
             out[c] = pd.NA
@@ -1321,7 +1359,7 @@ def empty_company_registry():
 def normalize_company_registry(registry):
     if not isinstance(registry, pd.DataFrame):
         registry = empty_company_registry()
-    out = registry.copy()
+    out = coalesce_duplicate_columns(registry.copy())
     for column in COMPANY_COLUMNS:
         if column not in out.columns:
             out[column] = pd.NA
@@ -5791,7 +5829,7 @@ if section == "Research projects & companies":
     render_page_heading(
         "PROJECT",
         "Research project",
-        "Manage the project, save companies under it, choose one company workspace, and continue from the next recommended action.",
+        "Set up the project, import its starting data once, manage companies, and continue from the next recommended action.",
     )
     render_guidance(
         "One research project contains many saved company workspaces.",
@@ -5834,50 +5872,92 @@ if section == "Research projects & companies":
             f"{project_snapshot['verified_records']:,} building records verified"
         )
 
-    with st.container(border=True):
-        render_project_company_analytics(project_registry, working)
+    with st.expander("Edit project name", expanded=False):
+        with st.form(f"db_project_name_form_{project_context_token}"):
+            project_name_main = st.text_input(
+                "Project name",
+                value=st.session_state.get(S_PROJECT_NAME, "Datablix project"),
+            )
+            save_project_name = st.form_submit_button(
+                "Save project name",
+                type="primary",
+                width="stretch",
+            )
+        if save_project_name:
+            clean_project_name = project_name_main.strip()
+            if clean_project_name:
+                st.session_state[S_PROJECT_NAME] = clean_project_name
+                st.session_state[S_FLASH] = "Project name saved."
+                st.rerun()
+            else:
+                st.error("Enter a project name.")
 
-    # One-time source baseline setup. This is separate from company research imports.
+    # One-time Starting Data setup. Internally this creates the source baseline
+    # used to distinguish records that already existed from later discoveries.
     source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
     if not isinstance(source_meta, dict):
         source_meta = {}
+
     with st.container(border=True):
-        st.markdown("### Source baseline")
+        st.markdown("### Starting Data")
+
         if source_meta:
-            st.success("Source baseline ready. Continue company research against this starting point.")
-            source_metrics = st.columns(3)
-            source_metrics[0].metric(
-                "Assigned companies",
-                f"{int(source_meta.get('assigned_companies', 0) or 0):,}",
-            )
-            source_metrics[1].metric(
-                "Existing source records",
-                f"{int(source_meta.get('source_records', 0) or 0):,}",
-            )
-            source_metrics[2].metric(
-                "Classification rules",
-                f"{int(source_meta.get('classification_rules', 0) or 0):,}",
+            assigned_count = int(source_meta.get("assigned_companies", 0) or 0)
+            source_count = int(source_meta.get("source_records", 0) or 0)
+            assignment_name = str(source_meta.get("assignment_sheet", "") or "").strip()
+            workbook_name = str(
+                source_meta.get("workbook_name", "Source workbook") or "Source workbook"
+            ).strip()
+
+            st.success(
+                f"Starting data ready · {assigned_count:,} assigned companies · "
+                f"{source_count:,} existing source records"
             )
             st.caption(
-                f"Workbook: {source_meta.get('workbook_name', 'Source workbook')} · "
-                f"Assignment sheet: {source_meta.get('assignment_sheet', '')}"
-            )
-            rules = st.session_state.get(S_CLASSIFICATION_RULES)
-            if isinstance(rules, pd.DataFrame) and not rules.empty:
-                with st.expander("View source building-classification rules"):
-                    st.dataframe(rules, width="stretch", hide_index=True)
-        else:
-            st.info(
-                "Start here once: import the original source workbook so Datablix can "
-                "separate existing source records from genuinely new discoveries."
+                f"Assignment: {assignment_name or 'Not recorded'} · "
+                f"Workbook: {workbook_name}"
             )
 
+            with st.expander("View starting data details", expanded=False):
+                source_metrics = st.columns(3)
+                source_metrics[0].metric(
+                    "Assigned companies",
+                    f"{assigned_count:,}",
+                )
+                source_metrics[1].metric(
+                    "Existing source records",
+                    f"{source_count:,}",
+                )
+                source_metrics[2].metric(
+                    "Classification rules",
+                    f"{int(source_meta.get('classification_rules', 0) or 0):,}",
+                )
+                st.caption(
+                    "This starting data creates the source baseline Datablix uses to "
+                    "distinguish records that already existed from newly discovered properties."
+                )
+                rules = st.session_state.get(S_CLASSIFICATION_RULES)
+                if isinstance(rules, pd.DataFrame) and not rules.empty:
+                    st.markdown("**Building classification rules**")
+                    st.dataframe(rules, width="stretch", hide_index=True)
+
+            starting_data_expander_label = "Replace source workbook"
+            starting_data_expanded = False
+        else:
+            st.info(
+                "Start here once: import the original source workbook before beginning "
+                "company research. Datablix will use it as the source baseline for existing "
+                "versus newly discovered records."
+            )
+            starting_data_expander_label = "Import starting data"
+            starting_data_expanded = True
+
         with st.expander(
-            "Import or update source baseline workbook",
-            expanded=not bool(source_meta),
+            starting_data_expander_label,
+            expanded=starting_data_expanded,
         ):
             st.write(
-                "Upload the original multi-sheet workbook, then choose your assignment sheet. "
+                "Upload the original multi-sheet workbook and choose your assignment sheet. "
                 "Datablix reads the assignment, Apartment Buildings, and Building Classifications "
                 "sheets together. Existing research is preserved and matched to the source baseline."
             )
@@ -5908,8 +5988,13 @@ if section == "Research projects & companies":
                             "match them to the source records, preserve your reviewed values, and "
                             "add only source records that are not already represented."
                         )
+                    import_label = (
+                        "Replace starting data"
+                        if source_meta
+                        else "Import starting data"
+                    )
                     if st.button(
-                        "Import source baseline",
+                        import_label,
                         type="primary",
                         width="stretch",
                         key=f"db_import_source_baseline_{project_context_token}",
@@ -5920,33 +6005,20 @@ if section == "Research projects & companies":
                                 source_assignment_sheet,
                             )
                             st.session_state[S_FLASH] = (
-                                f"Source baseline ready: {result['assigned_companies']:,} assigned "
+                                f"Starting data ready: {result['assigned_companies']:,} assigned "
                                 f"companies and {result['source_records']:,} existing source records. "
                                 "Current research was preserved and matched."
                             )
                             st.rerun()
                         except Exception as error:
-                            st.error(str(error))
-
-    with st.expander("Edit project name", expanded=False):
-        with st.form(f"db_project_name_form_{project_context_token}"):
-            project_name_main = st.text_input(
-                "Project name",
-                value=st.session_state.get(S_PROJECT_NAME, "Datablix project"),
-            )
-            save_project_name = st.form_submit_button(
-                "Save project name",
-                type="primary",
-                width="stretch",
-            )
-        if save_project_name:
-            clean_project_name = project_name_main.strip()
-            if clean_project_name:
-                st.session_state[S_PROJECT_NAME] = clean_project_name
-                st.session_state[S_FLASH] = "Project name saved."
-                st.rerun()
-            else:
-                st.error("Enter a project name.")
+                            st.error(
+                                "Starting data import could not be completed. "
+                                f"{error}"
+                            )
+                            st.caption(
+                                "Your current research has not been deleted or overwritten. "
+                                "Check the workbook and assignment sheet, then try the import again."
+                            )
 
     st.subheader("Companies in this project")
     registry_main = normalize_company_registry(st.session_state.get(S_COMPANIES))
@@ -6257,6 +6329,10 @@ if section == "Research projects & companies":
                 st.rerun()
             except Exception as error:
                 st.error(str(error))
+
+    with st.container(border=True):
+        st.markdown("### Project analytics")
+        render_project_company_analytics(project_registry, working)
 
     with st.expander("Project administration", expanded=False):
         st.caption(
