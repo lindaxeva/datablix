@@ -195,7 +195,6 @@ DIRECTORY_FIELD_MAP = {
     "extraction_method": "Extraction Method",
     "confidence": "Detection Confidence",
     "evidence": "Supporting Evidence",
-    "review_status": "Verification Status",
     "ontario_scope_status": "Ontario Scope Status",
     "ontario_scope_reason": "Ontario Scope Reason",
     "scan_start_url": "Scan Start URL",
@@ -423,6 +422,24 @@ def _ontario_eligible_mask(frame: pd.DataFrame) -> pd.Series:
     return scoped["ontario_scope_status"].isin(ONTARIO_APPROVABLE_STATUSES)
 
 
+def _apply_candidate_status(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep scanner approval distinct from final Datablix verification."""
+    out = frame.copy()
+    if "approved" not in out.columns:
+        out["approved"] = False
+    requested = out["approved"].fillna(False).astype(bool)
+    location_ok = _ontario_eligible_mask(out)
+    inventory_ok = _inventory_eligible_mask(out)
+    eligible = location_ok & inventory_ok
+
+    status = pd.Series("Needs candidate review", index=out.index, dtype="object")
+    status.loc[~inventory_ok] = "Excluded from current inventory"
+    status.loc[inventory_ok & ~location_ok] = "Approval blocked — location"
+    status.loc[requested & eligible] = "Approved for project"
+    out["candidate_status"] = status
+    return out
+
+
 
 def _records_dataframe(report) -> pd.DataFrame:
     frame = pd.DataFrame([asdict(record) for record in report.records])
@@ -439,7 +456,7 @@ def _records_dataframe(report) -> pd.DataFrame:
                 "found_on_xml_sitemap", "exclusion_reason",
                 "source_url", "source_page_title",
                 "extraction_method", "confidence",
-                "review_status", "evidence",
+                "review_status", "candidate_status", "evidence",
                 "ontario_scope_status", "ontario_scope_reason",
             ]
         )
@@ -769,9 +786,13 @@ def _persist_scan_evidence(
     candidates["Company ID"] = str(company_id or "").strip()
     candidates["Management/Owner"] = str(company_name or "").strip()
     candidates["Candidate Outcome"] = "Not selected"
-    if "Approved" in candidates.columns:
+    if "Candidate Status" in candidates.columns:
+        candidates["Candidate Outcome"] = candidates["Candidate Status"].fillna(
+            "Not selected"
+        )
+    elif "Approved" in candidates.columns:
         candidates.loc[candidates["Approved"].fillna(False), "Candidate Outcome"] = (
-            "Selected for approval"
+            "Approved for project"
         )
     candidate_history = _history_frame(candidates_key)
     st.session_state[candidates_key] = _replace_scan_rows(
@@ -1473,6 +1494,7 @@ def render_website_scanner_panel(
         company_name=scan_company_name,
         website_url=scan_start_url,
     )
+    records_df = _apply_candidate_status(records_df)
     st.session_state["website_scan_records"] = records_df
 
     if (
@@ -1644,7 +1666,7 @@ def render_website_scanner_panel(
         "country",
         "source_page_title",
         "extraction_method",
-        "review_status",
+        "candidate_status",
         "evidence",
         "source_url",
         "confidence",
@@ -1658,7 +1680,7 @@ def render_website_scanner_panel(
         "inventory_status", "inventory_evidence",
         "found_on_city_page", "found_on_html_sitemap", "found_on_xml_sitemap",
         "exclusion_reason", "source_url", "source_page_title",
-        "extraction_method", "confidence", "review_status", "evidence",
+        "extraction_method", "confidence", "candidate_status", "evidence",
     ]
     all_review_columns = [column for column in preferred_all_order if column in records_df.columns]
     all_review_columns.extend(
@@ -1694,7 +1716,7 @@ def render_website_scanner_panel(
         disabled=[
             column for column in [
                 "confidence", "source_page_title", "extraction_method",
-                "review_status", "ontario_scope_status", "ontario_scope_reason",
+                "candidate_status", "ontario_scope_status", "ontario_scope_reason",
                 "inventory_status", "inventory_evidence", "found_on_city_page",
                 "found_on_html_sitemap", "found_on_xml_sitemap", "exclusion_reason"
             ] if column in visible_review_columns
@@ -1765,7 +1787,10 @@ def render_website_scanner_panel(
                 format="percent",
                 help="Use confidence to prioritize review; it is not proof that a value is correct.",
             ),
-            "review_status": st.column_config.TextColumn("Review Status"),
+            "candidate_status": st.column_config.TextColumn(
+                "Scanner Candidate Status",
+                help="Scanner approval only. Final human verification is completed in Review records.",
+            ),
             "evidence": st.column_config.TextColumn("Supporting Evidence", width="large"),
         },
     )
@@ -1774,7 +1799,7 @@ def render_website_scanner_panel(
     for column in visible_review_columns:
         updated_records.loc[edited_review.index, column] = edited_review[column]
 
-    updated_records = _apply_ontario_scope(updated_records)
+    updated_records = _apply_candidate_status(_apply_ontario_scope(updated_records))
     st.session_state["website_scan_records"] = updated_records
 
     requested_approval = updated_records["approved"].fillna(False)
@@ -1787,8 +1812,6 @@ def render_website_scanner_panel(
     approved = updated_records.loc[
         requested_approval & eligible_approval
     ].copy()
-    approved["review_status"] = "Needs Review"
-
     _persist_scan_evidence(
         report=report,
         records_df=updated_records,
@@ -1821,8 +1844,9 @@ def render_website_scanner_panel(
         with action_left:
             st.subheader("Add approved records to project")
             st.write(
-                f"{len(approved):,} Ontario-eligible candidate(s) are approved. "
-                "They will enter the selected company records as Needs Review, not as verified records."
+                f"{len(approved):,} Ontario-eligible candidate(s) are approved at the scanner stage. "
+                "When added to the project, they begin final record verification in Review records; "
+                "scanner approval itself is not the final human verification decision."
             )
         with action_right:
             add_approved = st.button(
