@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Starting Data Placement 2026.07.23-v26"
+DATABLIX_BUILD = "NA-Safe Starting Data Import 2026.07.23-v27"
 
 # =========================================================
 # Configuration
@@ -987,12 +987,26 @@ def render_brand_header():
         """)
 
 
+def safe_text(value, default=""):
+    """Convert a scalar value to text without evaluating pd.NA as a boolean."""
+    if isinstance(value, (pd.Series, pd.DataFrame)):
+        return default
+    if value is None or value is pd.NA:
+        return default
+    try:
+        if pd.api.types.is_scalar(value) and pd.isna(value):
+            return default
+    except Exception:
+        pass
+    return str(value).strip()
+
+
 def norm_header(value):
-    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+    return re.sub(r"[^a-z0-9]+", "", safe_text(value).lower())
 
 
 def norm_scalar(value):
-    return "" if pd.isna(value) else str(value).strip().lower()
+    return safe_text(value).lower()
 
 
 def is_unresolved(value):
@@ -1313,10 +1327,10 @@ def classify_discovery_status(df, original=None):
             original_keys.update(_discovery_keys_for_row(original_row))
 
     for idx, row in out.iterrows():
-        decision = str(row.get("Record Decision", "") or "").strip()
-        inventory_status = str(row.get("Current Inventory Status", "") or "").strip().lower()
-        verification_status = str(row.get("Verification Status", "") or "").strip()
-        current_status = str(row.get("Directory Discovery Status", "") or "").strip()
+        decision = safe_text(row.get("Record Decision", ""))
+        inventory_status = safe_text(row.get("Current Inventory Status", "")).lower()
+        verification_status = safe_text(row.get("Verification Status", ""))
+        current_status = safe_text(row.get("Directory Discovery Status", ""))
 
         if decision == "Possible Duplicate":
             out.at[idx, "Directory Discovery Status"] = "Possible Duplicate"
@@ -3517,7 +3531,7 @@ def source_assignment_sheet_candidates(uploaded) -> list[str]:
 
 def _clean_assignment_company_name(value: str) -> str:
     """Reduce explanatory assignment labels to the actual company name."""
-    clean = re.sub(r"\s+", " ", str(value or "")).strip()
+    clean = re.sub(r"\s+", " ", safe_text(value)).strip()
     clean = re.sub(r"\s+is\s+also\s+.*$", "", clean, flags=re.IGNORECASE).strip()
     return clean
 
@@ -3618,7 +3632,7 @@ def _merge_assignment_registry(existing, incoming) -> pd.DataFrame:
     incoming = incoming.copy()
 
     for _, row in incoming.iterrows():
-        name = str(row.get("Management/Owner", "") or "").strip()
+        name = safe_text(row.get("Management/Owner", ""))
         if not name:
             continue
 
@@ -3629,14 +3643,14 @@ def _merge_assignment_registry(existing, incoming) -> pd.DataFrame:
                 break
 
         if match_index is not None:
-            if not str(registry.at[match_index, "Main Website"] or "").strip():
-                registry.at[match_index, "Main Website"] = str(row.get("Main Website", "") or "").strip()
+            if not safe_text(registry.at[match_index, "Main Website"]):
+                registry.at[match_index, "Main Website"] = safe_text(row.get("Main Website", ""))
             registry.at[match_index, "Scope Type"] = "Initial assignment"
-            if not str(registry.at[match_index, "Date Assigned"] or "").strip():
-                registry.at[match_index, "Date Assigned"] = str(row.get("Date Assigned", "") or "").strip()
-            incoming_note = str(row.get("Notes", "") or "").strip()
-            if incoming_note and incoming_note not in str(registry.at[match_index, "Notes"] or ""):
-                existing_note = str(registry.at[match_index, "Notes"] or "").strip()
+            if not safe_text(registry.at[match_index, "Date Assigned"]):
+                registry.at[match_index, "Date Assigned"] = safe_text(row.get("Date Assigned", ""))
+            incoming_note = safe_text(row.get("Notes", ""))
+            if incoming_note and incoming_note not in safe_text(registry.at[match_index, "Notes"]):
+                existing_note = safe_text(registry.at[match_index, "Notes"])
                 registry.at[match_index, "Notes"] = (
                     f"{existing_note} | {incoming_note}" if existing_note else incoming_note
                 )
@@ -3649,7 +3663,7 @@ def _merge_assignment_registry(existing, incoming) -> pd.DataFrame:
         new_row["Company ID"] = next_company_id(registry)
         new_row["Management/Owner"] = name
         new_row["Scope Type"] = "Initial assignment"
-        new_row["Company Status"] = str(row.get("Company Status", "Not started") or "Not started")
+        new_row["Company Status"] = safe_text(row.get("Company Status", "Not started"), "Not started") or "Not started"
         registry = pd.concat([registry, pd.DataFrame([new_row])], ignore_index=True)
 
     return normalize_company_registry(registry)
@@ -3735,7 +3749,7 @@ def _source_baseline_from_workbook(data: bytes, assignment_sheet: str, existing_
     matched_rows = []
     for idx, row in mapped.iterrows():
         match_index = _registry_match_index(
-            str(row.get("Management/Owner", "") or ""),
+            safe_text(row.get("Management/Owner", "")),
             registry,
         )
         if match_index is None:
@@ -3841,7 +3855,7 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str) -> dict:
     # Re-link all rows to the merged assignment registry using tolerant company-name matching.
     for idx, row in merged.iterrows():
         match_index = _registry_match_index(
-            str(row.get("Management/Owner", "") or ""),
+            safe_text(row.get("Management/Owner", "")),
             registry,
         )
         if match_index is not None:
@@ -3879,7 +3893,7 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str) -> dict:
         st.session_state[S_NAME] = uploaded.name
 
     if not registry.empty:
-        active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "") or "").strip()
+        active_id = safe_text(st.session_state.get(S_ACTIVE_COMPANY, ""))
         if active_id not in set(registry["Company ID"].astype(str)):
             st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
 
@@ -5904,10 +5918,11 @@ if section == "Research projects & companies":
         if source_meta:
             assigned_count = int(source_meta.get("assigned_companies", 0) or 0)
             source_count = int(source_meta.get("source_records", 0) or 0)
-            assignment_name = str(source_meta.get("assignment_sheet", "") or "").strip()
-            workbook_name = str(
-                source_meta.get("workbook_name", "Source workbook") or "Source workbook"
-            ).strip()
+            assignment_name = safe_text(source_meta.get("assignment_sheet", ""))
+            workbook_name = safe_text(
+                source_meta.get("workbook_name", "Source workbook"),
+                "Source workbook",
+            ) or "Source workbook"
 
             st.success(
                 f"Starting data ready · {assigned_count:,} assigned companies · "
