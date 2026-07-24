@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Robust Source Sheet Detection 2026.07.24-v32"
+DATABLIX_BUILD = "Delete Previous Source 2026.07.24-v33"
 
 # =========================================================
 # Configuration
@@ -4408,6 +4408,78 @@ def _source_versions_state() -> list[dict]:
     return normalized
 
 
+def _delete_source_version(version_number: int) -> dict:
+    """Delete one NON-CURRENT Starting Data version.
+
+    Current research records are intentionally not altered.
+    """
+    versions = _source_versions_state()
+    target = next(
+        (
+            version
+            for version in versions
+            if int(version.get("version_number", 0) or 0)
+            == int(version_number)
+        ),
+        None,
+    )
+
+    if target is None:
+        return {
+            "deleted": False,
+            "reason": "Source version was not found.",
+        }
+
+    if bool(target.get("is_active")):
+        return {
+            "deleted": False,
+            "reason": (
+                "The current source cannot be deleted. "
+                "Add or activate another source version first."
+            ),
+        }
+
+    remaining = [
+        version
+        for version in versions
+        if int(version.get("version_number", 0) or 0)
+        != int(version_number)
+    ]
+
+    st.session_state[S_SOURCE_VERSIONS] = remaining
+
+    # The active source and current research stay untouched.
+    active = next(
+        (
+            version
+            for version in reversed(remaining)
+            if bool(version.get("is_active"))
+        ),
+        None,
+    )
+
+    if active is not None:
+        st.session_state[S_ORIGINAL] = active["records"].copy()
+        st.session_state[S_SOURCE_BASELINE_META] = dict(
+            active.get("meta", {})
+        )
+        st.session_state[S_CLASSIFICATION_RULES] = (
+            active["rules"].copy()
+            if isinstance(active.get("rules"), pd.DataFrame)
+            else pd.DataFrame()
+        )
+
+    autosave_current_project()
+
+    return {
+        "deleted": True,
+        "version_label": safe_text(
+            target.get("version_label", f"v{version_number}")
+        ) or f"v{version_number}",
+        "remaining_versions": len(remaining),
+    }
+
+
 def _active_source_version() -> dict | None:
     versions = _source_versions_state()
     for version in reversed(versions):
@@ -6995,6 +7067,66 @@ if section == "Research projects & companies":
                             width="stretch",
                             hide_index=True,
                         )
+
+                    previous_versions = [
+                        version
+                        for version in source_versions
+                        if not bool(version.get("is_active"))
+                    ]
+
+                    if previous_versions:
+                        st.markdown("**Delete previous source**")
+                        st.caption(
+                            "Delete an older saved source version that you no longer need. "
+                            "This does not delete your current source or your research records."
+                        )
+
+                        delete_options = {
+                            (
+                                f"{safe_text(version.get('version_label', '')) or 'Source'}"
+                                f" · {safe_text(version.get('meta', {}).get('workbook_name', '')) or 'Workbook'}"
+                                f" · {_safe_int(version.get('meta', {}).get('source_records', 0)):,} records"
+                            ): int(version.get("version_number", 0) or 0)
+                            for version in previous_versions
+                        }
+
+                        selected_delete_label = st.selectbox(
+                            "Previous source version",
+                            options=list(delete_options.keys()),
+                            key="db_delete_source_version_select",
+                        )
+                        selected_delete_number = delete_options[
+                            selected_delete_label
+                        ]
+
+                        delete_confirm = st.checkbox(
+                            "I understand this removes this saved source version from the project.",
+                            key="db_delete_source_version_confirm",
+                        )
+
+                        if st.button(
+                            "Delete selected previous source",
+                            type="secondary",
+                            disabled=not delete_confirm,
+                            key="db_delete_source_version_button",
+                        ):
+                            result = _delete_source_version(
+                                selected_delete_number
+                            )
+                            if result.get("deleted"):
+                                st.session_state[S_FLASH] = (
+                                    f"Deleted previous source "
+                                    f"{result['version_label']}. "
+                                    "Current source and research records were preserved."
+                                )
+                                st.rerun()
+                            else:
+                                st.error(
+                                    result.get(
+                                        "reason",
+                                        "The source version could not be deleted.",
+                                    )
+                                )
 
                 rules = st.session_state.get(
                     S_CLASSIFICATION_RULES
