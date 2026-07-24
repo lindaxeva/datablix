@@ -6,6 +6,7 @@ import os
 import pickle
 import re
 import uuid
+import zipfile
 from html import escape
 from datetime import date, datetime
 from pathlib import Path
@@ -25,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Source-Aware Research Prompt 2026.07.24-v28"
+DATABLIX_BUILD = "Versioned Starting Data 2026.07.24-v30"
 
 # =========================================================
 # Configuration
@@ -297,6 +298,7 @@ S_SKIP_CLOUD_RESTORE = "db_skip_cloud_restore"
 S_DEMO_MODE = "db_demo_mode"
 S_SHOW_AUTH = "db_show_auth"
 S_SOURCE_BASELINE_META = "db_source_baseline_meta"
+S_SOURCE_VERSIONS = "db_source_versions"
 S_CLASSIFICATION_RULES = "db_classification_rules"
 
 AUTOSAVE_DIRECTORY = Path(
@@ -314,7 +316,7 @@ AUTOSAVE_STATE_KEYS = [
     S_SOURCE_TYPE, S_SOURCE_REF, S_SELECTOR, S_EDIT_COUNT,
     S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY, S_QA_BASELINE, S_QA_BASELINE_META,
     S_PROJECT_LOADED, S_SCAN_HISTORY, S_SCAN_CANDIDATES, S_SCAN_PAGES,
-    S_SOURCE_BASELINE_META, S_CLASSIFICATION_RULES,
+    S_SOURCE_BASELINE_META, S_SOURCE_VERSIONS, S_CLASSIFICATION_RULES,
     S_CLOUD_PROJECT_ID, "db_section",
 ]
 
@@ -1977,25 +1979,23 @@ def ai_research_template(company_name: str = "", company_website: str = "") -> p
     return pd.DataFrame([row])
 
 
-def prompt_record_identity_lines(
+def company_source_records_for_research(
     df: pd.DataFrame,
     company_id: str = "",
     company_name: str = "",
-    limit: int = 150,
-) -> list[str]:
-    """Return unique property identity lines for one company."""
+) -> pd.DataFrame:
+    """Return the original Starting Data rows for one company."""
     if not isinstance(df, pd.DataFrame) or df.empty:
-        return []
+        return pd.DataFrame()
 
     rows = df.copy()
     clean_company_id = safe_text(company_id)
 
+    matched = pd.DataFrame(columns=rows.columns)
     if clean_company_id and "Company ID" in rows.columns:
         matched = rows.loc[
             rows["Company ID"].astype("string").fillna("").str.strip().eq(clean_company_id)
         ].copy()
-    else:
-        matched = pd.DataFrame(columns=rows.columns)
 
     if matched.empty and company_name and "Management/Owner" in rows.columns:
         matched = rows.loc[
@@ -2006,6 +2006,146 @@ def prompt_record_identity_lines(
                 )
             )
         ].copy()
+
+    if matched.empty:
+        return matched
+
+    preferred_columns = [
+        "Record ID",
+        "Building Name",
+        "Street Address",
+        "Address Line 2",
+        "City",
+        "Province",
+        "Postal Code",
+        "Building Classification",
+        "Number of Storeys",
+        "Number of Apartments",
+        "Management/Owner",
+        "Phone",
+        "Primary Email",
+        "Website",
+        "Property Website",
+        "Source URL",
+    ]
+    available = [column for column in preferred_columns if column in matched.columns]
+    if available:
+        matched = matched[available].copy()
+
+    # Starting Data can legitimately contain blanks. Export them as blank cells.
+    return matched.replace({pd.NA: ""}).fillna("")
+
+
+def build_research_package_bytes(
+    company_name: str,
+    prompt_text: str,
+    source_records: pd.DataFrame,
+    research_template: pd.DataFrame,
+    source_meta: dict | None = None,
+) -> bytes:
+    """Create one portable research package containing prompt + source data + template."""
+    company_stem = safe_filename(company_name)
+    prompt_name = f"{company_stem}_website_research_prompt.txt"
+    meta = (
+        source_meta
+        if isinstance(source_meta, dict)
+        else {}
+    )
+    source_version = (
+        safe_text(meta.get("version_label", ""))
+        or f"v{_safe_int(meta.get('version_number', 1), 1)}"
+    )
+    source_name = (
+        f"{company_stem}_starting_source_records_"
+        f"{safe_filename(source_version)}.csv"
+    )
+    template_name = f"{company_stem}_research_template.csv"
+
+    workbook_name = (
+        safe_text(meta.get("workbook_name", ""))
+        or "Starting Data workbook"
+    )
+    assignment_sheet = (
+        safe_text(meta.get("assignment_sheet", ""))
+        or "Not recorded"
+    )
+    source_version = (
+        safe_text(meta.get("version_label", ""))
+        or f"v{_safe_int(meta.get('version_number', 1), 1)}"
+    )
+
+    readme = f"""DATABLIX RESEARCH PACKAGE
+
+Company:
+{company_name}
+
+FILES
+1. {prompt_name}
+   The complete research instructions.
+
+2. {source_name}
+   The original Starting Data records for this company.
+   These records are a reconciliation baseline only. They are NOT proof that a
+   property is still current.
+
+3. {template_name}
+   The required structure for the returned research CSV.
+
+STARTING DATA
+Source version used for this research package: {source_version}
+Workbook: {workbook_name}
+Assignment sheet: {assignment_sheet}
+Starting source records in this package: {len(source_records):,}
+
+HOW TO USE THIS PACKAGE
+1. Open your AI research tool.
+2. Upload BOTH:
+   - {prompt_name}
+   - {source_name}
+3. Tell the tool to follow the prompt and use the source CSV as the starting
+   reconciliation dataset.
+4. The tool must first determine what happened to each starting source record.
+5. It must then search for additional legitimate current properties missing from
+   the source CSV.
+6. Ask for the final result as a downloadable CSV using the required headings.
+7. Import that completed research CSV back into Datablix for human review.
+
+IMPORTANT
+The source CSV represents what existed in the starting dataset. Do not assume all
+of those records remain current, and do not limit discovery to those records.
+"""
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as package:
+        package.writestr(prompt_name, prompt_text.encode("utf-8"))
+        package.writestr(
+            source_name,
+            source_records.to_csv(index=False).encode("utf-8-sig"),
+        )
+        package.writestr(
+            template_name,
+            research_template.to_csv(index=False).encode("utf-8-sig"),
+        )
+        package.writestr("README.txt", readme.encode("utf-8"))
+
+    return buffer.getvalue()
+
+
+def prompt_record_identity_lines(
+    df: pd.DataFrame,
+    company_id: str = "",
+    company_name: str = "",
+    limit: int = 150,
+) -> list[str]:
+    """Return unique property identity lines for one company."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+
+    matched = company_source_records_for_research(
+        df,
+        company_id=company_id,
+        company_name=company_name,
+    )
 
     if matched.empty:
         return []
@@ -2058,7 +2198,7 @@ You are acting as a careful public-source rental-property research analyst. Rese
 Starting/known property records for this company:
 {known_records or '- No starting records are currently available for this company.'}
 
-IMPORTANT: These records are a comparison and reconciliation checklist. They are NOT automatic proof that a property is still current, still managed by the company, or still belongs in the final directory.
+IMPORTANT: When a companion starting-source CSV is supplied with this prompt, use the CSV as the detailed starting dataset. The text list above is only a quick identity summary. These records are a comparison and reconciliation checklist. They are NOT automatic proof that a property is still current, still managed by the company, or still belongs in the final directory.
 
 ## Core principle
 Do NOT begin by collecting every property URL that happens to exist.
@@ -3167,8 +3307,10 @@ def project_info_dataframe(qa_frame, registry):
         {"Setting": "Building Records", "Value": len(qa_frame)},
         {"Setting": "Approved for Export", "Value": int(approved_for_export_mask(qa_frame).sum())},
         {"Setting": "Source", "Value": st.session_state.get(S_SOURCE_TYPE, "Workspace")},
-        {"Setting": "Source Baseline Records", "Value": int((st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("source_records", 0) or 0)},
-        {"Setting": "Source Assignment Sheet", "Value": str((st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("assignment_sheet", "") or "")},
+        {"Setting": "Source Baseline Records", "Value": _safe_int((st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("source_records", 0))},
+        {"Setting": "Current Source Version", "Value": safe_text((st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("version_label", "v1")) or "v1"},
+        {"Setting": "Source Versions Preserved", "Value": len(_source_versions_state())},
+        {"Setting": "Source Assignment Sheet", "Value": safe_text((st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("assignment_sheet", ""))},
         {"Setting": "Datablix Project Format", "Value": "2"},
     ])
 
@@ -3204,16 +3346,38 @@ def project_workbook_bytes():
         source_baseline = pd.DataFrame()
     if not isinstance(source_baseline, pd.DataFrame):
         source_baseline = pd.DataFrame()
-    classification_rules = st.session_state.get(S_CLASSIFICATION_RULES)
+
+    classification_rules = st.session_state.get(
+        S_CLASSIFICATION_RULES
+    )
     if not isinstance(classification_rules, pd.DataFrame):
         classification_rules = pd.DataFrame()
-    source_meta_frame = pd.DataFrame([source_meta]) if isinstance(source_meta, dict) and source_meta else pd.DataFrame()
+
+    source_meta_frame = (
+        pd.DataFrame([source_meta])
+        if isinstance(source_meta, dict) and source_meta
+        else pd.DataFrame()
+    )
+
+    source_versions = _source_versions_state()
+    source_versions_meta = _source_versions_meta_frame(
+        source_versions
+    )
+    source_version_records = _source_version_records_frame(
+        source_versions
+    )
+    source_version_rules = _source_version_rules_frame(
+        source_versions
+    )
     sheets = {
         "Project Info": project_info_dataframe(qa_frame, registry),
         "Company Registry": registry,
         "Working Data": working,
         "Source Baseline": source_baseline,
         "Source Baseline Meta": source_meta_frame,
+        "Source Versions Meta": source_versions_meta,
+        "Source Version Records": source_version_records,
+        "Source Version Rules": source_version_rules,
         "Classification Rules": classification_rules,
         "Current QA": qa_frame,
         "Company Analysis": company_progress_summary(qa_frame, registry) if not qa_frame.empty else pd.DataFrame(),
@@ -3268,6 +3432,58 @@ def load_project_workbook(uploaded):
             if "Classification Rules" in workbook.sheet_names
             else pd.DataFrame()
         )
+        source_versions_meta_sheet = (
+            pd.read_excel(
+                workbook,
+                sheet_name="Source Versions Meta",
+            )
+            if "Source Versions Meta" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        source_version_records_sheet = (
+            pd.read_excel(
+                workbook,
+                sheet_name="Source Version Records",
+            )
+            if "Source Version Records" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        source_version_rules_sheet = (
+            pd.read_excel(
+                workbook,
+                sheet_name="Source Version Rules",
+            )
+            if "Source Version Rules" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+
+        source_versions = _restore_source_versions_from_workbook(
+            source_versions_meta_sheet,
+            source_version_records_sheet,
+            source_version_rules_sheet,
+        )
+
+        # Older saved projects automatically become source v1.
+        if (
+            not source_versions
+            and isinstance(source_baseline, pd.DataFrame)
+            and not source_baseline.empty
+        ):
+            migrated_meta = dict(source_meta)
+            migrated_meta.setdefault("version_number", 1)
+            migrated_meta.setdefault("version_label", "v1")
+            migrated_meta.setdefault("is_original", True)
+            migrated_meta.setdefault("is_active", True)
+
+            source_versions = [{
+                "version_number": 1,
+                "version_label": "v1",
+                "is_original": True,
+                "is_active": True,
+                "meta": migrated_meta,
+                "records": source_baseline.copy(),
+                "rules": classification_rules.copy(),
+            }]
         registry = (
             pd.read_excel(workbook, sheet_name="Company Registry")
             if "Company Registry" in workbook.sheet_names
@@ -3345,10 +3561,37 @@ def load_project_workbook(uploaded):
     )
     st.session_state[S_PROJECT_NAME] = project_name
     st.session_state[S_COMPANIES] = registry
-    if isinstance(source_baseline, pd.DataFrame) and not source_baseline.empty:
-        st.session_state[S_ORIGINAL] = source_baseline
-    st.session_state[S_SOURCE_BASELINE_META] = source_meta
-    st.session_state[S_CLASSIFICATION_RULES] = classification_rules
+    st.session_state[S_SOURCE_VERSIONS] = source_versions
+
+    active_source = next(
+        (
+            version
+            for version in reversed(source_versions)
+            if version.get("is_active")
+        ),
+        source_versions[-1] if source_versions else None,
+    )
+
+    if active_source is not None:
+        st.session_state[S_ORIGINAL] = active_source[
+            "records"
+        ].copy()
+        st.session_state[S_SOURCE_BASELINE_META] = dict(
+            active_source.get("meta", {})
+        )
+        st.session_state[S_CLASSIFICATION_RULES] = (
+            active_source["rules"].copy()
+        )
+    else:
+        if (
+            isinstance(source_baseline, pd.DataFrame)
+            and not source_baseline.empty
+        ):
+            st.session_state[S_ORIGINAL] = source_baseline
+        st.session_state[S_SOURCE_BASELINE_META] = source_meta
+        st.session_state[S_CLASSIFICATION_RULES] = (
+            classification_rules
+        )
     st.session_state[S_QA_BASELINE] = baseline
     st.session_state[S_QA_BASELINE_META] = baseline_meta
     st.session_state[S_SCAN_HISTORY] = scan_history
@@ -3410,6 +3653,7 @@ def open_workspace(
         st.session_state[S_SCAN_CANDIDATES] = pd.DataFrame()
         st.session_state[S_SCAN_PAGES] = pd.DataFrame()
         st.session_state[S_SOURCE_BASELINE_META] = {}
+        st.session_state[S_SOURCE_VERSIONS] = []
         st.session_state[S_CLASSIFICATION_RULES] = pd.DataFrame()
         st.session_state[S_PROJECT_LOADED] = True
         st.session_state[S_CLOUD_PROJECT_ID] = str(uuid.uuid4())
@@ -3865,6 +4109,276 @@ def _source_baseline_from_workbook(data: bytes, assignment_sheet: str, existing_
     return baseline, registry, rules, mapping, building_sheet
 
 
+def _safe_int(value, default=0) -> int:
+    number = pd.to_numeric(value, errors="coerce")
+    return default if pd.isna(number) else int(number)
+
+
+def _source_versions_state() -> list[dict]:
+    """Return normalized Starting Data history, migrating older projects when needed."""
+    raw = st.session_state.get(S_SOURCE_VERSIONS, [])
+    versions = raw if isinstance(raw, list) else []
+
+    normalized = []
+    for item in versions:
+        if not isinstance(item, dict):
+            continue
+
+        records = item.get("records")
+        rules = item.get("rules")
+        meta = item.get("meta", {})
+
+        if not isinstance(records, pd.DataFrame):
+            records = pd.DataFrame()
+        if not isinstance(rules, pd.DataFrame):
+            rules = pd.DataFrame()
+        if not isinstance(meta, dict):
+            meta = {}
+
+        number = _safe_int(
+            item.get("version_number", meta.get("version_number", 0))
+        )
+        if number <= 0:
+            number = len(normalized) + 1
+
+        normalized.append({
+            "version_number": number,
+            "version_label": safe_text(
+                item.get("version_label", meta.get("version_label", f"v{number}"))
+            ) or f"v{number}",
+            "is_original": bool(item.get("is_original", number == 1)),
+            "is_active": bool(item.get("is_active", False)),
+            "meta": dict(meta),
+            "records": records.copy(),
+            "rules": rules.copy(),
+        })
+
+    # Migrate pre-v30 projects to a single preserved v1.
+    if not normalized:
+        legacy_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
+        legacy_records = st.session_state.get(S_ORIGINAL)
+        legacy_rules = st.session_state.get(S_CLASSIFICATION_RULES)
+
+        if (
+            isinstance(legacy_meta, dict)
+            and legacy_meta
+            and isinstance(legacy_records, pd.DataFrame)
+            and not legacy_records.empty
+        ):
+            meta = dict(legacy_meta)
+            meta.setdefault("version_number", 1)
+            meta.setdefault("version_label", "v1")
+            meta.setdefault("is_original", True)
+            meta.setdefault("is_active", True)
+
+            normalized = [{
+                "version_number": 1,
+                "version_label": "v1",
+                "is_original": True,
+                "is_active": True,
+                "meta": meta,
+                "records": legacy_records.copy(),
+                "rules": (
+                    legacy_rules.copy()
+                    if isinstance(legacy_rules, pd.DataFrame)
+                    else pd.DataFrame()
+                ),
+            }]
+
+    if normalized and not any(bool(v.get("is_active")) for v in normalized):
+        newest = max(
+            range(len(normalized)),
+            key=lambda i: normalized[i]["version_number"],
+        )
+        normalized[newest]["is_active"] = True
+        normalized[newest]["meta"]["is_active"] = True
+
+    normalized.sort(key=lambda v: int(v.get("version_number", 0)))
+    st.session_state[S_SOURCE_VERSIONS] = normalized
+    return normalized
+
+
+def _active_source_version() -> dict | None:
+    versions = _source_versions_state()
+    for version in reversed(versions):
+        if bool(version.get("is_active")):
+            return version
+    return versions[-1] if versions else None
+
+
+def _source_versions_meta_frame(versions: list[dict]) -> pd.DataFrame:
+    rows = []
+    for version in versions:
+        meta = dict(version.get("meta", {}))
+        rows.append({
+            "Version Number": int(version.get("version_number", 0) or 0),
+            "Version": safe_text(version.get("version_label", "")),
+            "Is Original": bool(version.get("is_original", False)),
+            "Is Active": bool(version.get("is_active", False)),
+            "Workbook": safe_text(meta.get("workbook_name", "")),
+            "Assignment Sheet": safe_text(meta.get("assignment_sheet", "")),
+            "Building Sheet": safe_text(meta.get("building_sheet", "")),
+            "Imported At": safe_text(meta.get("imported_at", "")),
+            "Assigned Companies": _safe_int(meta.get("assigned_companies", 0)),
+            "Source Records": _safe_int(meta.get("source_records", 0)),
+            "Classification Rules": _safe_int(meta.get("classification_rules", 0)),
+            "Source Hash": safe_text(meta.get("source_hash", "")),
+        })
+    return pd.DataFrame(rows)
+
+
+def _source_version_records_frame(versions: list[dict]) -> pd.DataFrame:
+    frames = []
+    for version in versions:
+        records = version.get("records")
+        if not isinstance(records, pd.DataFrame) or records.empty:
+            continue
+
+        frame = records.copy()
+        frame.insert(0, "__Source Version", safe_text(version.get("version_label", "")))
+        frame.insert(
+            1,
+            "__Source Version Number",
+            int(version.get("version_number", 0) or 0),
+        )
+        frame.insert(2, "__Is Original", bool(version.get("is_original", False)))
+        frame.insert(3, "__Is Active", bool(version.get("is_active", False)))
+        frames.append(frame)
+
+    return (
+        pd.concat(frames, ignore_index=True, sort=False)
+        if frames
+        else pd.DataFrame()
+    )
+
+
+def _source_version_rules_frame(versions: list[dict]) -> pd.DataFrame:
+    frames = []
+    for version in versions:
+        rules = version.get("rules")
+        if not isinstance(rules, pd.DataFrame) or rules.empty:
+            continue
+
+        frame = rules.copy()
+        frame.insert(0, "__Source Version", safe_text(version.get("version_label", "")))
+        frame.insert(
+            1,
+            "__Source Version Number",
+            int(version.get("version_number", 0) or 0),
+        )
+        frames.append(frame)
+
+    return (
+        pd.concat(frames, ignore_index=True, sort=False)
+        if frames
+        else pd.DataFrame()
+    )
+
+
+def _restore_source_versions_from_workbook(
+    meta_frame: pd.DataFrame,
+    records_frame: pd.DataFrame,
+    rules_frame: pd.DataFrame,
+) -> list[dict]:
+    """Reconstruct saved Starting Data history from a Datablix project workbook."""
+    if not isinstance(meta_frame, pd.DataFrame) or meta_frame.empty:
+        return []
+
+    versions = []
+    for _, row in meta_frame.iterrows():
+        number = _safe_int(row.get("Version Number", 0))
+        if number <= 0:
+            continue
+
+        label = safe_text(row.get("Version", "")) or f"v{number}"
+
+        if isinstance(records_frame, pd.DataFrame) and not records_frame.empty:
+            version_numbers = pd.to_numeric(
+                records_frame["__Source Version Number"],
+                errors="coerce",
+            ).fillna(0).astype(int)
+
+            subset = records_frame.loc[version_numbers.eq(number)].copy()
+            subset = subset.drop(
+                columns=[
+                    "__Source Version",
+                    "__Source Version Number",
+                    "__Is Original",
+                    "__Is Active",
+                ],
+                errors="ignore",
+            )
+
+            if not subset.empty:
+                for column in INTERNAL_COLUMNS:
+                    if column not in subset.columns:
+                        subset[column] = pd.NA
+                subset = ensure_ids(normalize_workflow(subset))
+        else:
+            subset = pd.DataFrame()
+
+        if isinstance(rules_frame, pd.DataFrame) and not rules_frame.empty:
+            rule_numbers = pd.to_numeric(
+                rules_frame["__Source Version Number"],
+                errors="coerce",
+            ).fillna(0).astype(int)
+
+            rule_subset = rules_frame.loc[rule_numbers.eq(number)].copy()
+            rule_subset = rule_subset.drop(
+                columns=["__Source Version", "__Source Version Number"],
+                errors="ignore",
+            )
+        else:
+            rule_subset = pd.DataFrame()
+
+        is_original_raw = row.get("Is Original", number == 1)
+        is_active_raw = row.get("Is Active", False)
+
+        is_original = (
+            number == 1
+            if pd.isna(is_original_raw)
+            else bool(is_original_raw)
+        )
+        is_active = (
+            False
+            if pd.isna(is_active_raw)
+            else bool(is_active_raw)
+        )
+
+        meta = {
+            "version_number": number,
+            "version_label": label,
+            "is_original": is_original,
+            "is_active": is_active,
+            "workbook_name": safe_text(row.get("Workbook", "")),
+            "assignment_sheet": safe_text(row.get("Assignment Sheet", "")),
+            "building_sheet": safe_text(row.get("Building Sheet", "")),
+            "imported_at": safe_text(row.get("Imported At", "")),
+            "assigned_companies": _safe_int(row.get("Assigned Companies", 0)),
+            "source_records": _safe_int(row.get("Source Records", 0)),
+            "classification_rules": _safe_int(row.get("Classification Rules", 0)),
+            "source_hash": safe_text(row.get("Source Hash", "")),
+        }
+
+        versions.append({
+            "version_number": number,
+            "version_label": label,
+            "is_original": is_original,
+            "is_active": is_active,
+            "meta": meta,
+            "records": subset,
+            "rules": rule_subset,
+        })
+
+    versions.sort(key=lambda v: int(v.get("version_number", 0)))
+
+    if versions and not any(bool(v.get("is_active")) for v in versions):
+        versions[-1]["is_active"] = True
+        versions[-1]["meta"]["is_active"] = True
+
+    return versions
+
+
 def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFrame:
     """Preserve current research while adding unmatched source records and marking source matches."""
     current = normalize_workflow(current.copy()) if isinstance(current, pd.DataFrame) else normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
@@ -3920,23 +4434,145 @@ def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.Data
 
 
 def import_source_baseline_workbook(uploaded, assignment_sheet: str) -> dict:
-    """Apply a multi-sheet source workbook to the current project without discarding research work."""
+    """Add versioned Starting Data without destroying prior source history."""
     data = uploaded.getvalue()
-    current_registry = st.session_state.get(S_COMPANIES, empty_company_registry())
+    source_hash = hashlib.sha256(data).hexdigest()
+    current_registry = st.session_state.get(
+        S_COMPANIES,
+        empty_company_registry(),
+    )
+
     baseline, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
         data,
         assignment_sheet,
         current_registry,
     )
+
     if baseline.empty:
         raise ValueError(
             "No source building records matched the companies in the selected assignment sheet."
         )
 
-    current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
-    merged = _merge_source_baseline_with_working(current, baseline)
+    versions = _source_versions_state()
 
-    # Re-link all rows to the merged assignment registry using tolerant company-name matching.
+    # The exact same workbook + assignment is reused, not duplicated.
+    existing_match = None
+    for version in versions:
+        meta = version.get("meta", {})
+        if (
+            safe_text(meta.get("source_hash", "")) == source_hash
+            and safe_text(meta.get("assignment_sheet", ""))
+            == safe_text(assignment_sheet)
+        ):
+            existing_match = version
+            break
+
+    if existing_match is not None:
+        for version in versions:
+            active = (
+                int(version.get("version_number", 0))
+                == int(existing_match.get("version_number", 0))
+            )
+            version["is_active"] = active
+            if isinstance(version.get("meta"), dict):
+                version["meta"]["is_active"] = active
+
+        st.session_state[S_SOURCE_VERSIONS] = versions
+        st.session_state[S_ORIGINAL] = existing_match["records"].copy()
+        st.session_state[S_SOURCE_BASELINE_META] = dict(
+            existing_match.get("meta", {})
+        )
+        st.session_state[S_CLASSIFICATION_RULES] = (
+            existing_match["rules"].copy()
+        )
+
+        current = st.session_state.get(
+            S_WORKING,
+            pd.DataFrame(columns=INTERNAL_COLUMNS),
+        )
+        merged = _merge_source_baseline_with_working(
+            current,
+            existing_match["records"],
+        )
+        st.session_state[S_WORKING] = ensure_ids(
+            normalize_workflow(merged)
+        )
+        autosave_current_project()
+
+        return {
+            "assigned_companies": _safe_int(
+                existing_match["meta"].get("assigned_companies", 0)
+            ),
+            "source_records": _safe_int(
+                existing_match["meta"].get("source_records", 0)
+            ),
+            "working_records": len(st.session_state[S_WORKING]),
+            "classification_rules": _safe_int(
+                existing_match["meta"].get("classification_rules", 0)
+            ),
+            "version_number": int(
+                existing_match.get("version_number", 1)
+            ),
+            "version_label": safe_text(
+                existing_match.get("version_label", "v1")
+            ),
+            "duplicate_version": True,
+        }
+
+    next_number = (
+        max(
+            (int(v.get("version_number", 0)) for v in versions),
+            default=0,
+        )
+        + 1
+    )
+    version_label = f"v{next_number}"
+
+    # The newest import becomes current; older sources remain preserved.
+    for version in versions:
+        version["is_active"] = False
+        if isinstance(version.get("meta"), dict):
+            version["meta"]["is_active"] = False
+
+    meta = {
+        "version_number": next_number,
+        "version_label": version_label,
+        "is_original": next_number == 1,
+        "is_active": True,
+        "workbook_name": uploaded.name,
+        "assignment_sheet": assignment_sheet,
+        "building_sheet": building_sheet,
+        "imported_at": datetime.now().isoformat(timespec="seconds"),
+        "assigned_companies": len(
+            registry.loc[
+                registry["Scope Type"].eq("Initial assignment")
+            ]
+        ),
+        "source_records": len(baseline),
+        "classification_rules": len(rules),
+        "source_hash": source_hash,
+    }
+
+    versions.append({
+        "version_number": next_number,
+        "version_label": version_label,
+        "is_original": next_number == 1,
+        "is_active": True,
+        "meta": dict(meta),
+        "records": baseline.copy(),
+        "rules": rules.copy(),
+    })
+    st.session_state[S_SOURCE_VERSIONS] = versions
+
+    current = st.session_state.get(
+        S_WORKING,
+        pd.DataFrame(columns=INTERNAL_COLUMNS),
+    )
+    merged = _merge_source_baseline_with_working(
+        current,
+        baseline,
+    )
+
     for idx, row in merged.iterrows():
         match_index = _registry_match_index(
             safe_text(row.get("Management/Owner", "")),
@@ -3945,49 +4581,64 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str) -> dict:
         if match_index is not None:
             company = registry.loc[match_index]
             merged.at[idx, "Company ID"] = company["Company ID"]
-            merged.at[idx, "Management/Owner"] = company["Management/Owner"]
+            merged.at[idx, "Management/Owner"] = company[
+                "Management/Owner"
+            ]
 
     merged = ensure_ids(normalize_workflow(merged))
-    merged = classify_discovery_status(merged, baseline)
+    merged = classify_discovery_status(
+        merged,
+        baseline,
+    )
 
+    # S_ORIGINAL remains the current source for backward compatibility.
+    # Full source history is preserved in S_SOURCE_VERSIONS.
     st.session_state[S_ORIGINAL] = baseline.copy()
     st.session_state[S_WORKING] = merged
-    st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+    st.session_state[S_COMPANIES] = normalize_company_registry(
+        registry
+    )
     st.session_state[S_MAPPING] = mapping
-    st.session_state[S_SOURCE_TYPE] = "Source baseline workbook"
+    st.session_state[S_SOURCE_TYPE] = "Versioned source workbook"
     st.session_state[S_SOURCE_REF] = uploaded.name
     st.session_state[S_SHEET] = assignment_sheet
     st.session_state[S_CLASSIFICATION_RULES] = rules
-    st.session_state[S_SOURCE_BASELINE_META] = {
-        "workbook_name": uploaded.name,
-        "assignment_sheet": assignment_sheet,
-        "building_sheet": building_sheet,
-        "imported_at": datetime.now().isoformat(timespec="seconds"),
-        "assigned_companies": len(registry.loc[registry["Scope Type"].eq("Initial assignment")]),
-        "source_records": len(baseline),
-        "classification_rules": len(rules),
-    }
+    st.session_state[S_SOURCE_BASELINE_META] = dict(meta)
     st.session_state[S_PROJECT_LOADED] = True
-    if st.session_state.get(S_FILE) in {None, "", "blank-workspace"}:
+
+    if st.session_state.get(S_FILE) in {
+        None,
+        "",
+        "blank-workspace",
+    }:
         st.session_state[S_FILE] = (
             "source-baseline:"
-            + hashlib.sha256(data).hexdigest()
+            + source_hash
             + f":{assignment_sheet}"
         )
         st.session_state[S_NAME] = uploaded.name
 
     if not registry.empty:
-        active_id = safe_text(st.session_state.get(S_ACTIVE_COMPANY, ""))
-        if active_id not in set(registry["Company ID"].astype(str)):
-            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
+        active_id = safe_text(
+            st.session_state.get(S_ACTIVE_COMPANY, "")
+        )
+        if active_id not in set(
+            registry["Company ID"].astype(str)
+        ):
+            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0][
+                "Company ID"
+            ]
 
     autosave_current_project()
-    meta = st.session_state[S_SOURCE_BASELINE_META]
+
     return {
         "assigned_companies": int(meta["assigned_companies"]),
         "source_records": int(meta["source_records"]),
         "working_records": len(merged),
         "classification_rules": int(meta["classification_rules"]),
+        "version_number": next_number,
+        "version_label": version_label,
+        "duplicate_version": False,
     }
 
 
@@ -5992,55 +6643,166 @@ if section == "Research projects & companies":
 
     # One-time Starting Data setup. Internally this creates the source baseline
     # used to distinguish records that already existed from later discoveries.
-    source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
+    source_meta = st.session_state.get(
+        S_SOURCE_BASELINE_META,
+        {},
+    )
     if not isinstance(source_meta, dict):
         source_meta = {}
+
+    source_versions = _source_versions_state()
 
     with st.container(border=True):
         st.markdown("### Starting Data")
 
         if source_meta:
-            assigned_count = int(source_meta.get("assigned_companies", 0) or 0)
-            source_count = int(source_meta.get("source_records", 0) or 0)
-            assignment_name = safe_text(source_meta.get("assignment_sheet", ""))
-            workbook_name = safe_text(
-                source_meta.get("workbook_name", "Source workbook"),
-                "Source workbook",
-            ) or "Source workbook"
-
-            st.success(
-                f"Starting data ready · {assigned_count:,} assigned companies · "
-                f"{source_count:,} existing source records"
+            assigned_count = _safe_int(
+                source_meta.get("assigned_companies", 0)
             )
+            source_count = _safe_int(
+                source_meta.get("source_records", 0)
+            )
+            assignment_name = safe_text(
+                source_meta.get("assignment_sheet", "")
+            )
+            workbook_name = (
+                safe_text(
+                    source_meta.get(
+                        "workbook_name",
+                        "Source workbook",
+                    ),
+                    "Source workbook",
+                )
+                or "Source workbook"
+            )
+            current_version = (
+                safe_text(
+                    source_meta.get("version_label", "")
+                )
+                or f"v{_safe_int(source_meta.get('version_number', 1), 1)}"
+            )
+
+            original_version = (
+                next(
+                    (
+                        version
+                        for version in source_versions
+                        if version.get("is_original")
+                    ),
+                    None,
+                )
+                if source_versions
+                else None
+            )
+
+            original_meta = (
+                original_version.get("meta", {})
+                if isinstance(original_version, dict)
+                else source_meta
+            )
+            original_count = _safe_int(
+                original_meta.get(
+                    "source_records",
+                    source_count,
+                )
+            )
+
+            if len(source_versions) > 1:
+                st.success(
+                    f"Starting data ready · Current source "
+                    f"{current_version} · {source_count:,} records · "
+                    "Original v1 preserved"
+                )
+            else:
+                st.success(
+                    f"Starting data ready · Source "
+                    f"{current_version} (original & current) · "
+                    f"{source_count:,} records"
+                )
+
             st.caption(
                 f"Assignment: {assignment_name or 'Not recorded'} · "
-                f"Workbook: {workbook_name}"
+                f"Current workbook: {workbook_name}"
             )
 
-            with st.expander("View starting data details", expanded=False):
+            with st.expander(
+                "View starting data details",
+                expanded=False,
+            ):
                 source_metrics = st.columns(3)
                 source_metrics[0].metric(
-                    "Assigned companies",
-                    f"{assigned_count:,}",
+                    "Original source records",
+                    f"{original_count:,}",
                 )
                 source_metrics[1].metric(
-                    "Existing source records",
+                    "Current source records",
                     f"{source_count:,}",
                 )
                 source_metrics[2].metric(
-                    "Classification rules",
-                    f"{int(source_meta.get('classification_rules', 0) or 0):,}",
+                    "Source versions",
+                    f"{max(len(source_versions), 1):,}",
                 )
-                st.caption(
-                    "This starting data creates the source baseline Datablix uses to "
-                    "distinguish records that already existed from newly discovered properties."
-                )
-                rules = st.session_state.get(S_CLASSIFICATION_RULES)
-                if isinstance(rules, pd.DataFrame) and not rules.empty:
-                    st.markdown("**Building classification rules**")
-                    st.dataframe(rules, width="stretch", hide_index=True)
 
-            starting_data_expander_label = "Replace source workbook"
+                st.caption(
+                    "The original source remains preserved as the "
+                    "project starting point. The newest imported "
+                    "source becomes the current reconciliation dataset "
+                    "used by new research packages."
+                )
+
+                if source_versions:
+                    history = _source_versions_meta_frame(
+                        source_versions
+                    ).copy()
+
+                    if not history.empty:
+                        history["Role"] = history.apply(
+                            lambda row: (
+                                "Original + Current"
+                                if bool(row["Is Original"])
+                                and bool(row["Is Active"])
+                                else "Original"
+                                if bool(row["Is Original"])
+                                else "Current"
+                                if bool(row["Is Active"])
+                                else "Previous"
+                            ),
+                            axis=1,
+                        )
+
+                        st.markdown("**Source version history**")
+                        st.dataframe(
+                            history[
+                                [
+                                    "Version",
+                                    "Role",
+                                    "Workbook",
+                                    "Imported At",
+                                    "Assigned Companies",
+                                    "Source Records",
+                                ]
+                            ],
+                            width="stretch",
+                            hide_index=True,
+                        )
+
+                rules = st.session_state.get(
+                    S_CLASSIFICATION_RULES
+                )
+                if (
+                    isinstance(rules, pd.DataFrame)
+                    and not rules.empty
+                ):
+                    st.markdown(
+                        "**Current building classification rules**"
+                    )
+                    st.dataframe(
+                        rules,
+                        width="stretch",
+                        hide_index=True,
+                    )
+
+            starting_data_expander_label = "Add updated source"
             starting_data_expanded = False
         else:
             st.info(
@@ -6056,9 +6818,10 @@ if section == "Research projects & companies":
             expanded=starting_data_expanded,
         ):
             st.write(
-                "Upload the original multi-sheet workbook and choose your assignment sheet. "
-                "Datablix reads the assignment, Apartment Buildings, and Building Classifications "
-                "sheets together. Existing research is preserved and matched to the source baseline."
+                "Upload the multi-sheet source workbook and choose your assignment sheet. "
+                "The first import becomes v1, your preserved original baseline. Later changed "
+                "workbooks become v2, v3, and so on. Existing research and earlier source "
+                "versions remain preserved."
             )
             source_workbook_upload = st.file_uploader(
                 "Original source workbook",
@@ -6088,7 +6851,7 @@ if section == "Research projects & companies":
                             "add only source records that are not already represented."
                         )
                     import_label = (
-                        "Replace starting data"
+                        "Add updated source"
                         if source_meta
                         else "Import starting data"
                     )
@@ -6103,11 +6866,27 @@ if section == "Research projects & companies":
                                 source_workbook_upload,
                                 source_assignment_sheet,
                             )
-                            st.session_state[S_FLASH] = (
-                                f"Starting data ready: {result['assigned_companies']:,} assigned "
-                                f"companies and {result['source_records']:,} existing source records. "
-                                "Current research was preserved and matched."
-                            )
+                            if result.get(
+                                "duplicate_version"
+                            ):
+                                st.session_state[S_FLASH] = (
+                                    f"Source {result['version_label']} "
+                                    "is already saved and is now the "
+                                    "current research source. "
+                                    f"{result['source_records']:,} "
+                                    "source records are available."
+                                )
+                            else:
+                                st.session_state[S_FLASH] = (
+                                    f"Source {result['version_label']} "
+                                    "saved: "
+                                    f"{result['assigned_companies']:,} "
+                                    "assigned companies and "
+                                    f"{result['source_records']:,} "
+                                    "source records. Earlier source "
+                                    "versions and current research "
+                                    "were preserved."
+                                )
                             st.rerun()
                         except Exception as error:
                             st.error(
@@ -6713,15 +7492,37 @@ elif section == "Website scanner":
         and not source_baseline.empty
     )
 
+    source_records_for_prompt = (
+        company_source_records_for_research(
+            source_baseline,
+            company_id=company_id,
+            company_name=company_name,
+        )
+        if has_source_baseline
+        else pd.DataFrame()
+    )
     source_lines = (
         prompt_record_identity_lines(
-            source_baseline,
+            source_records_for_prompt,
             company_id=company_id,
             company_name=company_name,
             limit=150,
         )
-        if has_source_baseline
+        if not source_records_for_prompt.empty
         else []
+    )
+    active_source_version_label = (
+        safe_text(source_meta.get("version_label", ""))
+        or (
+            f"v{_safe_int(source_meta.get('version_number', 1), 1)}"
+            if isinstance(source_meta, dict)
+            and source_meta
+            else "v1"
+        )
+    )
+    source_records_filename = (
+        f"{safe_filename(company_name)}_starting_source_records_"
+        f"{safe_filename(active_source_version_label)}.csv"
     )
     working_lines = prompt_record_identity_lines(
         company_rows,
@@ -6734,9 +7535,11 @@ elif section == "Website scanner":
         known_default = "\n".join(source_lines)
         known_records_context = (
             f"{len(source_lines):,} starting source record(s) were provided for this company "
-            "through the project's Starting Data workbook. Reconcile every one against current "
-            "official inventory evidence before deciding whether it remains current, is excluded, "
-            "or corresponds to another current property row."
+            "through the project's Starting Data workbook. The companion file "
+            f"'{source_records_filename}' contains the actual source rows and MUST be used with "
+            "this prompt. Reconcile every source row against current official inventory evidence "
+            "before deciding whether it remains current, is excluded, or corresponds to another "
+            "current property row."
         )
         known_records_ui_label = "Starting source records for comparison"
         known_records_help = (
@@ -6933,23 +7736,78 @@ elif section == "Website scanner":
         st.caption("Use the copy icon in the code block after finishing your edits above.")
         st.code(editable_prompt, language="markdown")
     prompt_download_name = f"{safe_filename(company_name)}_website_research_prompt.txt"
-    prompt_actions = st.columns(2)
-    prompt_actions[0].download_button(
-        "Download prompt",
-        data=editable_prompt.encode("utf-8"),
-        file_name=prompt_download_name,
-        mime="text/plain",
-        width="stretch",
-    )
-    prompt_actions[1].download_button(
-        "Download CSV template",
-        data=csv_bytes(ai_research_template(company_name, company_website)),
-        file_name=f"{safe_filename(company_name)}_research_template.csv",
-        mime="text/csv",
-        width="stretch",
-    )
+    research_template_df = ai_research_template(company_name, company_website)
+
+    if not source_records_for_prompt.empty:
+        package_bytes = build_research_package_bytes(
+            company_name=company_name,
+            prompt_text=editable_prompt,
+            source_records=source_records_for_prompt,
+            research_template=research_template_df,
+            source_meta=source_meta,
+        )
+        st.download_button(
+            f"Download research package — prompt + {len(source_records_for_prompt):,} source record(s)",
+            data=package_bytes,
+            file_name=f"{safe_filename(company_name)}_research_package.zip",
+            mime="application/zip",
+            type="primary",
+            width="stretch",
+            key=f"db_download_research_package_{company_id}_{prompt_fingerprint}",
+        )
+        st.caption(
+            "Recommended: unzip the package and upload BOTH the research prompt and "
+            "starting-source CSV to your AI research tool. The package also includes "
+            "the required research template and a short README."
+        )
+
+        prompt_actions = st.columns(3)
+        prompt_actions[0].download_button(
+            "Prompt only",
+            data=editable_prompt.encode("utf-8"),
+            file_name=prompt_download_name,
+            mime="text/plain",
+            width="stretch",
+        )
+        prompt_actions[1].download_button(
+            "Source records CSV",
+            data=csv_bytes(source_records_for_prompt),
+            file_name=source_records_filename,
+            mime="text/csv",
+            width="stretch",
+        )
+        prompt_actions[2].download_button(
+            "Research template",
+            data=csv_bytes(research_template_df),
+            file_name=f"{safe_filename(company_name)}_research_template.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+    else:
+        prompt_actions = st.columns(2)
+        prompt_actions[0].download_button(
+            "Download prompt",
+            data=editable_prompt.encode("utf-8"),
+            file_name=prompt_download_name,
+            mime="text/plain",
+            width="stretch",
+        )
+        prompt_actions[1].download_button(
+            "Download CSV template",
+            data=csv_bytes(research_template_df),
+            file_name=f"{safe_filename(company_name)}_research_template.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+        st.warning(
+            "No Starting Data source records are available for this company, so a source-data "
+            "research package cannot be created yet."
+        )
+
     st.info(
-        "Copy the editable prompt into ChatGPT, Claude, Gemini, Copilot, Perplexity, or another AI tool. Ask it to generate the downloadable CSV file(s), review the result, then return here."
+        "For external AI research, use the prompt together with the starting-source CSV whenever "
+        "Starting Data is available. Ask the AI to reconcile the source first, find additional "
+        "current properties, and return the completed research as CSV."
     )
 
     st.divider()
