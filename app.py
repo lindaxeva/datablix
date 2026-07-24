@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Clean Arrow Navigation 2026.07.23-v17"
+DATABLIX_BUILD = "One-Line Navigation 2026.07.23-v18"
 
 # =========================================================
 # Configuration
@@ -4410,10 +4410,16 @@ button[data-testid="stSidebarCollapseButton"]::after{
     justify-content:center;
     min-height:2.65rem;
     color:var(--db-muted);
-    font-size:.82rem;
-    opacity:.58;
+    font-size:.74rem;
+    opacity:.52;
     user-select:none;
 }
+/* Keep the five workflow buttons on one line on standard desktop widths. */
+div[data-testid="stHorizontalBlock"] button[kind="primary"],
+div[data-testid="stHorizontalBlock"] button[kind="secondary"]{
+    white-space:nowrap;
+}
+
 .db-nav-context{
     margin:.35rem 0 1.15rem;
     padding:.2rem .15rem;
@@ -4775,7 +4781,7 @@ primary_sections = all_sections.copy()
 NAV_LABELS = {
     "Research projects & companies": "Project",
     "Website scanner": "Research",
-    "Review records": "Review & Quality",
+    "Review records": "Review & QA",
     "Analysis & report": "Report",
     "Downloads": "Export",
 }
@@ -4861,7 +4867,7 @@ NAV_DESCRIPTIONS = {
 
 # Keep navigation labels clean. Small arrows indicate workflow direction;
 # the current section is identified only by the blue primary button.
-nav_columns = st.columns([1, 0.06, 1, 0.06, 1.18, 0.06, 1, 0.06, 1])
+nav_columns = st.columns([1, 0.035, 1, 0.035, 1.08, 0.035, 0.88, 0.035, 0.88])
 button_columns = nav_columns[0::2]
 arrow_columns = nav_columns[1::2]
 
