@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Five-Button Straight Line 2026.07.23-v20"
+DATABLIX_BUILD = "Riipen Deliverables Completion 2026.07.23-v21"
 
 # =========================================================
 # Configuration
@@ -42,7 +42,7 @@ INTERNAL_COLUMNS = [
     "Current Inventory Status", "Inventory Evidence",
     "Found on City/Portfolio Page", "Found on HTML Sitemap",
     "Found on XML Sitemap", "Inventory Exclusion Reason",
-    "Source URL", "Date Researched", "Researcher", "Research Status",
+    "Directory Discovery Status", "Source URL", "Date Researched", "Researcher", "Research Status",
     "Source Status", "Verification Status", "Missing Information",
     "Reviewer Notes", "Record Decision",
 ]
@@ -95,6 +95,7 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Found on HTML Sitemap", "Found on HTML Sitemap"),
     ("Found on XML Sitemap", "Found on XML Sitemap"),
     ("Inventory Exclusion Reason", "Inventory Exclusion Reason"),
+    ("Directory Discovery Status", "Directory Discovery Status"),
     ("Country", "Country"),
     ("Official Source URL", "Source URL"),
     ("Date Researched", "Date Researched"),
@@ -153,6 +154,7 @@ ALIASES = {
     "Found on HTML Sitemap": ["Found on HTML Sitemap", "On HTML Sitemap"],
     "Found on XML Sitemap": ["Found on XML Sitemap", "On XML Sitemap"],
     "Inventory Exclusion Reason": ["Inventory Exclusion Reason", "Exclusion Reason"],
+    "Directory Discovery Status": ["Directory Discovery Status", "Discovery Status", "Record Origin", "Directory Origin"],
     "Source URL": ["Source URL", "Official Source URL", "Research Source", "Website / Source URL"],
     "Date Researched": ["Date Researched", "Date Verified", "Verification Date", "Research Date"],
     "Researcher": ["Researcher", "Assigned To"],
@@ -192,6 +194,13 @@ RESEARCH_STATUSES = [
 SOURCE_STATUSES = ["Not Checked", "Active", "Needs Follow-up", "Unavailable"]
 VERIFICATION_STATUSES = ["Not Reviewed", "Needs Review", "Verified"]
 RECORD_DECISIONS = ["Undecided", "Keep", "Update", "Possible Duplicate", "Remove"]
+DISCOVERY_STATUSES = [
+    "Needs Classification",
+    "Existing Client Record",
+    "Newly Discovered",
+    "Possible Duplicate",
+    "Excluded / Not Current",
+]
 
 COMPANY_STATUSES = [
     "Not started", "Researching", "Needs follow-up", "Ready for QA",
@@ -1208,9 +1217,80 @@ def normalize_workflow(df):
     out["Source Status"] = normalize_choice(out["Source Status"], SOURCE_STATUSES, "Not Checked", STATUS_ALIASES["Source Status"])
     out["Verification Status"] = normalize_choice(out["Verification Status"], VERIFICATION_STATUSES, "Not Reviewed", STATUS_ALIASES["Verification Status"])
     out["Record Decision"] = normalize_choice(out["Record Decision"], RECORD_DECISIONS, "Undecided", STATUS_ALIASES["Record Decision"])
+    out["Directory Discovery Status"] = normalize_choice(
+        out["Directory Discovery Status"],
+        DISCOVERY_STATUSES,
+        "Needs Classification",
+    )
     out = synchronize_missing_information(out)
     for c in ["Researcher", "Missing Information", "Reviewer Notes"]:
         out[c] = out[c].fillna("").astype(str)
+    return out
+
+
+def _discovery_keys_for_row(row) -> set[str]:
+    """Return stable identity keys used only to compare research rows with the starting client data."""
+    name = norm_header(row.get("Building Name", ""))
+    address = norm_header(row.get("Street Address", ""))
+    city = norm_header(row.get("City", ""))
+    postal = norm_header(row.get("Postal Code", ""))
+    keys = set()
+    if address and postal:
+        keys.add(f"address_postal:{address}|{postal}")
+    if address and city:
+        keys.add(f"address_city:{address}|{city}")
+    if name and city:
+        keys.add(f"name_city:{name}|{city}")
+    return keys
+
+
+def classify_discovery_status(df, original=None):
+    """Classify records as existing, newly discovered, duplicate, or excluded.
+
+    Datablix compares the working record against the project's starting building
+    snapshot. Human choices are preserved unless the workflow explicitly marks a
+    record as duplicate or excluded.
+    """
+    out = df.copy()
+    if "Directory Discovery Status" not in out.columns:
+        out["Directory Discovery Status"] = "Needs Classification"
+
+    original_keys = set()
+    if isinstance(original, pd.DataFrame) and not original.empty:
+        for _, original_row in original.iterrows():
+            original_keys.update(_discovery_keys_for_row(original_row))
+
+    for idx, row in out.iterrows():
+        decision = str(row.get("Record Decision", "") or "").strip()
+        inventory_status = str(row.get("Current Inventory Status", "") or "").strip().lower()
+        current_status = str(row.get("Directory Discovery Status", "") or "").strip()
+
+        if decision == "Possible Duplicate":
+            out.at[idx, "Directory Discovery Status"] = "Possible Duplicate"
+            continue
+        if decision == "Remove" or inventory_status.startswith("excluded"):
+            out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
+            continue
+
+        # If a record was previously marked duplicate/excluded but that workflow
+        # decision was reversed, recalculate its origin from the starting data.
+        needs_reclassification = (
+            current_status not in {"Existing Client Record", "Newly Discovered"}
+            or current_status in {"Possible Duplicate", "Excluded / Not Current"}
+        )
+        if not needs_reclassification:
+            continue
+
+        if not original_keys:
+            out.at[idx, "Directory Discovery Status"] = "Needs Classification"
+            continue
+
+        row_keys = _discovery_keys_for_row(row)
+        is_existing = bool(row_keys & original_keys)
+        out.at[idx, "Directory Discovery Status"] = (
+            "Existing Client Record" if is_existing else "Newly Discovered"
+        )
+
     return out
 
 
@@ -1609,19 +1689,32 @@ def derive_classification(df):
 
 
 def ensure_ids(df):
+    """Ensure every Datablix row has one unique stable Record ID."""
     out = df.copy()
-    existing = set(resolved(out["Record ID"]).dropna().astype(str).str.strip())
-    result, counter = [], 1
+    supplied_ids = [
+        str(value).strip()
+        for value in out["Record ID"]
+        if not is_unresolved(value)
+    ]
+    reserved = set(supplied_ids)
+    used = set()
+    result = []
+    counter = 1
+
     for value in out["Record ID"]:
-        if not is_unresolved(value):
-            result.append(str(value).strip())
+        clean = "" if is_unresolved(value) else str(value).strip()
+        if clean and clean not in used:
+            result.append(clean)
+            used.add(clean)
             continue
-        while f"DB-{counter:04d}" in existing:
+
+        while f"DB-{counter:04d}" in reserved or f"DB-{counter:04d}" in used:
             counter += 1
         candidate = f"DB-{counter:04d}"
-        existing.add(candidate)
         result.append(candidate)
+        used.add(candidate)
         counter += 1
+
     out["Record ID"] = result
     return out
 
@@ -2382,6 +2475,7 @@ def project_summary(df):
         {"Metric": "Records with usable core identity", "Value": int(df["Core Gap Count"].eq(0).sum()), "Interpretation": "Records with management/owner, street address, and city."},
         {"Metric": "Verified records", "Value": int(df["Verification Status"].eq("Verified").sum()), "Interpretation": "Records marked as human-verified."},
         {"Metric": "Approved for Export", "Value": int(approved_for_export_mask(df).sum()), "Interpretation": "Records explicitly completed, human-verified, kept, and free of critical data blockers."},
+        {"Metric": "Newly discovered records", "Value": int(df["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in df.columns else 0, "Interpretation": "Building records not matched to the starting client dataset."},
         {"Metric": "Open research gaps", "Value": int(df["Research Gap Count"].sum()), "Interpretation": "Unconfirmed listing fields."},
     ])
 
@@ -2401,6 +2495,7 @@ def structure_recommendations():
         ("Research", "Date Researched", "Required for verified records", "Date", "Freshness trail", "Filter"),
         ("Research", "Researcher", "Required for verified records", "Controlled text", "Accountability", "Filter"),
         ("Research", "Verification Status", "Required", "Controlled status", "Human review outcome", "Filter"),
+        ("Research", "Directory Discovery Status", "Required for project audit", "Controlled status", "Distinguishes existing client records, newly discovered buildings, duplicates, and excluded records", "Filter"),
         ("Research", "Missing Information", "Automatically generated", "System text", "Lists current research fields that remain unconfirmed", "No"),
         ("Workflow", "Record Decision", "Required before final use", "Controlled status", "Keep, update, duplicate, or remove", "Filter"),
     ]
@@ -2574,6 +2669,12 @@ def company_progress_summary(qa_frame, registry=None):
     registry = normalize_company_registry(registry)
     rows = []
     represented_ids = set()
+
+    def discovery_count(group, status):
+        if group.empty or "Directory Discovery Status" not in group.columns:
+            return 0
+        return int(group["Directory Discovery Status"].astype(str).eq(status).sum())
+
     for _, company in registry.iterrows():
         company_id = str(company["Company ID"]).strip()
         represented_ids.add(company_id)
@@ -2581,9 +2682,15 @@ def company_progress_summary(qa_frame, registry=None):
         rows.append({
             "Company ID": company_id,
             "Management/Owner": company["Management/Owner"],
+            "Main Website": company["Main Website"],
             "Scope Type": company["Scope Type"],
             "Company Status": company["Company Status"],
             "Building Records": len(group),
+            "Existing Client Records": discovery_count(group, "Existing Client Record"),
+            "Newly Discovered": discovery_count(group, "Newly Discovered"),
+            "Needs Classification": discovery_count(group, "Needs Classification"),
+            "Possible Duplicates": discovery_count(group, "Possible Duplicate"),
+            "Excluded / Not Current": discovery_count(group, "Excluded / Not Current"),
             "Completed Records": int(group["Research Status"].eq("Completed").sum()) if not group.empty else 0,
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()) if not group.empty else 0,
             "Records Passing QA": int(group["QA Status"].eq("Pass").sum()) if not group.empty else 0,
@@ -2592,6 +2699,7 @@ def company_progress_summary(qa_frame, registry=None):
             "Open Field Gaps": int(group["Research Gap Count"].sum()) if not group.empty else 0,
             "Still in Review": int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()) if not group.empty else 0,
         })
+
     unregistered = qa_frame.loc[
         ~qa_frame["Company ID"].astype(str).isin(represented_ids)
     ]
@@ -2601,9 +2709,15 @@ def company_progress_summary(qa_frame, registry=None):
         rows.append({
             "Company ID": "",
             "Management/Owner": owner,
+            "Main Website": "",
             "Scope Type": "Imported",
             "Company Status": "Researching",
             "Building Records": len(group),
+            "Existing Client Records": discovery_count(group, "Existing Client Record"),
+            "Newly Discovered": discovery_count(group, "Newly Discovered"),
+            "Needs Classification": discovery_count(group, "Needs Classification"),
+            "Possible Duplicates": discovery_count(group, "Possible Duplicate"),
+            "Excluded / Not Current": discovery_count(group, "Excluded / Not Current"),
             "Completed Records": int(group["Research Status"].eq("Completed").sum()),
             "Verified Records": int(group["Verification Status"].eq("Verified").sum()),
             "Records Passing QA": int(group["QA Status"].eq("Pass").sum()),
@@ -2614,6 +2728,235 @@ def company_progress_summary(qa_frame, registry=None):
         })
     return pd.DataFrame(rows)
 
+
+
+def source_verification_tracker(qa_frame):
+    """Create the Riipen-style source and verification tracker."""
+    columns = [
+        "Record ID", "Building Name", "Management/Owner",
+        "Directory Discovery Status", "Street Address", "City", "Postal Code",
+        "Source URL", "Date Researched", "Researcher", "Source Status",
+        "Verification Status", "Missing Information", "Reviewer Notes",
+        "Follow-up Priority", "Record Decision", "Export Status",
+    ]
+    available = [column for column in columns if column in qa_frame.columns]
+    tracker = qa_frame[available].copy()
+    if not tracker.empty:
+        tracker = tracker.sort_values(
+            by=["Export Status", "Follow-up Priority", "Management/Owner", "Building Name"],
+            kind="stable",
+        )
+    return tracker.reset_index(drop=True)
+
+
+def _profile_value(row, field, blank="Not publicly confirmed"):
+    value = row.get(field, "")
+    return blank if is_unresolved(value) else str(value).strip()
+
+
+def community_profile_text(row) -> str:
+    """Create a copy-ready draft apartment community profile from one reviewed record."""
+    location = formatted_location(row)
+    lines = [
+        f"# {_profile_value(row, 'Building Name', 'Apartment Building')}",
+        "",
+        f"**Address:** {_profile_value(row, 'Street Address')} "
+        + (f"— {location}" if not is_unresolved(location) else ""),
+        f"**Management / Owner:** {_profile_value(row, 'Management/Owner')}",
+        f"**Building Classification:** {_profile_value(row, 'Building Classification')}",
+        f"**Number of Apartments:** {_profile_value(row, 'Number of Apartments')}",
+        f"**Phone:** {_profile_value(row, 'Phone')}",
+        f"**Email:** {_profile_value(row, 'Primary Email')}",
+        f"**Website:** {_profile_value(row, 'Website')}",
+        "",
+        "## Additional property information",
+        f"**Suite Types:** {_profile_value(row, 'Suite Types')}",
+        f"**Amenities:** {_profile_value(row, 'Amenities')}",
+        f"**Parking:** {_profile_value(row, 'Parking')}",
+        f"**Laundry:** {_profile_value(row, 'Laundry')}",
+        f"**Utilities:** {_profile_value(row, 'Utilities')}",
+        f"**Accessibility:** {_profile_value(row, 'Accessibility')}",
+        f"**Pet Policy:** {_profile_value(row, 'Pet Policy')}",
+        "",
+        "## Research note",
+        f"**Missing / unclear information:** {_profile_value(row, 'Missing Information', 'None documented')}",
+        f"**Verification:** {_profile_value(row, 'Verification Status')}",
+        f"**Source:** {_profile_value(row, 'Source URL')}",
+    ]
+    return "\n".join(lines)
+
+
+def directory_recommendations_with_coverage(qa_frame):
+    """Combine the recommended directory structure with observed public-data coverage."""
+    recommendations = structure_recommendations().copy()
+
+    source_map = {
+        "Apartment Building Name": ["Building Name"],
+        "Street Address": ["Street Address"],
+        "City and Postal Code": ["City", "Postal Code"],
+        "Building Classification": ["Building Classification"],
+        "Number of Apartments": ["Number of Apartments"],
+        "Apartment Building Management/Owner": ["Management/Owner"],
+        "Phone Number": ["Phone"],
+        "Email Contact": ["Primary Email"],
+        "WebSite": ["Website"],
+        "Source URL": ["Source URL"],
+        "Date Researched": ["Date Researched"],
+        "Researcher": ["Researcher"],
+        "Verification Status": ["Verification Status"],
+        "Directory Discovery Status": ["Directory Discovery Status"],
+        "Missing Information": ["Missing Information"],
+        "Record Decision": ["Record Decision"],
+    }
+
+    coverage_values = []
+    evidence_notes = []
+    for _, recommendation in recommendations.iterrows():
+        field = recommendation["Field"]
+        source_fields = [f for f in source_map.get(field, [field]) if f in qa_frame.columns]
+        if not source_fields or qa_frame.empty:
+            coverage = 0.0
+        else:
+            resolved_all = pd.Series(True, index=qa_frame.index)
+            for source_field in source_fields:
+                resolved_all &= ~unresolved_mask(qa_frame[source_field])
+            coverage = float(resolved_all.mean() * 100)
+
+        coverage_values.append(round(coverage, 1))
+        if coverage >= 85:
+            note = "Strong coverage — suitable for prominent search/filter use."
+        elif coverage >= 60:
+            note = "Moderate coverage — useful as an optional search/filter field."
+        else:
+            note = "Limited public coverage — keep optional and avoid making it mandatory."
+        evidence_notes.append(note)
+
+    recommendations["Observed Coverage %"] = coverage_values
+    recommendations["Evidence-based Recommendation"] = evidence_notes
+    return recommendations
+
+
+def methodology_and_limitations_report(qa_frame, scope_label):
+    """Generate a project-specific research methodology and limitations summary."""
+    unavailable_sources = int(qa_frame["Source Status"].eq("Unavailable").sum()) if not qa_frame.empty else 0
+    missing_source = int(unresolved_mask(qa_frame["Source URL"]).sum()) if not qa_frame.empty else 0
+    excluded = int(qa_frame["Directory Discovery Status"].eq("Excluded / Not Current").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    new_records = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    return pd.DataFrame([
+        {
+            "Section": "Research scope",
+            "Report Text": f"Scope analysed: {scope_label}. Datablix treats each company as a separate research workspace and consolidates reviewed building records into the master project.",
+        },
+        {
+            "Section": "Research method",
+            "Report Text": "Research follows an inventory-first process: establish the current official portfolio, research confirmed/current properties deeply, use secondary public sources only for genuine gaps, then import structured CSV results for human review.",
+        },
+        {
+            "Section": "Inclusion criteria",
+            "Report Text": "A property is included only when there is meaningful building evidence and sufficient current-inventory support. A loading URL alone is not treated as a property record.",
+        },
+        {
+            "Section": "Duplicate and discovery method",
+            "Report Text": f"Records are compared against the starting client dataset using normalized address, postal-code, city, and building-name evidence. {new_records:,} current record(s) in this scope are classified as newly discovered.",
+        },
+        {
+            "Section": "Verification method",
+            "Report Text": "Imported AI/scanner findings remain candidates until a human completes research, verifies the record, records the supporting source, and chooses a final record decision.",
+        },
+        {
+            "Section": "Missing information",
+            "Report Text": "Unconfirmed values remain blank and are documented as research gaps rather than guessed. Missing information is tracked separately from formatting or QA errors.",
+        },
+        {
+            "Section": "Limitations",
+            "Report Text": f"Public websites may be incomplete, stale, blocked, JavaScript-dependent, or inconsistent. This scope currently contains {unavailable_sources:,} record(s) with unavailable sources, {missing_source:,} record(s) without a recorded source URL, and {excluded:,} excluded/not-current record(s).",
+        },
+        {
+            "Section": "Assumptions",
+            "Report Text": "Official company/property sources are treated as primary evidence; XML sitemaps are discovery evidence rather than proof of current inventory; orphan pages without meaningful property evidence are ignored as non-record pages.",
+        },
+        {
+            "Section": "Recommended next steps",
+            "Report Text": "Resolve high-priority follow-ups, confirm remaining source evidence, review possible duplicates, document employer-only information where public confirmation is impossible, and preserve the approved master dataset as the reporting source of truth.",
+        },
+    ])
+
+
+def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) -> str:
+    """Create a copy-ready summary for the final Riipen presentation."""
+    approved = int(approved_for_export_mask(qa_frame).sum())
+    still_review = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
+    existing = int(qa_frame["Directory Discovery Status"].eq("Existing Client Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    discovered = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    needs_classification = int(qa_frame["Directory Discovery Status"].eq("Needs Classification").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    duplicates = int(qa_frame["Directory Discovery Status"].eq("Possible Duplicate").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    excluded = int(qa_frame["Directory Discovery Status"].eq("Excluded / Not Current").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    company_count = int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
+    if scope_label == "All companies" and not normalize_company_registry(registry).empty:
+        company_count = len(normalize_company_registry(registry))
+    impact = quality_impact_summary(qa_frame, baseline)
+    impact_map = dict(zip(impact["Metric"], impact["Value"]))
+
+    coverage = field_coverage(qa_frame) if not qa_frame.empty else pd.DataFrame()
+    biggest_gaps = []
+    if not coverage.empty:
+        top = coverage.sort_values("Missing Records", ascending=False).head(3)
+        biggest_gaps = [
+            f"{row['Field']} ({int(row['Missing Records'])} missing)"
+            for _, row in top.iterrows()
+            if int(row["Missing Records"]) > 0
+        ]
+
+    return f"""# Final Directory Summary — {scope_label}
+
+## Scope and research coverage
+- Companies represented: {company_count}
+- Building records investigated: {len(qa_frame)}
+- Existing client records: {existing}
+- Newly discovered records: {discovered}
+- Records still needing discovery classification: {needs_classification}
+- Possible duplicates flagged: {duplicates}
+- Excluded / not-current records: {excluded}
+
+## Review and delivery status
+- Approved for Export: {approved}
+- Still in review or follow-up: {still_review}
+- Current QA findings: {int(qa_frame['QA Flag Count'].sum()) if not qa_frame.empty else 0}
+
+## Quality improvement
+- Baseline issues: {int(impact_map.get('Baseline issues', 0))}
+- Baseline issues resolved: {int(impact_map.get('Baseline issues resolved', 0))}
+- Resolution rate: {float(impact_map.get('Issue-resolution rate', 0)):.1f}%
+
+## Main public-data gaps
+{chr(10).join(f'- {gap}' for gap in biggest_gaps) if biggest_gaps else '- No major field-coverage gaps identified in the current scope.'}
+
+## Key methodology
+- Inventory-first public-source research.
+- Official company/property sources used as primary evidence.
+- CSV research deliverables imported into Datablix for QA and human verification.
+- Missing information documented rather than inferred.
+- Orphan/legacy pages excluded when they lack current inventory support or meaningful property evidence.
+
+## Recommended next steps
+- Complete remaining high-priority follow-ups.
+- Confirm unresolved source evidence and employer-only information.
+- Use the approved records as the final directory database.
+- Use the directory-structure recommendations to guide filters, search fields, and future maintenance.
+"""
+
+
+def riipen_deliverables_table():
+    """Map each formal Riipen deliverable to the Datablix workflow."""
+    return pd.DataFrame([
+        {"Riipen Deliverable": "1. Apartment Directory Database", "Datablix Location": "Export", "How Datablix supports it": "Approved records + selectable columns + CSV output."},
+        {"Riipen Deliverable": "2. Owner and Management Company Research List", "Datablix Location": "Report → Research results", "How Datablix supports it": "Company registry, websites, status, building counts, new discoveries, gaps, and follow-up."},
+        {"Riipen Deliverable": "3. Draft Apartment Community Profiles", "Datablix Location": "Report → Community profiles", "How Datablix supports it": "Copy-ready profile draft for each reviewed building."},
+        {"Riipen Deliverable": "4. Data Source and Verification Tracker", "Datablix Location": "Report → Source & verification", "How Datablix supports it": "Source URL, research date, verification, missing information, reviewer notes, and follow-up."},
+        {"Riipen Deliverable": "5. Directory Structure and Searchability Recommendations", "Datablix Location": "Report → Directory recommendations", "How Datablix supports it": "Recommended fields/filters combined with observed coverage rates."},
+        {"Riipen Deliverable": "6. Research Methodology and Limitations Report", "Datablix Location": "Report → Methodology & limitations", "How Datablix supports it": "Dynamic methodology, assumptions, limitations, and next steps."},
+        {"Riipen Deliverable": "7. Final Directory Summary Presentation", "Datablix Location": "Report → Final summary", "How Datablix supports it": "Copy-ready summary metrics, quality impact, gaps, methodology, and recommendations."},
+    ])
 
 def report_summary(qa_frame, registry=None, scope_label="All companies", baseline=None):
     registry = normalize_company_registry(registry)
@@ -2626,15 +2969,22 @@ def report_summary(qa_frame, registry=None, scope_label="All companies", baselin
     cities = sorted(set(resolved(qa_frame["City"]).dropna().astype(str).str.strip()))
     impact = quality_impact_summary(qa_frame, baseline)
     impact_map = dict(zip(impact["Metric"], impact["Value"]))
+    existing_count = int(qa_frame["Directory Discovery Status"].eq("Existing Client Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    discovered_count = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    needs_classification_count = int(qa_frame["Directory Discovery Status"].eq("Needs Classification").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    duplicate_count = int(qa_frame["Directory Discovery Status"].eq("Possible Duplicate").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    excluded_count = int(qa_frame["Directory Discovery Status"].eq("Excluded / Not Current").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+
     rows = [
         {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Building records analysed: {len(qa_frame):,}."},
         {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {approved_count:,} records are currently Approved for Export after human review."},
+        {"Section": "Research contribution", "Report Text": f"The current scope contains {existing_count:,} existing client record(s), {discovered_count:,} newly discovered record(s), {needs_classification_count:,} record(s) still needing origin classification, {duplicate_count:,} possible duplicate(s), and {excluded_count:,} excluded/not-current record(s)."},
         {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {unresolved_count:,} records still require correction, verification, a decision, or documented follow-up."},
         {"Section": "Quality impact", "Report Text": f"The saved baseline contains {int(impact_map.get('Baseline issues', 0)):,} issues. {int(impact_map.get('Baseline issues resolved', 0)):,} no longer appear after revalidation, producing an issue-resolution rate of {float(impact_map.get('Issue-resolution rate', 0)):.1f}%."},
-        {"Section": "Method", "Report Text": "Companies were researched separately, scanner findings were reviewed by a person, approved records were consolidated into one master project, and quality checks were run at company and project levels."},
-        {"Section": "Assumptions", "Report Text": "Scanner findings are candidates rather than verified facts; public websites may be incomplete or change over time; unavailable information is documented rather than invented; and the project scope may expand when additional companies are assigned."},
-        {"Section": "Limitations", "Report Text": "Automated checks identify structural and formatting concerns but do not independently confirm ownership, management relationships, addresses, unit counts, or the completeness of a company portfolio."},
-        {"Section": "Recommended next actions", "Report Text": "Resolve high-priority follow-ups, confirm source evidence, review cross-company duplicate warnings, document unavailable information, and preserve the final master project as the reporting source of truth."},
+        {"Section": "Method", "Report Text": "Companies were researched separately using an inventory-first public-source method. Structured CSV research results and scanner cross-checks were imported as candidates, then reviewed by a person before approval."},
+        {"Section": "Assumptions", "Report Text": "A loading property URL is not proof of current inventory; unavailable information is documented rather than invented; official company/property sources are primary evidence; and the project scope may expand when additional companies are assigned."},
+        {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, blocked, duplicated, JavaScript-dependent, or inconsistent. Automated checks support review but do not independently prove ownership, unit counts, or portfolio completeness."},
+        {"Section": "Recommended next actions", "Report Text": "Resolve high-priority follow-ups, confirm remaining source evidence, review possible duplicates, document employer-only information, and preserve the approved master dataset as the reporting source of truth."},
     ]
     return pd.DataFrame(rows)
 
@@ -4774,6 +5124,10 @@ working, project_registry = synchronize_company_registry(
     st.session_state[S_WORKING].copy(),
     st.session_state.get(S_COMPANIES),
 )
+working = classify_discovery_status(
+    working,
+    st.session_state.get(S_ORIGINAL),
+)
 st.session_state[S_WORKING] = working
 st.session_state[S_COMPANIES] = project_registry
 has_records = not working.empty
@@ -5920,10 +6274,23 @@ elif section == "Review records":
     if has_records and not review_scope_qa.empty:
         approved_now = int(approved_for_export_mask(review_scope_qa).sum())
         still_now = int((~approved_for_export_mask(review_scope_qa) & ~review_scope_qa["Record Decision"].eq("Remove")).sum())
-        summary_cols = st.columns(3)
+        existing_now = int(review_scope_qa["Directory Discovery Status"].eq("Existing Client Record").sum())
+        discovered_now = int(review_scope_qa["Directory Discovery Status"].eq("Newly Discovered").sum())
+        needs_origin_now = int(review_scope_qa["Directory Discovery Status"].eq("Needs Classification").sum())
+        summary_cols = st.columns(5)
         summary_cols[0].metric("Company records", f"{len(review_scope_qa):,}")
-        summary_cols[1].metric("Approved for Export", f"{approved_now:,}")
-        summary_cols[2].metric("Still in review", f"{still_now:,}")
+        summary_cols[1].metric("Existing client", f"{existing_now:,}")
+        summary_cols[2].metric("Newly discovered", f"{discovered_now:,}")
+        summary_cols[3].metric("Approved for Export", f"{approved_now:,}")
+        summary_cols[4].metric("Still in review", f"{still_now:,}")
+        st.caption(
+            "Discovery status compares each working record with the project's starting building dataset. "
+            "Correct the classification during review when needed."
+        )
+        if needs_origin_now:
+            st.info(
+                f"{needs_origin_now:,} record(s) still need discovery classification because Datablix could not safely determine whether they were in the starting client building list."
+            )
 
         search_col, focus_col = st.columns([2, 1])
         search_text = search_col.text_input(
@@ -5977,7 +6344,7 @@ elif section == "Review records":
                 sorted(display_values(review_scope_qa["Research Status"]).unique()),
                 help="Leave blank to include every research status.",
             )
-            filter_row2 = st.columns(2)
+            filter_row2 = st.columns(3)
             verification_filter = filter_row2[0].multiselect(
                 "Verification status",
                 sorted(display_values(review_scope_qa["Verification Status"]).unique()),
@@ -5987,6 +6354,11 @@ elif section == "Review records":
                 "Record readiness",
                 sorted(display_values(review_scope_qa["Record Readiness"]).unique()),
                 help="Leave blank to include every readiness status.",
+            )
+            discovery_filter = filter_row2[2].multiselect(
+                "Discovery status",
+                sorted(display_values(review_scope_qa["Directory Discovery Status"]).unique()),
+                help="Compare existing client records with newly discovered, duplicate, or excluded records.",
             )
 
         if quality_filter:
@@ -5999,6 +6371,8 @@ elif section == "Review records":
             mask &= display_values(review_scope_qa["Verification Status"]).isin(verification_filter)
         if readiness_filter:
             mask &= display_values(review_scope_qa["Record Readiness"]).isin(readiness_filter)
+        if discovery_filter:
+            mask &= display_values(review_scope_qa["Directory Discovery Status"]).isin(discovery_filter)
 
         filtered = review_scope_qa.loc[mask].copy()
         st.caption(f"Showing {len(filtered):,} of {len(review_scope_qa):,} records for the selected company.")
@@ -6016,8 +6390,8 @@ elif section == "Review records":
                 )
                 inspect_columns = [
                     "Record ID", "Working Record Label", "Management/Owner",
-                    "Street Address", "City", "Postal Code", "Research Status",
-                    "Verification Status", "QA Status", "QA Flags", "Research Gaps",
+                    "Street Address", "City", "Postal Code", "Directory Discovery Status",
+                    "Research Status", "Verification Status", "QA Status", "QA Flags", "Research Gaps",
                     "Follow-up Priority", "Record Readiness", "Export Status",
                 ]
                 inspect = filtered[inspect_columns].rename(
@@ -6050,8 +6424,8 @@ elif section == "Review records":
                         "Date Researched", "Researcher", "Source Status",
                     ],
                     "Research and verification": [
-                        "Research Status", "Verification Status", "Record Decision",
-                        "Reviewer Notes",
+                        "Directory Discovery Status", "Research Status",
+                        "Verification Status", "Record Decision", "Reviewer Notes",
                     ],
                 }
                 preset = st.selectbox(
@@ -6066,7 +6440,8 @@ elif section == "Review records":
                         [c for c in INTERNAL_COLUMNS if c not in {"Record ID", "Missing Information"}],
                         default=[
                             "Building Name", "Management/Owner", "Phone", "Primary Email",
-                            "Website", "Research Status", "Verification Status", "Record Decision",
+                            "Website", "Directory Discovery Status", "Research Status",
+                            "Verification Status", "Record Decision",
                         ],
                         key="db_custom_edit_fields",
                     )
@@ -6136,6 +6511,12 @@ elif section == "Review records":
                             help="Automatically generated from the currently blank research fields. Add explanations in Reviewer Notes.",
                         ),
                         "Date Researched": st.column_config.DateColumn("Date Researched", format="YYYY-MM-DD"),
+                        "Directory Discovery Status": st.column_config.SelectboxColumn(
+                            "Directory Discovery Status",
+                            options=DISCOVERY_STATUSES,
+                            required=True,
+                            help="Existing Client Record means it matches the starting client dataset; Newly Discovered means Datablix did not find a starting-data match.",
+                        ),
                         "Research Status": st.column_config.SelectboxColumn(
                             "Research Status", options=RESEARCH_STATUSES, required=True
                         ),
@@ -6179,8 +6560,8 @@ elif section == "Review records":
 elif section == "Analysis & report":
     render_page_heading(
         "REPORT",
-        "Analyse and report",
-        "Review one company in depth or combine every company currently in scope for the final stakeholder report.",
+        "Complete your project deliverables",
+        "Turn the reviewed research into the company research list, source tracker, draft profiles, directory recommendations, methodology, and final summary required for the Riipen project.",
     )
 
     registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
@@ -6233,62 +6614,226 @@ elif section == "Analysis & report":
                 "Open Review & Quality to capture it before using before-and-after metrics."
             )
 
+    company_count_metric = int(
+        analysis_qa["Company ID"].astype(str).replace("", pd.NA).dropna().nunique()
+    )
+    if scope_mode == "All companies" and not registry.empty:
+        company_count_metric = len(registry)
+    existing_metric = int(
+        analysis_qa["Directory Discovery Status"].eq("Existing Client Record").sum()
+    )
+    discovered_metric = int(
+        analysis_qa["Directory Discovery Status"].eq("Newly Discovered").sum()
+    )
+
     metric_columns = st.columns(5)
-    metric_columns[0].metric("Companies", f"{analysis_qa['Company ID'].astype(str).replace('', pd.NA).dropna().nunique():,}")
+    metric_columns[0].metric("Companies", f"{company_count_metric:,}")
     metric_columns[1].metric("Building records", f"{len(analysis_qa):,}")
-    metric_columns[2].metric("Approved for Export", f"{int(approved_for_export_mask(analysis_qa).sum()):,}")
-    metric_columns[3].metric("Records passing QA", f"{int(analysis_qa['QA Status'].eq('Pass').sum()):,}")
-    metric_columns[4].metric("Open QA issues", f"{int(analysis_qa['QA Flag Count'].sum()):,}")
+    metric_columns[2].metric("Existing client", f"{existing_metric:,}")
+    metric_columns[3].metric("Newly discovered", f"{discovered_metric:,}")
+    metric_columns[4].metric("Approved for Export", f"{int(approved_for_export_mask(analysis_qa).sum()):,}")
+
+    st.markdown("### Riipen deliverables")
+    st.caption(
+        "Each formal project deliverable now has a corresponding Datablix view. "
+        "Use Export only for the final directory CSV."
+    )
+    st.dataframe(
+        riipen_deliverables_table(),
+        width="stretch",
+        hide_index=True,
+    )
 
     analysis_tabs = st.tabs([
-        "Company results",
-        "Quality impact",
-        "Coverage and gaps",
-        "Report summary",
+        "Research results",
+        "Source tracker",
+        "Profiles",
+        "Directory design",
+        "Methodology",
+        "Final summary",
     ])
 
     with analysis_tabs[0]:
-        company_table = company_progress_summary(
-            analysis_qa,
-            registry.loc[registry["Company ID"].astype(str).isin(set(analysis_qa["Company ID"].astype(str)))]
+        st.subheader("Owner and management company research list")
+        analysis_registry = (
+            registry.loc[
+                registry["Company ID"].astype(str).isin(
+                    set(analysis_qa["Company ID"].astype(str))
+                )
+            ].copy()
             if not registry.empty
-            else registry,
+            else registry
         )
-        st.dataframe(company_table, width="stretch", hide_index=True)
+        company_table = company_progress_summary(analysis_qa, analysis_registry)
+        st.dataframe(
+            company_table,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Main Website": st.column_config.LinkColumn("Main Website", width="large"),
+            },
+        )
+
         if scope_mode == "All companies" and not company_table.empty:
-            chart_data = company_table.set_index("Management/Owner")[["Building Records"]]
-            st.bar_chart(chart_data)
+            chart_fields = [
+                field
+                for field in ["Building Records", "Newly Discovered", "Approved for Export"]
+                if field in company_table.columns
+            ]
+            if chart_fields:
+                chart_data = company_table.set_index("Management/Owner")[chart_fields]
+                st.bar_chart(chart_data)
+
+        with st.expander("Quality impact", expanded=False):
+            impact = quality_impact_summary(analysis_qa, analysis_baseline)
+            st.dataframe(impact, width="stretch", hide_index=True)
+            impact_map = dict(zip(impact["Metric"], impact["Value"]))
+            impact_metrics = st.columns(4)
+            impact_metrics[0].metric("Baseline issues", f"{int(impact_map.get('Baseline issues', 0)):,}")
+            impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
+            impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
+            impact_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
+
+            baseline_exists_for_scope = (
+                quality_baseline_exists(selected_company_id)
+                if scope_mode == "One company" and selected_company_id
+                else quality_baseline_exists()
+            )
+            if not baseline_exists_for_scope:
+                st.info(
+                    "No starting quality baseline is saved for this scope. Open Review to capture one before using before-and-after metrics."
+                )
+            elif int(impact_map.get("Baseline issues", 0)) == 0:
+                st.info(
+                    "A valid zero-issue baseline is saved for this scope. New issues will still be tracked."
+                )
+
+        with st.expander("Coverage and open gaps", expanded=False):
+            coverage = field_coverage(analysis_qa)
+            st.dataframe(coverage, width="stretch", hide_index=True)
+            if not coverage.empty:
+                gaps_chart = coverage.set_index("Field")[["Missing Records"]]
+                st.bar_chart(gaps_chart)
 
     with analysis_tabs[1]:
-        impact = quality_impact_summary(analysis_qa, analysis_baseline)
-        st.dataframe(impact, width="stretch", hide_index=True)
-        impact_map = dict(zip(impact["Metric"], impact["Value"]))
-        impact_metrics = st.columns(4)
-        impact_metrics[0].metric("Baseline issues", f"{int(impact_map.get('Baseline issues', 0)):,}")
-        impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
-        impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
-        impact_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
-        baseline_exists_for_scope = (
-            quality_baseline_exists(selected_company_id)
-            if scope_mode == "One company" and selected_company_id
-            else quality_baseline_exists()
+        st.subheader("Data source and verification tracker")
+        st.caption(
+            "This is the audit trail for where information was found, what could not be confirmed, and which records still require follow-up."
         )
-        if not baseline_exists_for_scope:
-            st.info(
-                "No starting quality baseline is saved for this scope. Open Review & Quality to capture one before using before-and-after metrics."
-            )
-        elif int(impact_map.get("Baseline issues", 0)) == 0:
-            st.info(
-                "A valid zero-issue baseline is saved for this scope. New issues will still be tracked."
-            )
+        tracker = source_verification_tracker(analysis_qa)
+        tracker_focus = st.radio(
+            "Tracker focus",
+            ["All records", "Needs follow-up", "Approved for Export"],
+            horizontal=True,
+            key="db_source_tracker_focus",
+        )
+        if tracker_focus == "Needs follow-up":
+            tracker = tracker.loc[
+                tracker["Follow-up Priority"].astype(str).ne("None")
+                | tracker["Verification Status"].astype(str).ne("Verified")
+            ].copy()
+        elif tracker_focus == "Approved for Export":
+            tracker = tracker.loc[
+                tracker["Export Status"].astype(str).eq("Approved for Export")
+            ].copy()
+
+        st.dataframe(
+            tracker,
+            width="stretch",
+            hide_index=True,
+            height=560,
+            column_config={
+                "Source URL": st.column_config.LinkColumn("Source URL", width="large"),
+            },
+        )
 
     with analysis_tabs[2]:
-        coverage = field_coverage(analysis_qa)
-        st.dataframe(coverage, width="stretch", hide_index=True)
-        gaps_chart = coverage.set_index("Field")[["Missing Records"]]
-        st.bar_chart(gaps_chart)
+        st.subheader("Draft apartment community profiles")
+        st.caption(
+            "Select a reviewed building to assemble a copy-ready draft profile from the information already stored in Datablix."
+        )
+        profile_candidates = analysis_qa.loc[
+            ~analysis_qa["Record Decision"].eq("Remove")
+        ].copy()
+        if profile_candidates.empty:
+            st.info("No building records are available for profile drafting in this scope.")
+        else:
+            profile_candidates["_approved_sort"] = approved_for_export_mask(profile_candidates).astype(int)
+            profile_candidates = profile_candidates.sort_values(
+                ["_approved_sort", "Management/Owner", "Building Name"],
+                ascending=[False, True, True],
+                kind="stable",
+            )
+            profile_ids = profile_candidates["Record ID"].astype(str).tolist()
+            selected_profile_id = st.selectbox(
+                "Building profile",
+                profile_ids,
+                format_func=lambda record_id: (
+                    f"{profile_candidates.loc[profile_candidates['Record ID'].astype(str).eq(record_id), 'Building Name'].iloc[0]} "
+                    f"— {profile_candidates.loc[profile_candidates['Record ID'].astype(str).eq(record_id), 'Street Address'].iloc[0]}"
+                ),
+                key="db_profile_record_id",
+            )
+            profile_row = profile_candidates.loc[
+                profile_candidates["Record ID"].astype(str).eq(selected_profile_id)
+            ].iloc[0]
+
+            profile_fields = [
+                ("Apartment Building Name", "Building Name"),
+                ("Street Address", "Street Address"),
+                ("City and Postal Code", None),
+                ("Building Classification", "Building Classification"),
+                ("Number of Apartments", "Number of Apartments"),
+                ("Apartment Building Management/Owner", "Management/Owner"),
+                ("Phone Number", "Phone"),
+                ("Email Contact", "Primary Email"),
+                ("WebSite", "Website"),
+                ("Amenities", "Amenities"),
+                ("Parking", "Parking"),
+                ("Laundry", "Laundry"),
+                ("Accessibility", "Accessibility"),
+                ("Missing Information", "Missing Information"),
+                ("Source URL", "Source URL"),
+            ]
+            profile_rows = []
+            for label, source_field in profile_fields:
+                value = (
+                    formatted_location(profile_row)
+                    if source_field is None
+                    else profile_row.get(source_field, "")
+                )
+                profile_rows.append({
+                    "Profile Field": label,
+                    "Value": "" if is_unresolved(value) else str(value).strip(),
+                })
+            st.dataframe(pd.DataFrame(profile_rows), width="stretch", hide_index=True)
+            st.markdown("**Copy-ready draft**")
+            st.code(community_profile_text(profile_row), language="markdown")
 
     with analysis_tabs[3]:
+        st.subheader("Directory structure and searchability recommendations")
+        st.caption(
+            "Recommendations combine the requested directory structure with the actual public-data coverage observed in this research scope."
+        )
+        recommendations = directory_recommendations_with_coverage(analysis_qa)
+        st.dataframe(recommendations, width="stretch", hide_index=True, height=620)
+        if not recommendations.empty:
+            coverage_chart = recommendations.set_index("Field")[["Observed Coverage %"]]
+            st.bar_chart(coverage_chart)
+
+    with analysis_tabs[4]:
+        st.subheader("Research methodology and limitations")
+        method_report = methodology_and_limitations_report(
+            analysis_qa,
+            scope_label,
+        )
+        st.dataframe(method_report, width="stretch", hide_index=True)
+        st.caption(
+            "These sections are generated from the current Datablix workflow and dataset. Read through them before placing them in the final stakeholder report."
+        )
+
+    with analysis_tabs[5]:
+        st.subheader("Final directory summary")
         report = report_summary(
             analysis_qa,
             registry,
@@ -6296,7 +6841,20 @@ elif section == "Analysis & report":
             baseline=analysis_baseline,
         )
         st.dataframe(report, width="stretch", hide_index=True)
-        st.caption("Use Export to choose exactly which columns to download as CSV.")
+        st.markdown("**Copy-ready presentation summary**")
+        st.code(
+            presentation_summary_text(
+                analysis_qa,
+                registry,
+                scope_label,
+                analysis_baseline,
+            ),
+            language="markdown",
+        )
+        st.caption(
+            "Use this summary as the factual starting point for the final presentation. "
+            "Use Export to download the final approved directory rows as CSV."
+        )
 
 
 # -----------------------------
