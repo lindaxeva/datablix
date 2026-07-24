@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Project Deliverables Completion 2026.07.23-v22"
+DATABLIX_BUILD = "Storeys Form Alignment 2026.07.23-v23"
 
 # =========================================================
 # Configuration
@@ -52,6 +52,7 @@ LISTING_COLUMNS = [
     "Street Address",
     "City and Postal Code",
     "Building Classification",
+    "Storeys",
     "Number of Apartments",
     "Apartment Building Management/Owner",
     "Phone Number",
@@ -66,6 +67,7 @@ LISTING_FIELD_MAP = [
     ("Street Address", "Street Address"),
     ("City and Postal Code", None),
     ("Building Classification", "Building Classification"),
+    ("Storeys", "Number of Storeys"),
     ("Number of Apartments", "Number of Apartments"),
     ("Apartment Building Management/Owner", "Management/Owner"),
     ("Phone Number", "Phone"),
@@ -78,7 +80,6 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Secondary Email", "Secondary Email"),
     ("Property Website", "Property Website"),
     ("Company Website", "Company Website"),
-    ("Number of Storeys", "Number of Storeys"),
     ("Rental Rate Range", "Rental Rate Range"),
     ("Suite Types", "Suite Types"),
     ("Amenities", "Amenities"),
@@ -2486,6 +2487,7 @@ def structure_recommendations():
         ("Location", "Street Address", "Required", "Text", "Primary building address", "Search"),
         ("Location", "City and Postal Code", "Required", "Formatted location", "City, province code, and postal code", "Search/Filter"),
         ("Property", "Building Classification", "Where available", "Controlled text", "Building classification", "Filter"),
+        ("Property", "Storeys", "Where available", "Whole number", "Number of building storeys", "Sort/Filter"),
         ("Property", "Number of Apartments", "Where available", "Whole number", "Apartment count", "Sort/Filter"),
         ("Ownership", "Apartment Building Management/Owner", "Required", "Controlled text", "Responsible organization", "Filter"),
         ("Contact", "Phone Number", "Where available", "Phone", "Available contact number", "Search"),
@@ -2764,6 +2766,7 @@ def community_profile_text(row) -> str:
         + (f"— {location}" if not is_unresolved(location) else ""),
         f"**Management / Owner:** {_profile_value(row, 'Management/Owner')}",
         f"**Building Classification:** {_profile_value(row, 'Building Classification')}",
+        f"**Storeys:** {_profile_value(row, 'Number of Storeys')}",
         f"**Number of Apartments:** {_profile_value(row, 'Number of Apartments')}",
         f"**Phone:** {_profile_value(row, 'Phone')}",
         f"**Email:** {_profile_value(row, 'Primary Email')}",
@@ -2795,6 +2798,7 @@ def directory_recommendations_with_coverage(qa_frame):
         "Street Address": ["Street Address"],
         "City and Postal Code": ["City", "Postal Code"],
         "Building Classification": ["Building Classification"],
+        "Storeys": ["Number of Storeys"],
         "Number of Apartments": ["Number of Apartments"],
         "Apartment Building Management/Owner": ["Management/Owner"],
         "Phone Number": ["Phone"],
@@ -6783,6 +6787,7 @@ elif section == "Analysis & report":
                 ("Street Address", "Street Address"),
                 ("City and Postal Code", None),
                 ("Building Classification", "Building Classification"),
+                ("Storeys", "Number of Storeys"),
                 ("Number of Apartments", "Number of Apartments"),
                 ("Apartment Building Management/Owner", "Management/Owner"),
                 ("Phone Number", "Phone"),
@@ -6949,8 +6954,8 @@ elif section == "Downloads":
 
     st.subheader("3. Choose columns")
 
-    # Start the custom export with the exact directory/sample listing fields.
-    # This gives the user familiar submission-ready names while still allowing
+    # Start the custom export with the exact directory-entry form fields.
+    # The default now mirrors the final entry form, including Storeys, while allowing
     # any Datablix research, QA, or audit column to be added afterward.
     listing_view = listing_export(export_source)
     export_view = listing_view.copy()
@@ -6966,7 +6971,7 @@ elif section == "Downloads":
 
     # Reset to the new default once after this export-layout update, then preserve
     # any choices the user makes during the rest of the session.
-    export_defaults_version = "listing_columns_v15"
+    export_defaults_version = "listing_columns_v23"
     if st.session_state.get("db_export_defaults_version") != export_defaults_version:
         st.session_state["db_custom_export_columns"] = default_columns
         st.session_state["db_export_defaults_version"] = export_defaults_version
