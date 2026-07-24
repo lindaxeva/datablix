@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Visible Source File Management 2026.07.24-v34"
+DATABLIX_BUILD = "Project Source File Mode 2026.07.24-v35"
 
 # =========================================================
 # Configuration
@@ -667,6 +667,11 @@ def _json_safe(value):
         return {"__datablix_type__": "datetime", "value": value.isoformat()}
     if isinstance(value, Path):
         return {"__datablix_type__": "path", "value": str(value)}
+    if isinstance(value, (bytes, bytearray)):
+        return {
+            "__datablix_type__": "bytes",
+            "value": base64.b64encode(bytes(value)).decode("ascii"),
+        }
     if isinstance(value, tuple):
         return {"__datablix_type__": "tuple", "value": [_json_safe(v) for v in value]}
     if isinstance(value, set):
@@ -715,6 +720,11 @@ def _from_json_safe(value):
             return raw
     if marker == "path":
         return Path(value.get("value", ""))
+    if marker == "bytes":
+        try:
+            return base64.b64decode(value.get("value", ""))
+        except Exception:
+            return b""
     if marker == "tuple":
         return tuple(_from_json_safe(v) for v in value.get("value", []))
     if marker == "set":
@@ -2043,125 +2053,79 @@ def build_research_package_bytes(
     company_source_records: pd.DataFrame,
     research_template: pd.DataFrame,
     source_meta: dict | None = None,
+    raw_source_bytes: bytes = b"",
+    raw_source_filename: str = "",
 ) -> bytes:
-    """Create a portable package using the current project-wide Starting Data."""
+    """Create a package containing the actual current project source file."""
     company_stem = safe_filename(company_name)
     prompt_name = f"{company_stem}_website_research_prompt.txt"
+    meta = source_meta if isinstance(source_meta, dict) else {}
+    source_version = safe_text(meta.get("version_label", "")) or f"v{_safe_int(meta.get('version_number', 1), 1)}"
 
-    meta = (
-        source_meta
-        if isinstance(source_meta, dict)
-        else {}
-    )
-    source_version = (
-        safe_text(meta.get("version_label", ""))
-        or f"v{_safe_int(meta.get('version_number', 1), 1)}"
-    )
-
-    project_source_name = (
-        f"project_starting_source_records_"
-        f"{safe_filename(source_version)}.csv"
-    )
-    company_source_name = (
-        f"{company_stem}_source_matches_"
-        f"{safe_filename(source_version)}.csv"
-    )
+    original_source_name = safe_text(raw_source_filename or meta.get("workbook_name", ""))
+    original_source_name = Path(original_source_name).name if original_source_name else f"project_starting_source_{source_version}.xlsx"
+    structured_source_name = f"project_starting_source_records_{safe_filename(source_version)}.csv"
+    company_source_name = f"{company_stem}_source_matches_{safe_filename(source_version)}.csv"
     template_name = f"{company_stem}_research_template.csv"
 
-    workbook_name = (
-        safe_text(meta.get("workbook_name", ""))
-        or "Starting Data workbook"
+    source_mode = safe_text(meta.get("source_mode", "")) or (
+        "Structured records + original file"
+        if isinstance(project_source_records, pd.DataFrame) and not project_source_records.empty
+        else "Original project source file"
     )
-    assignment_sheet = (
-        safe_text(meta.get("assignment_sheet", ""))
-        or "Not recorded"
-    )
+    structured_count = len(project_source_records) if isinstance(project_source_records, pd.DataFrame) else 0
+    company_match_count = len(company_source_records) if isinstance(company_source_records, pd.DataFrame) else 0
 
-    company_match_count = (
-        len(company_source_records)
-        if isinstance(company_source_records, pd.DataFrame)
-        else 0
-    )
-
-    readme = f"""DATABLIX RESEARCH PACKAGE
-
-ACTIVE COMPANY
-{company_name}
-
-CURRENT PROJECT SOURCE
-Source version: {source_version}
-Workbook: {workbook_name}
-Assignment sheet: {assignment_sheet}
-Project source records: {len(project_source_records):,}
-Company-specific source matches: {company_match_count:,}
-
-FILES
-1. {prompt_name}
-   Complete research instructions for {company_name}.
-
-2. {project_source_name}
-   The CURRENT PROJECT-WIDE Starting Data. This file must be used for every
-   company research cycle. It is the project's source/reconciliation dataset.
-
-3. {company_source_name if company_match_count else '[No separate company-match file]'}
-   A convenience slice containing source rows Datablix matched to the active
-   company. When no direct matches are found, use the project-wide source file
-   to identify aliases, renamed owners/managers, and related records.
-
-4. {template_name}
-   Required structure for the returned research CSV.
-
-HOW TO USE THIS PACKAGE
-1. Upload the research prompt and the PROJECT source CSV to your AI research tool.
-2. Use the project source CSV for the active company, even though the file contains
-   records for the entire project.
-3. First identify/reconcile source rows belonging to {company_name}. Match by
-   Management/Owner and known aliases, then use address/postal code/property identity
-   to prevent false duplicates.
-4. Do NOT assume a source row is still current merely because it exists in the source.
-5. After source reconciliation, search current authoritative sources for additional
-   legitimate properties missing from the project source.
-6. Return the completed research as CSV using the required headings.
-7. Import the completed CSV back into Datablix for human review.
-
-IMPORTANT
-The project-wide source is a STARTING POINT and duplicate/reconciliation reference.
-It is not a ceiling on discovery and is not proof that every listed property is current.
-"""
+    readme_lines = [
+        "DATABLIX RESEARCH PACKAGE",
+        "",
+        "ACTIVE COMPANY",
+        company_name,
+        "",
+        "CURRENT PROJECT SOURCE",
+        f"Source version: {source_version}",
+        f"Source mode: {source_mode}",
+        f"Original project source file: {original_source_name}",
+        f"Structured source rows detected by Datablix: {structured_count:,}",
+        f"Company-specific source matches detected: {company_match_count:,}",
+        "",
+        "HOW TO USE THIS PACKAGE",
+        "1. Upload the research prompt AND the original project source file to your AI research tool.",
+        "2. The source file belongs to the entire project and must be considered for every company.",
+        f"3. For {company_name}, identify relevant source entries using company/owner names, aliases, addresses, postal codes, property names, URLs, and other identity evidence.",
+        "4. Do not assume a source entry is current merely because it appears in the source.",
+        "5. Reconcile relevant source entries first.",
+        "6. Then search current authoritative sources for additional legitimate properties missing from the project source.",
+        "7. Return the completed research as CSV using the required headings.",
+        "8. Import that CSV back into Datablix for human review.",
+        "",
+        "FILES",
+        f"- {prompt_name}: company-specific research instructions.",
+        f"- {original_source_name}: the actual current project-wide Starting Data file.",
+    ]
+    if structured_count:
+        readme_lines.append(f"- {structured_source_name}: normalized project source rows Datablix could parse from the original file.")
+    if company_match_count:
+        readme_lines.append(f"- {company_source_name}: convenience subset Datablix matched to {company_name}.")
+    readme_lines += [
+        f"- {template_name}: required structure for the returned research CSV.",
+        "",
+        "IMPORTANT",
+        "The original project source file is the authoritative starting reference for this research cycle. Structured CSV extracts are conveniences only and may not capture every sheet, note, alias, or layout element in the original source file.",
+    ]
+    readme = "\n".join(readme_lines)
 
     buffer = io.BytesIO()
-    with zipfile.ZipFile(
-        buffer,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-    ) as package:
-        package.writestr(
-            prompt_name,
-            prompt_text.encode("utf-8"),
-        )
-        package.writestr(
-            project_source_name,
-            project_source_records.to_csv(index=False).encode("utf-8-sig"),
-        )
-
-        if (
-            isinstance(company_source_records, pd.DataFrame)
-            and not company_source_records.empty
-        ):
-            package.writestr(
-                company_source_name,
-                company_source_records.to_csv(index=False).encode("utf-8-sig"),
-            )
-
-        package.writestr(
-            template_name,
-            research_template.to_csv(index=False).encode("utf-8-sig"),
-        )
-        package.writestr(
-            "README.txt",
-            readme.encode("utf-8"),
-        )
-
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as package:
+        package.writestr(prompt_name, prompt_text.encode("utf-8"))
+        if isinstance(raw_source_bytes, (bytes, bytearray)) and raw_source_bytes:
+            package.writestr(original_source_name, bytes(raw_source_bytes))
+        if isinstance(project_source_records, pd.DataFrame) and not project_source_records.empty:
+            package.writestr(structured_source_name, project_source_records.to_csv(index=False).encode("utf-8-sig"))
+        if isinstance(company_source_records, pd.DataFrame) and not company_source_records.empty:
+            package.writestr(company_source_name, company_source_records.to_csv(index=False).encode("utf-8-sig"))
+        package.writestr(template_name, research_template.to_csv(index=False).encode("utf-8-sig"))
+        package.writestr("README.txt", readme.encode("utf-8"))
     return buffer.getvalue()
 
 
@@ -4038,19 +4002,80 @@ def _registry_match_index(owner_name: str, registry: pd.DataFrame):
     return None
 
 
+def _read_source_table_with_detected_header(
+    data: bytes,
+    sheet_name: str,
+) -> pd.DataFrame:
+    """Read a project source table even when headings do not start on row 1."""
+    raw = pd.read_excel(
+        io.BytesIO(data),
+        sheet_name=sheet_name,
+        header=None,
+        engine="openpyxl",
+    )
+    if raw.empty:
+        return pd.DataFrame()
+
+    alias_groups = [
+        ALIASES["Building Name"],
+        ALIASES["Management/Owner"],
+        ALIASES["Street Address"],
+        ALIASES["City"],
+        COMBINED_LOCATION_ALIASES,
+        ALIASES["Website"],
+        ALIASES["Phone"],
+        ALIASES["Number of Apartments"],
+        ALIASES["Building Classification"],
+    ]
+    normalized_groups = [
+        {norm_header(alias) for alias in aliases if norm_header(alias)}
+        for aliases in alias_groups
+    ]
+
+    best_row = None
+    best_score = 0
+    for idx in range(min(len(raw), 25)):
+        row_values = [
+            norm_header(value)
+            for value in raw.iloc[idx].tolist()
+            if safe_text(value)
+        ]
+        row_values = [value for value in row_values if value]
+        if not row_values:
+            continue
+
+        score = 0
+        for group in normalized_groups:
+            if any(
+                cell in group
+                or any(len(alias) >= 4 and (alias in cell or cell in alias) for alias in group)
+                for cell in row_values
+            ):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_row = idx
+
+    if best_row is None or best_score < 2:
+        return pd.DataFrame()
+
+    return prepare_data(
+        pd.read_excel(
+            io.BytesIO(data),
+            sheet_name=sheet_name,
+            header=int(best_row),
+            engine="openpyxl",
+        )
+    )
+
+
 def _source_sheet_structure_score(
     data: bytes,
     sheet_name: str,
 ) -> tuple[int, bool]:
-    """Score a worksheet by the property-table columns Datablix can map."""
+    """Score a worksheet using the property table Datablix can actually parse."""
     try:
-        sample = pd.read_excel(
-            io.BytesIO(data),
-            sheet_name=sheet_name,
-            nrows=30,
-            engine="openpyxl",
-        )
-        sample = prepare_data(sample)
+        sample = _read_source_table_with_detected_header(data, sheet_name)
     except Exception:
         return 0, False
 
@@ -4068,25 +4093,12 @@ def _source_sheet_structure_score(
         "apartments": ALIASES["Number of Apartments"],
         "classification": ALIASES["Building Classification"],
     }
-
-    found = {
-        key: bool(source_columns(sample, aliases))
-        for key, aliases in groups.items()
-    }
-
+    found = {key: bool(source_columns(sample, aliases)) for key, aliases in groups.items()}
     score = sum(int(value) for value in found.values())
-
-    # Require an address plus at least one other property-identity signal.
-    strong_identity = (
-        found["address"]
-        and (
-            found["owner"]
-            or found["building"]
-            or found["city"]
-            or found["location"]
-        )
+    identity_signals = sum(int(found[key]) for key in ["building", "owner", "address", "city", "location"])
+    strong_identity = identity_signals >= 2 or (
+        found["owner"] and (found["website"] or found["phone"] or found["apartments"])
     )
-
     return score, strong_identity
 
 
@@ -4114,7 +4126,7 @@ def _find_source_building_sheet(
     # First try likely worksheet names, but verify their columns.
     named_candidates = []
     for name in sheet_names:
-        if safe_text(name) == safe_text(assignment_sheet):
+        if len(sheet_names) > 1 and safe_text(name) == safe_text(assignment_sheet):
             continue
 
         normalized = norm_header(name)
@@ -4135,11 +4147,12 @@ def _find_source_building_sheet(
 
     # Fallback: ignore the title entirely and inspect worksheet structure.
     reserved = {
-        norm_header(assignment_sheet),
         "listofcompanies",
         "buildingclassifications",
         "classificationrules",
     }
+    if len(sheet_names) > 1 and safe_text(assignment_sheet):
+        reserved.add(norm_header(assignment_sheet))
 
     structural_candidates = []
     for name in sheet_names:
@@ -4244,65 +4257,65 @@ def _parse_classification_rules(data: bytes, sheet_name: str | None) -> pd.DataF
     return pd.DataFrame(rows)
 
 
-def _source_baseline_from_workbook(data: bytes, assignment_sheet: str, existing_registry=None):
-    """Extract assigned companies, their starting building records, and classification rules."""
+def _source_baseline_from_workbook(
+    data: bytes,
+    assignment_sheet: str = "",
+    existing_registry=None,
+):
+    """Read project-wide Starting Data without requiring a special workbook layout."""
     with pd.ExcelFile(io.BytesIO(data), engine="openpyxl") as workbook:
         sheet_names = workbook.sheet_names
 
-    building_sheet = _find_source_building_sheet(
-        data,
-        sheet_names,
-        assignment_sheet=assignment_sheet,
+    building_sheet = _find_source_building_sheet(data, sheet_names, assignment_sheet=assignment_sheet)
+    classification_sheet = _find_classification_sheet(data, sheet_names)
+
+    current_registry = normalize_company_registry(
+        existing_registry if isinstance(existing_registry, pd.DataFrame) else empty_company_registry()
     )
+    incoming_registry = empty_company_registry()
+
+    if (
+        safe_text(assignment_sheet)
+        and len(sheet_names) > 1
+        and safe_text(assignment_sheet) != safe_text(building_sheet)
+    ):
+        try:
+            incoming_registry = _assignment_registry_from_block_sheet(data, assignment_sheet)
+        except Exception:
+            incoming_registry = empty_company_registry()
+
+    registry = _merge_assignment_registry(current_registry, incoming_registry)
+    rules = _parse_classification_rules(data, classification_sheet)
+
     if not building_sheet:
-        detected = ", ".join(
-            f"'{safe_text(name)}'"
-            for name in sheet_names
-        )
-        raise ValueError(
-            "Datablix could not identify a worksheet containing the project building records. "
-            "The tab does not need a specific name, but its first row should contain property "
-            "headings such as Street Address plus Building Name, Management/Owner, City, "
-            "or City and Postal Code. "
-            f"Worksheets detected: {detected}"
-        )
+        return pd.DataFrame(columns=INTERNAL_COLUMNS), registry, rules, pd.DataFrame(), ""
 
-    classification_sheet = _find_classification_sheet(
-        data,
-        sheet_names,
-    )
+    source_df = _read_source_table_with_detected_header(data, building_sheet)
+    if source_df.empty:
+        return pd.DataFrame(columns=INTERNAL_COLUMNS), registry, rules, pd.DataFrame(), building_sheet
 
-    incoming_registry = _assignment_registry_from_block_sheet(data, assignment_sheet)
-    registry = _merge_assignment_registry(existing_registry, incoming_registry)
+    try:
+        validate_input(source_df)
+        mapped, mapping = map_schema(source_df)
+    except Exception:
+        return pd.DataFrame(columns=INTERNAL_COLUMNS), registry, rules, pd.DataFrame(), building_sheet
 
-    source_df = pd.read_excel(
-        io.BytesIO(data),
-        sheet_name=building_sheet,
-        engine="openpyxl",
-    )
-    source_df = prepare_data(source_df)
-    validate_input(source_df)
-    mapped, mapping = map_schema(source_df)
+    if registry.empty:
+        try:
+            registry = company_registry_from_assignment(source_df)
+        except Exception:
+            registry = empty_company_registry()
 
-    matched_rows = []
-    for idx, row in mapped.iterrows():
-        match_index = _registry_match_index(
-            safe_text(row.get("Management/Owner", "")),
-            registry,
-        )
-        if match_index is None:
-            continue
-        company = registry.loc[match_index]
-        copied = row.copy()
-        copied["Company ID"] = company["Company ID"]
-        copied["Management/Owner"] = company["Management/Owner"]
-        matched_rows.append(copied)
+    baseline = mapped.copy()
+    if not registry.empty:
+        for idx, row in baseline.iterrows():
+            match_index = _registry_match_index(safe_text(row.get("Management/Owner", "")), registry)
+            if match_index is None:
+                continue
+            company = registry.loc[match_index]
+            baseline.at[idx, "Company ID"] = company["Company ID"]
+            baseline.at[idx, "Management/Owner"] = company["Management/Owner"]
 
-    baseline = (
-        pd.DataFrame(matched_rows)
-        if matched_rows
-        else pd.DataFrame(columns=mapped.columns)
-    )
     for column in INTERNAL_COLUMNS:
         if column not in baseline.columns:
             baseline[column] = pd.NA
@@ -4314,8 +4327,6 @@ def _source_baseline_from_workbook(data: bytes, assignment_sheet: str, existing_
     baseline["Verification Status"] = "Needs Review"
     baseline["Record Decision"] = "Undecided"
     baseline = ensure_ids(baseline)
-
-    rules = _parse_classification_rules(data, classification_sheet)
     return baseline, registry, rules, mapping, building_sheet
 
 
@@ -4337,6 +4348,11 @@ def _source_versions_state() -> list[dict]:
         records = item.get("records")
         rules = item.get("rules")
         meta = item.get("meta", {})
+        raw_bytes = item.get("raw_bytes", b"")
+        raw_filename = safe_text(item.get("raw_filename", meta.get("workbook_name", "")))
+
+        if not isinstance(raw_bytes, (bytes, bytearray)):
+            raw_bytes = b""
 
         if not isinstance(records, pd.DataFrame):
             records = pd.DataFrame()
@@ -4361,6 +4377,8 @@ def _source_versions_state() -> list[dict]:
             "meta": dict(meta),
             "records": records.copy(),
             "rules": rules.copy(),
+            "raw_bytes": bytes(raw_bytes),
+            "raw_filename": raw_filename,
         })
 
     # Migrate pre-v30 projects to a single preserved v1.
@@ -4393,6 +4411,8 @@ def _source_versions_state() -> list[dict]:
                     if isinstance(legacy_rules, pd.DataFrame)
                     else pd.DataFrame()
                 ),
+                "raw_bytes": b"",
+                "raw_filename": safe_text(meta.get("workbook_name", "")),
             }]
 
     if normalized and not any(bool(v.get("is_active")) for v in normalized):
@@ -4503,6 +4523,8 @@ def _source_versions_meta_frame(versions: list[dict]) -> pd.DataFrame:
             "Imported At": safe_text(meta.get("imported_at", "")),
             "Assigned Companies": _safe_int(meta.get("assigned_companies", 0)),
             "Source Records": _safe_int(meta.get("source_records", 0)),
+            "Project Company Source Records": _safe_int(meta.get("project_company_source_records", meta.get("source_records", 0))),
+            "Source Mode": safe_text(meta.get("source_mode", "Structured records")),
             "Classification Rules": _safe_int(meta.get("classification_rules", 0)),
             "Source Hash": safe_text(meta.get("source_hash", "")),
         })
@@ -4661,6 +4683,32 @@ def _restore_source_versions_from_workbook(
     return versions
 
 
+def _source_records_for_project_companies(
+    source_records: pd.DataFrame,
+    registry: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return source rows relevant to registered project companies."""
+    if not isinstance(source_records, pd.DataFrame) or source_records.empty:
+        return pd.DataFrame(columns=source_records.columns if isinstance(source_records, pd.DataFrame) else [])
+    if not isinstance(registry, pd.DataFrame) or registry.empty:
+        return source_records.copy()
+
+    matched_rows = []
+    for _, row in source_records.iterrows():
+        match_index = _registry_match_index(safe_text(row.get("Management/Owner", "")), registry)
+        if match_index is None:
+            continue
+        company = registry.loc[match_index]
+        copied = row.copy()
+        copied["Company ID"] = company["Company ID"]
+        copied["Management/Owner"] = company["Management/Owner"]
+        matched_rows.append(copied)
+
+    if not matched_rows:
+        return pd.DataFrame(columns=source_records.columns)
+    return ensure_ids(normalize_workflow(pd.DataFrame(matched_rows)))
+
+
 def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFrame:
     """Preserve current research while adding unmatched source records and marking source matches."""
     current = normalize_workflow(current.copy()) if isinstance(current, pd.DataFrame) else normalize_workflow(pd.DataFrame(columns=INTERNAL_COLUMNS))
@@ -4715,211 +4763,138 @@ def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.Data
     return classify_discovery_status(out, baseline)
 
 
-def import_source_baseline_workbook(uploaded, assignment_sheet: str) -> dict:
-    """Add versioned Starting Data without destroying prior source history."""
+def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dict:
+    """Add versioned project-wide Starting Data without requiring a special workbook layout."""
     data = uploaded.getvalue()
     source_hash = hashlib.sha256(data).hexdigest()
-    current_registry = st.session_state.get(
-        S_COMPANIES,
-        empty_company_registry(),
+    current_registry = st.session_state.get(S_COMPANIES, empty_company_registry())
+
+    project_source, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
+        data, assignment_sheet, current_registry
     )
-
-    baseline, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
-        data,
-        assignment_sheet,
-        current_registry,
-    )
-
-    if baseline.empty:
-        raise ValueError(
-            "No source building records matched the companies in the selected assignment sheet."
-        )
-
     versions = _source_versions_state()
 
-    # The exact same workbook + assignment is reused, not duplicated.
-    existing_match = None
-    for version in versions:
-        meta = version.get("meta", {})
-        if (
-            safe_text(meta.get("source_hash", "")) == source_hash
-            and safe_text(meta.get("assignment_sheet", ""))
-            == safe_text(assignment_sheet)
-        ):
-            existing_match = version
-            break
-
+    existing_match = next(
+        (v for v in versions if safe_text(v.get("meta", {}).get("source_hash", "")) == source_hash),
+        None,
+    )
     if existing_match is not None:
+        # Older Datablix versions may have saved the structured source without
+        # retaining the original workbook bytes. Re-importing the same source
+        # hydrates that historical version instead of creating a duplicate.
+        if not isinstance(existing_match.get("raw_bytes"), (bytes, bytearray)) or not existing_match.get("raw_bytes"):
+            existing_match["raw_bytes"] = bytes(data)
+            existing_match["raw_filename"] = uploaded.name
+            if isinstance(existing_match.get("meta"), dict):
+                existing_match["meta"]["raw_source_available"] = True
+                existing_match["meta"]["workbook_name"] = uploaded.name
+
         for version in versions:
-            active = (
-                int(version.get("version_number", 0))
-                == int(existing_match.get("version_number", 0))
-            )
+            active = int(version.get("version_number", 0)) == int(existing_match.get("version_number", 0))
             version["is_active"] = active
             if isinstance(version.get("meta"), dict):
                 version["meta"]["is_active"] = active
-
         st.session_state[S_SOURCE_VERSIONS] = versions
-        st.session_state[S_ORIGINAL] = existing_match["records"].copy()
-        st.session_state[S_SOURCE_BASELINE_META] = dict(
-            existing_match.get("meta", {})
-        )
-        st.session_state[S_CLASSIFICATION_RULES] = (
-            existing_match["rules"].copy()
-        )
 
-        current = st.session_state.get(
-            S_WORKING,
-            pd.DataFrame(columns=INTERNAL_COLUMNS),
-        )
-        merged = _merge_source_baseline_with_working(
-            current,
-            existing_match["records"],
-        )
-        st.session_state[S_WORKING] = ensure_ids(
-            normalize_workflow(merged)
-        )
+        existing_records = existing_match.get("records", pd.DataFrame())
+        if not isinstance(existing_records, pd.DataFrame):
+            existing_records = pd.DataFrame()
+        st.session_state[S_ORIGINAL] = existing_records.copy()
+        st.session_state[S_SOURCE_BASELINE_META] = dict(existing_match.get("meta", {}))
+        existing_rules = existing_match.get("rules", pd.DataFrame())
+        st.session_state[S_CLASSIFICATION_RULES] = existing_rules.copy() if isinstance(existing_rules, pd.DataFrame) else pd.DataFrame()
+
+        current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
+        relevant = _source_records_for_project_companies(existing_records, current_registry)
+        if not relevant.empty:
+            st.session_state[S_WORKING] = ensure_ids(
+                normalize_workflow(_merge_source_baseline_with_working(current, relevant))
+            )
         autosave_current_project()
-
+        meta = existing_match.get("meta", {})
         return {
-            "assigned_companies": _safe_int(
-                existing_match["meta"].get("assigned_companies", 0)
-            ),
-            "source_records": _safe_int(
-                existing_match["meta"].get("source_records", 0)
-            ),
-            "working_records": len(st.session_state[S_WORKING]),
-            "classification_rules": _safe_int(
-                existing_match["meta"].get("classification_rules", 0)
-            ),
-            "version_number": int(
-                existing_match.get("version_number", 1)
-            ),
-            "version_label": safe_text(
-                existing_match.get("version_label", "v1")
-            ),
+            "assigned_companies": _safe_int(meta.get("assigned_companies", len(current_registry))),
+            "source_records": _safe_int(meta.get("source_records", len(existing_records))),
+            "project_company_source_records": _safe_int(meta.get("project_company_source_records", len(relevant))),
+            "working_records": len(st.session_state.get(S_WORKING, current)),
+            "classification_rules": _safe_int(meta.get("classification_rules", 0)),
+            "version_number": int(existing_match.get("version_number", 1)),
+            "version_label": safe_text(existing_match.get("version_label", "v1")),
+            "source_mode": safe_text(meta.get("source_mode", "Structured records" if not existing_records.empty else "Original project source file")),
             "duplicate_version": True,
         }
 
-    next_number = (
-        max(
-            (int(v.get("version_number", 0)) for v in versions),
-            default=0,
-        )
-        + 1
-    )
+    next_number = max((int(v.get("version_number", 0)) for v in versions), default=0) + 1
     version_label = f"v{next_number}"
-
-    # The newest import becomes current; older sources remain preserved.
     for version in versions:
         version["is_active"] = False
         if isinstance(version.get("meta"), dict):
             version["meta"]["is_active"] = False
 
+    relevant = _source_records_for_project_companies(project_source, registry) if not project_source.empty else pd.DataFrame()
+    source_mode = "Structured records + original file" if not project_source.empty else "Original project source file"
     meta = {
         "version_number": next_number,
         "version_label": version_label,
         "is_original": next_number == 1,
         "is_active": True,
         "workbook_name": uploaded.name,
-        "assignment_sheet": assignment_sheet,
-        "building_sheet": building_sheet,
+        "assignment_sheet": safe_text(assignment_sheet),
+        "building_sheet": safe_text(building_sheet),
         "imported_at": datetime.now().isoformat(timespec="seconds"),
-        "assigned_companies": len(
-            registry.loc[
-                registry["Scope Type"].eq("Initial assignment")
-            ]
-        ),
-        "source_records": len(baseline),
+        "assigned_companies": len(registry),
+        "source_records": len(project_source),
+        "project_company_source_records": len(relevant),
         "classification_rules": len(rules),
         "source_hash": source_hash,
+        "source_mode": source_mode,
+        "raw_source_available": True,
     }
-
     versions.append({
         "version_number": next_number,
         "version_label": version_label,
         "is_original": next_number == 1,
         "is_active": True,
         "meta": dict(meta),
-        "records": baseline.copy(),
+        "records": project_source.copy(),
         "rules": rules.copy(),
+        "raw_bytes": bytes(data),
+        "raw_filename": uploaded.name,
     })
     st.session_state[S_SOURCE_VERSIONS] = versions
 
-    current = st.session_state.get(
-        S_WORKING,
-        pd.DataFrame(columns=INTERNAL_COLUMNS),
-    )
-    merged = _merge_source_baseline_with_working(
-        current,
-        baseline,
-    )
+    current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
+    merged = _merge_source_baseline_with_working(current, relevant) if not relevant.empty else ensure_ids(normalize_workflow(current.copy()))
+    if not project_source.empty:
+        merged = classify_discovery_status(merged, project_source)
 
-    for idx, row in merged.iterrows():
-        match_index = _registry_match_index(
-            safe_text(row.get("Management/Owner", "")),
-            registry,
-        )
-        if match_index is not None:
-            company = registry.loc[match_index]
-            merged.at[idx, "Company ID"] = company["Company ID"]
-            merged.at[idx, "Management/Owner"] = company[
-                "Management/Owner"
-            ]
-
-    merged = ensure_ids(normalize_workflow(merged))
-    merged = classify_discovery_status(
-        merged,
-        baseline,
-    )
-
-    # S_ORIGINAL remains the current source for backward compatibility.
-    # Full source history is preserved in S_SOURCE_VERSIONS.
-    st.session_state[S_ORIGINAL] = baseline.copy()
+    st.session_state[S_ORIGINAL] = project_source.copy()
     st.session_state[S_WORKING] = merged
-    st.session_state[S_COMPANIES] = normalize_company_registry(
-        registry
-    )
-    st.session_state[S_MAPPING] = mapping
-    st.session_state[S_SOURCE_TYPE] = "Versioned source workbook"
+    st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+    st.session_state[S_MAPPING] = mapping if isinstance(mapping, pd.DataFrame) else pd.DataFrame()
+    st.session_state[S_SOURCE_TYPE] = "Versioned project source file"
     st.session_state[S_SOURCE_REF] = uploaded.name
-    st.session_state[S_SHEET] = assignment_sheet
+    st.session_state[S_SHEET] = safe_text(assignment_sheet)
     st.session_state[S_CLASSIFICATION_RULES] = rules
     st.session_state[S_SOURCE_BASELINE_META] = dict(meta)
     st.session_state[S_PROJECT_LOADED] = True
-
-    if st.session_state.get(S_FILE) in {
-        None,
-        "",
-        "blank-workspace",
-    }:
-        st.session_state[S_FILE] = (
-            "source-baseline:"
-            + source_hash
-            + f":{assignment_sheet}"
-        )
+    if st.session_state.get(S_FILE) in {None, "", "blank-workspace"}:
+        st.session_state[S_FILE] = "project-source:" + source_hash
         st.session_state[S_NAME] = uploaded.name
-
     if not registry.empty:
-        active_id = safe_text(
-            st.session_state.get(S_ACTIVE_COMPANY, "")
-        )
-        if active_id not in set(
-            registry["Company ID"].astype(str)
-        ):
-            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0][
-                "Company ID"
-            ]
-
+        active_id = safe_text(st.session_state.get(S_ACTIVE_COMPANY, ""))
+        if active_id not in set(registry["Company ID"].astype(str)):
+            st.session_state[S_ACTIVE_COMPANY] = registry.iloc[0]["Company ID"]
     autosave_current_project()
-
     return {
-        "assigned_companies": int(meta["assigned_companies"]),
-        "source_records": int(meta["source_records"]),
+        "assigned_companies": len(registry),
+        "source_records": len(project_source),
+        "project_company_source_records": len(relevant),
         "working_records": len(merged),
-        "classification_rules": int(meta["classification_rules"]),
+        "classification_rules": len(rules),
         "version_number": next_number,
         "version_label": version_label,
+        "source_mode": source_mode,
         "duplicate_version": False,
     }
 
@@ -6992,14 +6967,13 @@ if section == "Research projects & companies":
             if len(source_versions) > 1:
                 st.success(
                     f"Starting data ready · Current source "
-                    f"{current_version} · {source_count:,} records · "
+                    f"{current_version} · Project source file preserved · "
                     "Original v1 preserved"
                 )
             else:
                 st.success(
                     f"Starting data ready · Source "
-                    f"{current_version} (original & current) · "
-                    f"{source_count:,} records"
+                    f"{current_version} (original & current) · Project source file preserved"
                 )
 
             st.caption(
@@ -7013,11 +6987,11 @@ if section == "Research projects & companies":
             ):
                 source_metrics = st.columns(3)
                 source_metrics[0].metric(
-                    "Original source records",
+                    "Original structured rows",
                     f"{original_count:,}",
                 )
                 source_metrics[1].metric(
-                    "Current source records",
+                    "Current structured rows",
                     f"{source_count:,}",
                 )
                 source_metrics[2].metric(
@@ -7062,6 +7036,7 @@ if section == "Research projects & companies":
                                     "Imported At",
                                     "Assigned Companies",
                                     "Source Records",
+                                    "Source Mode",
                                 ]
                             ],
                             width="stretch",
@@ -7179,85 +7154,79 @@ if section == "Research projects & companies":
             expanded=starting_data_expanded,
         ):
             st.write(
-                "Upload the multi-sheet source workbook and choose your assignment sheet. "
-                "The first import becomes v1, your preserved original baseline. Later changed "
-                "workbooks become v2, v3, and so on. Existing research and earlier source "
-                "versions remain preserved."
+                "Upload the project-wide Starting Data file. It can be a multi-sheet workbook "
+                "or a single-sheet workbook. Datablix keeps the original file for every company "
+                "research package and extracts structured building rows when possible."
             )
             source_workbook_upload = st.file_uploader(
-                "Original source workbook",
+                "Project source file",
                 type=["xlsx"],
                 key=f"db_source_baseline_upload_{project_context_token}",
             )
             if source_workbook_upload is not None:
+                source_assignment_sheet = ""
                 try:
-                    assignment_options = source_assignment_sheet_candidates(
-                        source_workbook_upload
-                    )
+                    workbook_sheets = excel_sheet_names(source_workbook_upload)
+                    assignment_options = source_assignment_sheet_candidates(source_workbook_upload)
                 except Exception as error:
+                    workbook_sheets = []
                     assignment_options = []
                     st.error(str(error))
 
-                if assignment_options:
-                    source_assignment_sheet = st.selectbox(
-                        "Your assignment sheet",
-                        assignment_options,
-                        key=f"db_source_assignment_sheet_{project_context_token}",
-                        help="Choose the worksheet containing the companies assigned to you.",
+                if len(workbook_sheets) > 1:
+                    company_scope_options = ["Use current project companies"] + [
+                        f"Use assignment sheet: {name}" for name in assignment_options
+                    ]
+                    company_scope_choice = st.selectbox(
+                        "Company scope for matching",
+                        company_scope_options,
+                        key=f"db_source_company_scope_{project_context_token}",
+                        help=(
+                            "Starting Data belongs to the whole project. Use your current Datablix "
+                            "company list by default. Choose an assignment sheet only when you need "
+                            "Datablix to add or update companies from that sheet."
+                        ),
                     )
-                    if has_records:
-                        st.caption(
-                            "Your current research records will not be discarded. Datablix will "
-                            "match them to the source records, preserve your reviewed values, and "
-                            "add only source records that are not already represented."
-                        )
-                    import_label = (
-                        "Add updated source"
-                        if source_meta
-                        else "Import starting data"
+                    if company_scope_choice.startswith("Use assignment sheet: "):
+                        source_assignment_sheet = company_scope_choice.split(": ", 1)[1]
+                elif len(workbook_sheets) == 1:
+                    st.caption(
+                        f"Single project-source worksheet detected: {workbook_sheets[0]}. "
+                        "No assignment worksheet is required."
                     )
-                    if st.button(
-                        import_label,
-                        type="primary",
-                        width="stretch",
-                        key=f"db_import_source_baseline_{project_context_token}",
-                    ):
-                        try:
-                            result = import_source_baseline_workbook(
-                                source_workbook_upload,
-                                source_assignment_sheet,
-                            )
-                            if result.get(
-                                "duplicate_version"
-                            ):
+
+                if has_records:
+                    st.caption(
+                        "Your current research records will not be discarded. Datablix keeps the "
+                        "project source separately, reconciles matching source records, and preserves "
+                        "your reviewed values."
+                    )
+
+                import_label = "Add updated source" if source_meta else "Import starting data"
+                if st.button(import_label, type="primary", width="stretch", key=f"db_import_source_baseline_{project_context_token}"):
+                    try:
+                        result = import_source_baseline_workbook(source_workbook_upload, source_assignment_sheet)
+                        if result.get("duplicate_version"):
+                            st.session_state[S_FLASH] = f"Source {result['version_label']} is already saved and is now the current project source."
+                        else:
+                            structured_count = int(result.get("source_records", 0) or 0)
+                            relevant_count = int(result.get("project_company_source_records", 0) or 0)
+                            if structured_count:
                                 st.session_state[S_FLASH] = (
-                                    f"Source {result['version_label']} "
-                                    "is already saved and is now the "
-                                    "current research source. "
-                                    f"{result['source_records']:,} "
-                                    "source records are available."
+                                    f"Source {result['version_label']} saved as the current project source. "
+                                    f"Datablix parsed {structured_count:,} project source row(s), with "
+                                    f"{relevant_count:,} matching the current project companies. The "
+                                    "original source file is preserved for every company research package."
                                 )
                             else:
                                 st.session_state[S_FLASH] = (
-                                    f"Source {result['version_label']} "
-                                    "saved: "
-                                    f"{result['assigned_companies']:,} "
-                                    "assigned companies and "
-                                    f"{result['source_records']:,} "
-                                    "source records. Earlier source "
-                                    "versions and current research "
-                                    "were preserved."
+                                    f"Source {result['version_label']} saved as the current project-wide source file. "
+                                    "Datablix could not reliably convert it into building rows, so the original "
+                                    "file will be supplied directly in every company research package instead of being rejected."
                                 )
-                            st.rerun()
-                        except Exception as error:
-                            st.error(
-                                "Starting data import could not be completed. "
-                                f"{error}"
-                            )
-                            st.caption(
-                                "Your current research has not been deleted or overwritten. "
-                                "Check the workbook and assignment sheet, then try the import again."
-                            )
+                        st.rerun()
+                    except Exception as error:
+                        st.error("Starting data import could not be completed. " + str(error))
 
     st.subheader("Companies in this project")
     registry_main = normalize_company_registry(st.session_state.get(S_COMPANIES))
@@ -7848,18 +7817,23 @@ elif section == "Website scanner":
     if isinstance(active_source_version, dict):
         source_meta = dict(active_source_version.get("meta", {}))
         project_source_records = active_source_version.get("records")
+        raw_project_source_bytes = active_source_version.get("raw_bytes", b"")
+        raw_project_source_filename = safe_text(active_source_version.get("raw_filename", source_meta.get("workbook_name", "")))
     else:
         source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
         project_source_records = st.session_state.get(S_ORIGINAL)
+        raw_project_source_bytes = b""
+        raw_project_source_filename = safe_text(source_meta.get("workbook_name", "") if isinstance(source_meta, dict) else "")
 
     if not isinstance(source_meta, dict):
         source_meta = {}
     if not isinstance(project_source_records, pd.DataFrame):
         project_source_records = pd.DataFrame()
+    if not isinstance(raw_project_source_bytes, (bytes, bytearray)):
+        raw_project_source_bytes = b""
 
-    has_project_source = (
-        bool(source_meta)
-        and not project_source_records.empty
+    has_project_source = bool(source_meta) and (
+        not project_source_records.empty or bool(raw_project_source_bytes)
     )
 
     source_records_for_prompt = (
@@ -7891,8 +7865,9 @@ elif section == "Website scanner":
         )
     )
     project_source_filename = (
-        f"project_starting_source_records_"
-        f"{safe_filename(active_source_version_label)}.csv"
+        Path(raw_project_source_filename).name
+        if raw_project_source_filename
+        else f"project_starting_source_records_{safe_filename(active_source_version_label)}.csv"
     )
     company_source_filename = (
         f"{safe_filename(company_name)}_source_matches_"
@@ -7908,9 +7883,9 @@ elif section == "Website scanner":
     if source_lines:
         known_default = "\n".join(source_lines)
         known_records_context = (
-            f"The current Starting Data is PROJECT-WIDE and contains "
-            f"{len(project_source_records):,} source record(s). The companion file "
+            f"The current Starting Data is PROJECT-WIDE. The companion project source file "
             f"'{project_source_filename}' MUST be used for this company research cycle. "
+            f"Datablix parsed {len(project_source_records):,} structured source row(s) from it. "
             f"Datablix also matched {len(source_records_for_prompt):,} source row(s) directly "
             f"to {company_name}; those matches are listed below and may also be supplied in "
             f"'{company_source_filename}'. Reconcile them against current official evidence, "
@@ -7924,9 +7899,9 @@ elif section == "Website scanner":
     elif has_project_source:
         known_default = ""
         known_records_context = (
-            f"The current Starting Data is PROJECT-WIDE and contains "
-            f"{len(project_source_records):,} source record(s). The companion file "
+            f"The current Starting Data is PROJECT-WIDE. The companion project source file "
             f"'{project_source_filename}' MUST still be used for {company_name}. "
+            f"Datablix parsed {len(project_source_records):,} structured source row(s) from it. "
             "Datablix did not find a direct company-name match, so inspect the project source "
             "for aliases, renamed owners/managers, related entities, and matching property "
             "addresses before concluding that no source records exist for this company."
@@ -8131,12 +8106,13 @@ elif section == "Website scanner":
             company_source_records=source_records_for_prompt,
             research_template=research_template_df,
             source_meta=source_meta,
+            raw_source_bytes=bytes(raw_project_source_bytes),
+            raw_source_filename=raw_project_source_filename,
         )
 
         st.download_button(
             (
-                f"Download research package — "
-                f"{len(project_source_records):,} project source record(s)"
+                "Download research package — prompt + project source"
             ),
             data=package_bytes,
             file_name=f"{safe_filename(company_name)}_research_package.zip",
@@ -8154,48 +8130,33 @@ elif section == "Website scanner":
             )
         else:
             st.caption(
-                "The package includes the full project source, research prompt, template, "
-                "and README. No direct company-name matches were found automatically, so the "
-                "prompt instructs the AI to inspect the project source for aliases and address matches."
+                "The package includes the original project source file, research prompt, template, "
+                "and README. If Datablix cannot parse or directly match source rows, the original "
+                "source file is still included for the AI to inspect."
             )
 
-        action_count = 4 if not source_records_for_prompt.empty else 3
-        prompt_actions = st.columns(action_count)
-
-        prompt_actions[0].download_button(
-            "Prompt only",
-            data=editable_prompt.encode("utf-8"),
-            file_name=prompt_download_name,
-            mime="text/plain",
-            width="stretch",
-        )
-        prompt_actions[1].download_button(
-            "Project source CSV",
-            data=csv_bytes(project_source_records),
-            file_name=project_source_filename,
-            mime="text/csv",
-            width="stretch",
-        )
-
+        individual_actions = [("Prompt only", "prompt")]
+        if raw_project_source_bytes:
+            individual_actions.append(("Project source file", "raw"))
+        if not project_source_records.empty:
+            individual_actions.append(("Parsed source CSV", "parsed"))
         if not source_records_for_prompt.empty:
-            prompt_actions[2].download_button(
-                "Company matches",
-                data=csv_bytes(source_records_for_prompt),
-                file_name=company_source_filename,
-                mime="text/csv",
-                width="stretch",
-            )
-            template_column = prompt_actions[3]
-        else:
-            template_column = prompt_actions[2]
+            individual_actions.append(("Company matches", "matches"))
+        individual_actions.append(("Research template", "template"))
 
-        template_column.download_button(
-            "Research template",
-            data=csv_bytes(research_template_df),
-            file_name=f"{safe_filename(company_name)}_research_template.csv",
-            mime="text/csv",
-            width="stretch",
-        )
+        prompt_actions = st.columns(len(individual_actions))
+        for column, (label, action_type) in zip(prompt_actions, individual_actions):
+            if action_type == "prompt":
+                column.download_button(label, data=editable_prompt.encode("utf-8"), file_name=prompt_download_name, mime="text/plain", width="stretch")
+            elif action_type == "raw":
+                raw_name = Path(raw_project_source_filename).name if raw_project_source_filename else f"project_source_{safe_filename(active_source_version_label)}.xlsx"
+                column.download_button(label, data=bytes(raw_project_source_bytes), file_name=raw_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+            elif action_type == "parsed":
+                column.download_button(label, data=csv_bytes(project_source_records), file_name=f"project_starting_source_records_{safe_filename(active_source_version_label)}.csv", mime="text/csv", width="stretch")
+            elif action_type == "matches":
+                column.download_button(label, data=csv_bytes(source_records_for_prompt), file_name=company_source_filename, mime="text/csv", width="stretch")
+            else:
+                column.download_button(label, data=csv_bytes(research_template_df), file_name=f"{safe_filename(company_name)}_research_template.csv", mime="text/csv", width="stretch")
 
     else:
         prompt_actions = st.columns(2)
