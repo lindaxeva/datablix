@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "One-Line Navigation 2026.07.23-v18"
+DATABLIX_BUILD = "Straight-Line Navigation 2026.07.23-v19"
 
 # =========================================================
 # Configuration
@@ -4250,7 +4250,7 @@ h2{margin-bottom:.1rem}
 .db-eyebrow{
     margin-top:.25rem;
     margin-bottom:-.35rem;
-    font-size:.74rem;
+    font-size:.68rem;
     font-weight:750;
     letter-spacing:.1em;
     text-transform:uppercase;
@@ -4324,7 +4324,7 @@ div[data-testid="stDataEditor"]{
 .stButton>button,.stDownloadButton>button{
     border-radius:9px;
     font-weight:650;
-    min-height:2.65rem;
+    min-height:2.55rem;
 }
 button[data-testid="stBaseButton-primary"],
 button[kind="primary"]{
@@ -4408,12 +4408,18 @@ button[data-testid="stSidebarCollapseButton"]::after{
     display:flex;
     align-items:center;
     justify-content:center;
-    min-height:2.65rem;
+    min-height:2.55rem;
     color:var(--db-muted);
-    font-size:.74rem;
-    opacity:.52;
+    font-size:.68rem;
+    opacity:.48;
     user-select:none;
 }
+/* Keep the complete workflow navigation on one straight horizontal line. */
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] button{
+    white-space: nowrap !important;
+    min-width: 0 !important;
+}
+
 /* Keep the five workflow buttons on one line on standard desktop widths. */
 div[data-testid="stHorizontalBlock"] button[kind="primary"],
 div[data-testid="stHorizontalBlock"] button[kind="secondary"]{
@@ -4781,7 +4787,7 @@ primary_sections = all_sections.copy()
 NAV_LABELS = {
     "Research projects & companies": "Project",
     "Website scanner": "Research",
-    "Review records": "Review & QA",
+    "Review records": "Review",
     "Analysis & report": "Report",
     "Downloads": "Export",
 }
@@ -4860,14 +4866,14 @@ review_population = (
 NAV_DESCRIPTIONS = {
     "Research projects & companies": "Set up your project and company workspaces.",
     "Website scanner": "Research the selected company and add or import building records.",
-    "Review records": "Capture the quality baseline, review records, and approve clean records for export.",
+    "Review records": "Review & Quality — capture the baseline, verify records, and approve clean records for export.",
     "Analysis & report": "Summarize coverage, quality, assumptions, limitations, and progress.",
     "Downloads": "Choose the company, records, and columns, preview them, then download CSV.",
 }
 
 # Keep navigation labels clean. Small arrows indicate workflow direction;
 # the current section is identified only by the blue primary button.
-nav_columns = st.columns([1, 0.035, 1, 0.035, 1.08, 0.035, 0.88, 0.035, 0.88])
+nav_columns = st.columns([1, 0.025, 1, 0.025, 1, 0.025, 1, 0.025, 1], gap="small")
 button_columns = nav_columns[0::2]
 arrow_columns = nav_columns[1::2]
 
