@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Human Approval Workflow 2026.07.23-v9"
+DATABLIX_BUILD = "Visible Quality + Custom Export 2026.07.23-v10"
 
 # =========================================================
 # Configuration
@@ -266,6 +266,7 @@ S_PROJECT_NAME = "db_project_name"
 S_COMPANIES = "db_company_registry"
 S_ACTIVE_COMPANY = "db_active_company_id"
 S_QA_BASELINE = "db_quality_baseline"
+S_QA_BASELINE_META = "db_quality_baseline_meta"
 S_PROJECT_LOADED = "db_project_loaded"
 S_SCAN_HISTORY = "db_scan_history"
 S_SCAN_CANDIDATES = "db_scan_candidates_history"
@@ -296,7 +297,7 @@ def _autosave_file() -> Path:
 AUTOSAVE_STATE_KEYS = [
     S_FILE, S_ORIGINAL, S_WORKING, S_NAME, S_SHEET, S_MAPPING,
     S_SOURCE_TYPE, S_SOURCE_REF, S_SELECTOR, S_EDIT_COUNT,
-    S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY, S_QA_BASELINE,
+    S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY, S_QA_BASELINE, S_QA_BASELINE_META,
     S_PROJECT_LOADED, S_SCAN_HISTORY, S_SCAN_CANDIDATES, S_SCAN_PAGES,
     S_CLOUD_PROJECT_ID, "db_section",
 ]
@@ -1495,6 +1496,10 @@ def delete_company_from_project(company_id: str) -> tuple[bool, str, dict]:
         if stat_key:
             stats[stat_key] = removed
 
+    baseline_meta = _quality_baseline_meta()
+    baseline_meta.pop(clean_company_id, None)
+    st.session_state[S_QA_BASELINE_META] = baseline_meta
+
     # Remove the organization from the project registry itself.
     registry = registry.loc[
         ~registry["Company ID"].astype(str).eq(clean_company_id)
@@ -2415,30 +2420,102 @@ def quality_impact_summary(qa_frame, baseline=None):
     ])
 
 
+def _quality_baseline_meta() -> dict:
+    """Return normalized baseline metadata keyed by company ID."""
+    value = st.session_state.get(S_QA_BASELINE_META)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def quality_baseline_exists(company_id: str | None = None) -> bool:
+    """A baseline can legitimately contain zero issues, so metadata is authoritative."""
+    meta = _quality_baseline_meta()
+    if company_id is not None:
+        key = str(company_id).strip()
+        if key in meta:
+            return True
+        baseline = st.session_state.get(S_QA_BASELINE)
+        return bool(
+            isinstance(baseline, pd.DataFrame)
+            and not baseline.empty
+            and "Company ID" in baseline.columns
+            and baseline["Company ID"].astype(str).eq(key).any()
+        )
+    baseline = st.session_state.get(S_QA_BASELINE)
+    return bool(meta) or bool(isinstance(baseline, pd.DataFrame) and not baseline.empty)
+
+
 def capture_quality_baseline(company_id=None, replace=False):
+    """Capture the starting QA state and remember it even when zero issues exist."""
     working = st.session_state.get(S_WORKING)
     if not isinstance(working, pd.DataFrame) or working.empty:
         return 0
+
     current_qa = qa_checks(working)
-    if company_id:
-        current_qa = current_qa.loc[current_qa["Company ID"].astype(str).eq(str(company_id))]
+    company_key = str(company_id or "").strip()
+    company_name = "All companies"
+    if company_key:
+        current_qa = current_qa.loc[
+            current_qa["Company ID"].astype(str).eq(company_key)
+        ]
+        registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+        match = registry.loc[registry["Company ID"].astype(str).eq(company_key)]
+        company_name = (
+            str(match.iloc[0]["Management/Owner"]).strip()
+            if not match.empty
+            else company_key
+        ) or company_key
+
     captured = qa_issue_rows(current_qa)
     existing = st.session_state.get(S_QA_BASELINE)
-    if not isinstance(existing, pd.DataFrame) or existing.empty:
+    if not isinstance(existing, pd.DataFrame):
         existing = pd.DataFrame(columns=captured.columns)
-    if company_id and not replace and not existing.empty:
-        existing_company = existing["Company ID"].astype(str).eq(str(company_id))
-        if existing_company.any():
-            return -1
-    if company_id:
-        existing = existing.loc[~existing["Company ID"].astype(str).eq(str(company_id))]
-    elif replace:
-        existing = existing.iloc[0:0]
-    st.session_state[S_QA_BASELINE] = pd.concat(
-        [existing, captured], ignore_index=True
-    ).drop_duplicates(subset=["Issue Key"], keep="last")
+    elif existing.empty and not list(existing.columns):
+        existing = pd.DataFrame(columns=captured.columns)
+
+    meta = _quality_baseline_meta()
+    meta_key = company_key or "__project__"
+    if meta_key in meta and not replace:
+        return -1
+
+    if company_key and not existing.empty and "Company ID" in existing.columns:
+        existing = existing.loc[
+            ~existing["Company ID"].astype(str).eq(company_key)
+        ].copy()
+    elif replace and not company_key:
+        existing = existing.iloc[0:0].copy()
+
+    combined = pd.concat([existing, captured], ignore_index=True)
+    if "Issue Key" in combined.columns and not combined.empty:
+        combined = combined.drop_duplicates(subset=["Issue Key"], keep="last")
+    st.session_state[S_QA_BASELINE] = combined
+
+    meta[meta_key] = {
+        "company_id": company_key,
+        "company_name": company_name,
+        "captured_at": datetime.now().isoformat(timespec="seconds"),
+        "starting_issue_count": int(len(captured)),
+        "starting_record_count": int(len(current_qa)),
+    }
+    st.session_state[S_QA_BASELINE_META] = meta
     return len(captured)
 
+
+def reset_quality_baseline(company_id: str) -> None:
+    """Remove one company's baseline and its metadata."""
+    company_key = str(company_id or "").strip()
+    baseline = st.session_state.get(S_QA_BASELINE)
+    if (
+        isinstance(baseline, pd.DataFrame)
+        and not baseline.empty
+        and "Company ID" in baseline.columns
+    ):
+        st.session_state[S_QA_BASELINE] = baseline.loc[
+            ~baseline["Company ID"].astype(str).eq(company_key)
+        ].reset_index(drop=True)
+
+    meta = _quality_baseline_meta()
+    meta.pop(company_key, None)
+    st.session_state[S_QA_BASELINE_META] = meta
 
 def company_progress_summary(qa_frame, registry=None):
     registry = normalize_company_registry(registry)
@@ -2554,6 +2631,7 @@ def project_workbook_bytes():
         "Current QA": qa_frame,
         "Company Analysis": company_progress_summary(qa_frame, registry) if not qa_frame.empty else pd.DataFrame(),
         "Quality Baseline": baseline,
+        "Quality Baseline Meta": pd.DataFrame(list(_quality_baseline_meta().values())),
         "Quality Impact": quality_impact_summary(qa_frame, baseline),
         "Report Summary": report_summary(qa_frame, registry, baseline=baseline),
         "Scan History": st.session_state.get(S_SCAN_HISTORY, pd.DataFrame()),
@@ -2585,6 +2663,29 @@ def load_project_workbook(uploaded):
             if "Quality Baseline" in workbook.sheet_names
             else pd.DataFrame()
         )
+        baseline_meta_sheet = (
+            pd.read_excel(workbook, sheet_name="Quality Baseline Meta")
+            if "Quality Baseline Meta" in workbook.sheet_names
+            else pd.DataFrame()
+        )
+        baseline_meta = {}
+        if not baseline_meta_sheet.empty:
+            for _, meta_row in baseline_meta_sheet.iterrows():
+                meta_company_id = str(meta_row.get("company_id", "") or "").strip()
+                meta_key = meta_company_id or "__project__"
+                starting_issue_value = pd.to_numeric(
+                    meta_row.get("starting_issue_count", 0), errors="coerce"
+                )
+                starting_record_value = pd.to_numeric(
+                    meta_row.get("starting_record_count", 0), errors="coerce"
+                )
+                baseline_meta[meta_key] = {
+                    "company_id": meta_company_id,
+                    "company_name": str(meta_row.get("company_name", "") or ""),
+                    "captured_at": str(meta_row.get("captured_at", "") or ""),
+                    "starting_issue_count": 0 if pd.isna(starting_issue_value) else int(starting_issue_value),
+                    "starting_record_count": 0 if pd.isna(starting_record_value) else int(starting_record_value),
+                }
         scan_history = (
             pd.read_excel(workbook, sheet_name="Scan History")
             if "Scan History" in workbook.sheet_names
@@ -2630,6 +2731,7 @@ def load_project_workbook(uploaded):
     st.session_state[S_PROJECT_NAME] = project_name
     st.session_state[S_COMPANIES] = registry
     st.session_state[S_QA_BASELINE] = baseline
+    st.session_state[S_QA_BASELINE_META] = baseline_meta
     st.session_state[S_SCAN_HISTORY] = scan_history
     st.session_state[S_SCAN_CANDIDATES] = scan_candidates
     st.session_state[S_SCAN_PAGES] = scan_pages
@@ -2684,6 +2786,7 @@ def open_workspace(
             or "Datablix master project"
         )
         st.session_state[S_QA_BASELINE] = pd.DataFrame()
+        st.session_state[S_QA_BASELINE_META] = {}
         st.session_state[S_SCAN_HISTORY] = pd.DataFrame()
         st.session_state[S_SCAN_CANDIDATES] = pd.DataFrame()
         st.session_state[S_SCAN_PAGES] = pd.DataFrame()
@@ -3117,37 +3220,25 @@ def render_page_heading(label: str, title: str, description: str) -> None:
 
 
 def render_process_bar(active_section: str) -> None:
-    """Keep the project-research-review-report mental model visible."""
-    stage_map = {
-        "Research projects & companies": "Research projects & companies",
-        "Website scanner": "Website scanner",
-        "Review records": "Review records",
-        "Progress & quality": "Review records",
-        "Analysis & report": "Analysis & report",
-        "Downloads": "Analysis & report",
-    }
+    """Keep the full Project → Research → Review → Quality → Report → Export flow visible."""
     stages = [
         ("Project", "Research projects & companies"),
         ("Research", "Website scanner"),
         ("Review", "Review records"),
-        ("Report & save", "Analysis & report"),
+        ("Quality", "Progress & quality"),
+        ("Report", "Analysis & report"),
+        ("Export", "Downloads"),
     ]
-    visible_section = stage_map.get(active_section, active_section)
     active_index = next(
-        (
-            index
-            for index, (_, section_name) in enumerate(stages)
-            if section_name == visible_section
-        ),
+        (index for index, (_, section_name) in enumerate(stages)
+         if section_name == active_section),
         -1,
     )
     items = []
     for index, (label, _section_name) in enumerate(stages):
         state = (
-            "active"
-            if index == active_index
-            else "complete"
-            if 0 <= active_index and index < active_index
+            "active" if index == active_index
+            else "complete" if 0 <= active_index and index < active_index
             else "upcoming"
         )
         current = ' aria-current="step"' if state == "active" else ""
@@ -3158,11 +3249,9 @@ def render_process_bar(active_section: str) -> None:
         )
     st.markdown(
         '<div class="db-process" aria-label="Rental property research workflow">'
-        + "".join(items)
-        + "</div>",
+        + "".join(items) + "</div>",
         unsafe_allow_html=True,
     )
-
 
 def render_guidance(title: str, message: str) -> None:
     """Place short decision-support copy beside the task it explains."""
@@ -3259,10 +3348,10 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
             "Check progress",
         )
     return (
-        "Download a fresh copy",
-        "Every record is ready. Export the workbook before you leave this session.",
+        "Export your selected columns",
+        "Every record is ready. Choose the fields you need and download a CSV.",
         "Downloads",
-        "Download workbook",
+        "Open custom export",
     )
 
 
@@ -3845,7 +3934,7 @@ def render_project_progress_sidebar() -> None:
     if utility_columns[0].button("Project", width="stretch", key="db_sidebar_project"):
         go_to("Research projects & companies")
         st.rerun()
-    if utility_columns[1].button("Save", width="stretch", key="db_sidebar_save"):
+    if utility_columns[1].button("Export", width="stretch", key="db_sidebar_save"):
         go_to("Downloads")
         st.rerun()
 
@@ -4086,7 +4175,7 @@ button[data-testid="stSidebarCollapseButton"]::after{
 /* Persistent mental model without numbering or dense instructions. */
 .db-process{
     display:grid;
-    grid-template-columns:repeat(4,minmax(0,1fr));
+    grid-template-columns:repeat(6,minmax(0,1fr));
     gap:.55rem;
     margin:.1rem 0 1.25rem;
 }
@@ -4465,26 +4554,16 @@ all_sections = [
     "Analysis & report",
     "Downloads",
 ]
-primary_sections = [
-    "Research projects & companies",
-    "Website scanner",
-    "Review records",
-    "Analysis & report",
-]
+primary_sections = all_sections.copy()
 NAV_LABELS = {
     "Research projects & companies": "Project",
     "Website scanner": "Research",
     "Review records": "Review",
-    "Analysis & report": "Report & save",
+    "Progress & quality": "Quality",
+    "Analysis & report": "Report",
+    "Downloads": "Export",
 }
-PRIMARY_ACTIVE_SECTION = {
-    "Research projects & companies": "Research projects & companies",
-    "Website scanner": "Website scanner",
-    "Review records": "Review records",
-    "Progress & quality": "Review records",
-    "Analysis & report": "Analysis & report",
-    "Downloads": "Analysis & report",
-}
+PRIMARY_ACTIVE_SECTION = {section_name: section_name for section_name in all_sections}
 legacy_sections = {
     "Review & edit": "Review records",
     "Research": "Website scanner",
@@ -5550,7 +5629,6 @@ elif section == "Review records":
         "Blank values stay neutral.",
         "A blank means the information has not been confirmed; it does not automatically mean the feature or detail is unavailable.",
     )
-    render_review_navigation("Review records")
 
     filtered = qa.copy() if has_records else pd.DataFrame()
 
@@ -5805,11 +5883,122 @@ elif section == "Review records":
 # -----------------------------
 elif section == "Progress & quality":
     render_page_heading(
-        "REVIEW",
-        "Quality and progress",
-        "Track research completion, missing information, possible duplicates, source status, and follow-up needs.",
+        "QUALITY",
+        "Quality baseline and progress",
+        "Set a starting quality baseline before corrections, then track what was resolved, what remains, and which new issues appear.",
     )
-    render_review_navigation("Progress & quality")
+    st.caption(f"Workspace build: {DATABLIX_BUILD}")
+
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    available_quality_companies = registry.loc[
+        registry["Company ID"].astype(str).isin(set(qa["Company ID"].astype(str)))
+    ].copy()
+
+    st.subheader("1. Choose the company to measure")
+    if available_quality_companies.empty:
+        st.info("Add at least one company-linked building record before setting a quality baseline.")
+        selected_quality_company_id = None
+        selected_quality_qa = qa.iloc[0:0].copy()
+    else:
+        quality_company_ids = available_quality_companies["Company ID"].astype(str).tolist()
+        active_quality_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
+        quality_index = quality_company_ids.index(active_quality_id) if active_quality_id in quality_company_ids else 0
+        selected_quality_company_id = st.selectbox(
+            "Company",
+            quality_company_ids,
+            index=quality_index,
+            format_func=lambda company_id: company_label(
+                available_quality_companies.loc[
+                    available_quality_companies["Company ID"].eq(company_id)
+                ].iloc[0]
+            ),
+            key="db_quality_company",
+        )
+        selected_quality_qa = qa.loc[
+            qa["Company ID"].astype(str).eq(selected_quality_company_id)
+        ].copy()
+
+    st.subheader("2. Set or review the starting baseline")
+    if selected_quality_company_id:
+        company_baseline = st.session_state.get(S_QA_BASELINE)
+        if not isinstance(company_baseline, pd.DataFrame):
+            company_baseline = pd.DataFrame()
+        if not company_baseline.empty and "Company ID" in company_baseline.columns:
+            company_baseline = company_baseline.loc[
+                company_baseline["Company ID"].astype(str).eq(selected_quality_company_id)
+            ].copy()
+        else:
+            company_baseline = pd.DataFrame()
+
+        current_issue_count = len(qa_issue_rows(selected_quality_qa))
+        baseline_exists = quality_baseline_exists(selected_quality_company_id)
+        baseline_meta = _quality_baseline_meta().get(selected_quality_company_id, {})
+
+        if not baseline_exists:
+            with st.container(border=True):
+                st.markdown("#### Starting point not set yet")
+                st.write(
+                    "Capture this once before you start correcting the company's QA issues. "
+                    "Datablix will use that snapshot to measure improvement."
+                )
+                baseline_metrics = st.columns(2)
+                baseline_metrics[0].metric("Current records", f"{len(selected_quality_qa):,}")
+                baseline_metrics[1].metric("Current QA issues", f"{current_issue_count:,}")
+                if st.button(
+                    "Set starting quality baseline",
+                    type="primary",
+                    width="stretch",
+                    key="db_quality_set_baseline",
+                ):
+                    captured = capture_quality_baseline(selected_quality_company_id)
+                    st.session_state[S_FLASH] = (
+                        f"Starting baseline saved with {max(captured, 0):,} issue(s)."
+                    )
+                    st.rerun()
+        else:
+            impact = quality_impact_summary(selected_quality_qa, company_baseline)
+            impact_map = dict(zip(impact["Metric"], impact["Value"]))
+            starting_issues = int(
+                baseline_meta.get(
+                    "starting_issue_count",
+                    impact_map.get("Baseline issues", 0),
+                ) or 0
+            )
+            captured_at = str(baseline_meta.get("captured_at", "") or "")
+            with st.container(border=True):
+                st.success("Starting quality baseline is saved.")
+                if captured_at:
+                    st.caption(f"Captured: {captured_at.replace('T', ' ')}")
+                impact_metrics = st.columns(4)
+                impact_metrics[0].metric("Starting issues", f"{starting_issues:,}")
+                impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
+                impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
+                impact_metrics[3].metric("New issues", f"{int(impact_map.get('New issues currently detected', 0)):,}")
+                if starting_issues == 0:
+                    st.info(
+                        "This is a valid zero-issue baseline. Datablix will still track any new issues that appear later."
+                    )
+
+                with st.expander("Reset this baseline"):
+                    confirm_reset = st.checkbox(
+                        "I understand this replaces the original starting point.",
+                        key="db_quality_confirm_reset",
+                    )
+                    if st.button(
+                        "Reset starting baseline",
+                        disabled=not confirm_reset,
+                        width="stretch",
+                        key="db_quality_reset_baseline",
+                    ):
+                        reset_quality_baseline(selected_quality_company_id)
+                        captured = capture_quality_baseline(selected_quality_company_id, replace=True)
+                        st.session_state[S_FLASH] = (
+                            f"Starting baseline reset with {max(captured, 0):,} issue(s)."
+                        )
+                        st.rerun()
+
+    st.divider()
+    st.subheader("3. Monitor current quality and research progress")
 
     top_metrics = st.columns(5)
     top_metrics[0].metric("Completed", f"{int(qa['Research Status'].eq('Completed').sum()):,}")
@@ -5819,35 +6008,20 @@ elif section == "Progress & quality":
     top_metrics[4].metric("Open field gaps", f"{int(qa['Research Gap Count'].sum()):,}")
 
     progress_tabs = st.tabs([
-        "Research progress",
         "Quality issues",
+        "Research progress",
         "Field coverage",
         "Company progress",
         "Draft profiles",
     ])
 
     with progress_tabs[0]:
-        st.caption(
-            "Review each record's source, research date, workflow status, and next action in one table."
-        )
-        st.dataframe(
-            research_log(qa).head(250),
-            width="stretch",
-            hide_index=True,
-            height=540,
-        )
-
-    with progress_tabs[1]:
         issue_data = issue_summary(qa)
         if issue_data.empty:
             st.success("No data-quality issues are currently flagged.")
         else:
             st.caption("Review critical issues first, then work through the warnings.")
-            st.dataframe(
-                issue_data,
-                width="stretch",
-                hide_index=True,
-            )
+            st.dataframe(issue_data, width="stretch", hide_index=True)
         attention_columns = [
             "Record ID", "Working Record Label", "QA Status", "QA Flags",
             "Research Gaps", "Follow-up Priority", "Record Readiness",
@@ -5855,46 +6029,27 @@ elif section == "Progress & quality":
         needs_attention = qa[
             ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
         ][attention_columns]
-        st.subheader("Records needing attention")
-        st.dataframe(
-            needs_attention,
-            width="stretch",
-            hide_index=True,
-            height=420,
-        )
+        st.markdown("#### Records needing attention")
+        st.dataframe(needs_attention, width="stretch", hide_index=True, height=420)
+
+    with progress_tabs[1]:
+        st.caption("Review each record's source, research date, workflow status, and next action in one table.")
+        st.dataframe(research_log(qa).head(250), width="stretch", hide_index=True, height=540)
 
     with progress_tabs[2]:
-        st.caption(
-            "See how often each rental property field is completed. A blank value means the information has not yet been confirmed."
-        )
-        st.dataframe(
-            field_coverage(qa),
-            width="stretch",
-            hide_index=True,
-        )
+        st.caption("See how often each rental property field is completed.")
+        st.dataframe(field_coverage(qa), width="stretch", hide_index=True)
 
     with progress_tabs[3]:
-        st.caption(
-            "Track every assigned company, including companies that have not produced building records yet. The list expands when new companies are added."
-        )
+        st.caption("Track every assigned company, including companies that have not produced building records yet.")
         st.dataframe(
             company_progress_summary(qa, st.session_state.get(S_COMPANIES)),
-            width="stretch",
-            hide_index=True,
-            height=500,
+            width="stretch", hide_index=True, height=500,
         )
 
     with progress_tabs[4]:
-        st.caption(
-            "Draft descriptions are assembled from current rental property fields. Confirm every fact and refine the wording before use."
-        )
-        st.dataframe(
-            draft_profiles(qa).head(100),
-            width="stretch",
-            hide_index=True,
-            height=520,
-        )
-
+        st.caption("Draft descriptions are assembled from current rental property fields. Confirm every fact before use.")
+        st.dataframe(draft_profiles(qa).head(100), width="stretch", hide_index=True, height=520)
 
 # -----------------------------
 # Analysis and report
@@ -5905,7 +6060,6 @@ elif section == "Analysis & report":
         "Analyse and report",
         "Review one company in depth or combine every company currently in scope for the final stakeholder report.",
     )
-    render_report_navigation("Analysis & report")
 
     registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
     scope_mode = st.radio(
@@ -5951,33 +6105,11 @@ elif section == "Analysis & report":
                 analysis_baseline["Company ID"].astype(str).eq(selected_company_id)
             ].copy()
 
-        with st.expander("Quality baseline", expanded=analysis_baseline.empty):
-            st.caption(
-                "Capture the baseline immediately after adding and reviewing the scan candidates, before correcting the QA findings. Datablix will preserve it in the saved project."
+        if not quality_baseline_exists(selected_company_id):
+            st.info(
+                "No starting quality baseline is saved for this company yet. "
+                "Open Quality to set it before using before-and-after metrics."
             )
-            replace_baseline = st.checkbox(
-                "Replace the existing baseline for this company",
-                key="db_replace_company_baseline",
-            )
-            if st.button(
-                "Capture company quality baseline",
-                type="primary" if analysis_baseline.empty else "secondary",
-                width="stretch",
-                key="db_capture_company_baseline",
-            ):
-                captured = capture_quality_baseline(
-                    selected_company_id,
-                    replace=replace_baseline,
-                )
-                if captured == -1:
-                    st.warning(
-                        "A baseline already exists for this company. Select the replacement option only when you deliberately want to reset it."
-                    )
-                else:
-                    st.session_state[S_FLASH] = (
-                        f"Captured {captured:,} baseline quality issue(s) for {scope_label}."
-                    )
-                    st.rerun()
 
     metric_columns = st.columns(5)
     metric_columns[0].metric("Companies", f"{analysis_qa['Company ID'].astype(str).replace('', pd.NA).dropna().nunique():,}")
@@ -6014,9 +6146,18 @@ elif section == "Analysis & report":
         impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
         impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
         impact_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
-        if int(impact_map.get("Baseline issues", 0)) == 0:
+        baseline_exists_for_scope = (
+            quality_baseline_exists(selected_company_id)
+            if scope_mode == "One company" and selected_company_id
+            else quality_baseline_exists()
+        )
+        if not baseline_exists_for_scope:
             st.info(
-                "No saved baseline is available for this scope. Current QA results are still valid, but a before-and-after issue-resolution rate cannot yet be claimed."
+                "No starting quality baseline is saved for this scope. Open Quality to set one before using before-and-after metrics."
+            )
+        elif int(impact_map.get("Baseline issues", 0)) == 0:
+            st.info(
+                "A valid zero-issue baseline is saved for this scope. New issues will still be tracked."
             )
 
     with analysis_tabs[2]:
@@ -6033,27 +6174,7 @@ elif section == "Analysis & report":
             baseline=analysis_baseline,
         )
         st.dataframe(report, width="stretch", hide_index=True)
-        analysis_export = excel_bytes({
-            "Report Summary": report,
-            "Company Analysis": company_progress_summary(
-                analysis_qa,
-                registry.loc[registry["Company ID"].astype(str).isin(set(analysis_qa["Company ID"].astype(str)))]
-                if scope_mode == "One company" and not registry.empty
-                else registry,
-            ),
-            "Quality Impact": quality_impact_summary(analysis_qa, analysis_baseline),
-            "Field Coverage": field_coverage(analysis_qa),
-            "Issue Summary": issue_summary(analysis_qa),
-            "Analysed Records": analysis_qa,
-        })
-        st.download_button(
-            "Download this analysis",
-            analysis_export,
-            f"{safe_filename(scope_label)}_datablix_analysis.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            width="stretch",
-        )
+        st.caption("Use Export to choose exactly which columns to download as CSV.")
 
 
 # -----------------------------
@@ -6061,147 +6182,87 @@ elif section == "Analysis & report":
 # -----------------------------
 elif section == "Downloads":
     render_page_heading(
-        "REPORT",
-        "Downloads and project save",
-        "Save the resumable project and export formatted listings, research records, or focused review tables.",
+        "EXPORT",
+        "Custom CSV export",
+        "Choose which records and columns you want, preview the exact table, then download only that CSV.",
     )
-    render_report_navigation("Downloads")
-    st.warning(
-        "The browser session is temporary. Save the master project to preserve company assignments, working records, quality baselines, and report data for the next session."
+    st.caption(f"Workspace build: {DATABLIX_BUILD}")
+
+    st.subheader("1. Choose records")
+    export_scope = st.radio(
+        "Records to include",
+        ["Ready records only", "All project records"],
+        horizontal=True,
+        key="db_custom_export_scope",
+    )
+    export_source = (
+        qa.loc[ready_mask(qa)].copy()
+        if export_scope == "Ready records only"
+        else qa.copy()
     )
 
-    listings = listing_export(qa)
-    follow_up = qa[
-        ~ready_mask(qa) & ~qa["Record Readiness"].eq("Excluded from Listings")
+    st.subheader("2. Choose columns")
+    exportable_columns = [
+        column for column in working.columns
+        if column in export_source.columns
     ]
-    ready = qa[ready_mask(qa)]
-    quality = qa[qa["QA Status"].isin(["Critical", "Review"])]
-    baseline = st.session_state.get(S_QA_BASELINE)
-    if not isinstance(baseline, pd.DataFrame):
-        baseline = pd.DataFrame()
-    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
-    sheets = {
-        "Workspace Summary": project_summary(qa),
-        "Company Registry": registry,
-        "Company Analysis": company_progress_summary(qa, registry),
-        "Quality Baseline": baseline,
-        "Quality Impact": quality_impact_summary(qa, baseline),
-        "Report Summary": report_summary(qa, registry, baseline=baseline),
-        "Building Listings": listings,
-        "Owner Research List": owner_summary(qa),
-        "Draft Profiles": draft_profiles(qa),
-        "Source Verification": research_log(qa),
-        "Follow-up Queue": follow_up,
-        "Field Coverage": field_coverage(qa),
-        "Platform Field Recommendations": structure_recommendations(),
-        "Methodology & Limits": methodology(
-            qa,
-            st.session_state.get(S_NAME, "workspace"),
-            st.session_state.get(S_SHEET, ""),
-        ),
-        "Working Data": qa,
-    }
-    filename = safe_filename(st.session_state.get(S_NAME, "datablix"))
+    for derived_column in [
+        "Record Readiness", "QA Status", "QA Flags", "QA Flag Count",
+        "Research Gaps", "Research Gap Count", "Follow-up Priority",
+    ]:
+        if derived_column in export_source.columns and derived_column not in exportable_columns:
+            exportable_columns.append(derived_column)
 
-    export_metrics = st.columns(4)
-    export_metrics[0].metric("All records", f"{len(qa):,}")
-    export_metrics[1].metric("Listings ready to use", f"{len(ready):,}")
-    export_metrics[2].metric("Follow-up records", f"{len(follow_up):,}")
-    export_metrics[3].metric("Quality review", f"{len(quality):,}")
+    default_columns = [
+        column for column in ["Building Name", "Street Address", "Postal Code"]
+        if column in exportable_columns
+    ]
 
-    st.subheader("Save and resume")
-    st.write(
-        "Save the master project after each company or major research session. Upload this file through Resume project to continue with the full company registry and quality history intact."
-    )
-    st.download_button(
-        "Save master project",
-        project_workbook_bytes(),
-        f"{safe_filename(st.session_state.get(S_PROJECT_NAME, 'datablix_master_project'))}_datablix_project.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        width="stretch",
-        key="db_download_save_project",
+    export_controls = st.columns(2)
+    if export_controls[0].button("Select all columns", width="stretch", key="db_export_select_all"):
+        st.session_state["db_custom_export_columns"] = exportable_columns
+        st.rerun()
+    if export_controls[1].button("Clear selection", width="stretch", key="db_export_clear_columns"):
+        st.session_state["db_custom_export_columns"] = []
+        st.rerun()
+
+    stored_selection = st.session_state.get("db_custom_export_columns", default_columns)
+    if not isinstance(stored_selection, list):
+        stored_selection = default_columns
+    st.session_state["db_custom_export_columns"] = [
+        column for column in stored_selection if column in exportable_columns
+    ]
+
+    selected_columns = st.multiselect(
+        "Columns to include",
+        options=exportable_columns,
+        key="db_custom_export_columns",
+        help="The CSV will use exactly these columns in the order shown here.",
     )
 
-    st.subheader("Complete reporting workbook")
-    st.write(
-        "The reporting workbook keeps rental property listings, company analysis, source evidence, quality impact, follow-ups, draft profiles, field coverage, and working data in separate sheets."
-    )
-    download_main, download_followup = st.columns([1.4, 1])
-    download_main.download_button(
-        "Download complete workbook",
-        excel_bytes(sheets),
-        f"{filename}_datablix_workbook.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        width="stretch",
-    )
-    download_followup.download_button(
-        "Download follow-up queue",
-        csv_bytes(follow_up),
-        f"{filename}_follow_up_queue.csv",
-        "text/csv",
-        disabled=follow_up.empty,
-        width="stretch",
-    )
+    st.subheader("3. Preview")
+    if not selected_columns:
+        st.warning("Choose at least one column to create the CSV.")
+    else:
+        export_table = export_source[selected_columns].copy()
+        preview_metrics = st.columns(2)
+        preview_metrics[0].metric("Rows", f"{len(export_table):,}")
+        preview_metrics[1].metric("Columns", f"{len(selected_columns):,}")
+        st.dataframe(export_table.head(250), width="stretch", hide_index=True, height=500)
 
-    with st.expander("Download a focused view"):
-        st.caption(
-            "Use the Excel version for the formatted rental property listing layout. The flat CSV keeps one rental property per row for sorting, filtering, or re-importing."
+        st.subheader("4. Download")
+        export_filename = (
+            safe_filename(st.session_state.get(S_PROJECT_NAME, "datablix"))
+            + "_selected_columns.csv"
         )
-        row1 = st.columns(3)
-        row1[0].download_button(
-            "Formatted rental property listings",
-            excel_bytes({"Building Listings": listings}),
-            f"{filename}_building_listings.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        st.download_button(
+            "Download selected columns — CSV",
+            data=csv_bytes(export_table),
+            file_name=export_filename,
+            mime="text/csv",
+            type="primary",
             width="stretch",
-        )
-        row1[1].download_button(
-            "Rental property listings — flat CSV",
-            csv_bytes(listings),
-            f"{filename}_building_listings_flat.csv",
-            "text/csv",
-            width="stretch",
-        )
-        row1[2].download_button(
-            "Owner research list",
-            csv_bytes(owner_summary(qa)),
-            f"{filename}_owner_research_list.csv",
-            "text/csv",
-            width="stretch",
-        )
-        row2 = st.columns(3)
-        row2[0].download_button(
-            "Draft profiles",
-            csv_bytes(draft_profiles(qa)),
-            f"{filename}_draft_profiles.csv",
-            "text/csv",
-            width="stretch",
-        )
-        row2[1].download_button(
-            "Source verification tracker",
-            csv_bytes(research_log(qa)),
-            f"{filename}_source_verification.csv",
-            "text/csv",
-            width="stretch",
-        )
-        row2[2].download_button(
-            "Ready rental property listings — formatted",
-            excel_bytes({"Building Listings": listing_export(ready)}),
-            f"{filename}_ready_rental_property_listings.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            disabled=ready.empty,
-            width="stretch",
-        )
-        row3 = st.columns(3)
-        row3[0].download_button(
-            "Rental property quality review queue",
-            csv_bytes(quality),
-            f"{filename}_quality_review_queue.csv",
-            "text/csv",
-            disabled=quality.empty,
-            width="stretch",
+            key="db_download_custom_export",
         )
 
 # Persist the latest completed state after every Streamlit rerun.
