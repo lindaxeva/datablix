@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Riipen Deliverables Completion 2026.07.23-v21"
+DATABLIX_BUILD = "Project Deliverables Completion 2026.07.23-v22"
 
 # =========================================================
 # Configuration
@@ -2731,7 +2731,7 @@ def company_progress_summary(qa_frame, registry=None):
 
 
 def source_verification_tracker(qa_frame):
-    """Create the Riipen-style source and verification tracker."""
+    """Create the project source and verification tracker."""
     columns = [
         "Record ID", "Building Name", "Management/Owner",
         "Directory Discovery Status", "Street Address", "City", "Postal Code",
@@ -2883,7 +2883,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
 
 
 def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) -> str:
-    """Create a copy-ready summary for the final Riipen presentation."""
+    """Create a copy-ready summary for the final project presentation."""
     approved = int(approved_for_export_mask(qa_frame).sum())
     still_review = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
     existing = int(qa_frame["Directory Discovery Status"].eq("Existing Client Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
@@ -2946,16 +2946,16 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
 """
 
 
-def riipen_deliverables_table():
-    """Map each formal Riipen deliverable to the Datablix workflow."""
+def project_deliverables_table():
+    """Map each formal project deliverable to the Datablix workflow."""
     return pd.DataFrame([
-        {"Riipen Deliverable": "1. Apartment Directory Database", "Datablix Location": "Export", "How Datablix supports it": "Approved records + selectable columns + CSV output."},
-        {"Riipen Deliverable": "2. Owner and Management Company Research List", "Datablix Location": "Report → Research results", "How Datablix supports it": "Company registry, websites, status, building counts, new discoveries, gaps, and follow-up."},
-        {"Riipen Deliverable": "3. Draft Apartment Community Profiles", "Datablix Location": "Report → Community profiles", "How Datablix supports it": "Copy-ready profile draft for each reviewed building."},
-        {"Riipen Deliverable": "4. Data Source and Verification Tracker", "Datablix Location": "Report → Source & verification", "How Datablix supports it": "Source URL, research date, verification, missing information, reviewer notes, and follow-up."},
-        {"Riipen Deliverable": "5. Directory Structure and Searchability Recommendations", "Datablix Location": "Report → Directory recommendations", "How Datablix supports it": "Recommended fields/filters combined with observed coverage rates."},
-        {"Riipen Deliverable": "6. Research Methodology and Limitations Report", "Datablix Location": "Report → Methodology & limitations", "How Datablix supports it": "Dynamic methodology, assumptions, limitations, and next steps."},
-        {"Riipen Deliverable": "7. Final Directory Summary Presentation", "Datablix Location": "Report → Final summary", "How Datablix supports it": "Copy-ready summary metrics, quality impact, gaps, methodology, and recommendations."},
+        {"Project Deliverable": "1. Apartment Directory Database", "Datablix Location": "Export", "How Datablix supports it": "Approved records + selectable columns + CSV output."},
+        {"Project Deliverable": "2. Owner and Management Company Research List", "Datablix Location": "Report → Research results", "How Datablix supports it": "Company registry, websites, status, building counts, new discoveries, gaps, and follow-up."},
+        {"Project Deliverable": "3. Draft Apartment Community Profiles", "Datablix Location": "Report → Community profiles", "How Datablix supports it": "Copy-ready profile draft for each reviewed building."},
+        {"Project Deliverable": "4. Data Source and Verification Tracker", "Datablix Location": "Report → Source & verification", "How Datablix supports it": "Source URL, research date, verification, missing information, reviewer notes, and follow-up."},
+        {"Project Deliverable": "5. Directory Structure and Searchability Recommendations", "Datablix Location": "Report → Directory recommendations", "How Datablix supports it": "Recommended fields/filters combined with observed coverage rates."},
+        {"Project Deliverable": "6. Research Methodology and Limitations Report", "Datablix Location": "Report → Methodology & limitations", "How Datablix supports it": "Dynamic methodology, assumptions, limitations, and next steps."},
+        {"Project Deliverable": "7. Final Directory Summary Presentation", "Datablix Location": "Report → Final summary", "How Datablix supports it": "Copy-ready summary metrics, quality impact, gaps, methodology, and recommendations."},
     ])
 
 def report_summary(qa_frame, registry=None, scope_label="All companies", baseline=None):
@@ -6561,7 +6561,7 @@ elif section == "Analysis & report":
     render_page_heading(
         "REPORT",
         "Complete your project deliverables",
-        "Turn the reviewed research into the company research list, source tracker, draft profiles, directory recommendations, methodology, and final summary required for the Riipen project.",
+        "Turn the reviewed research into the company research list, source tracker, draft profiles, directory recommendations, methodology, and final summary required for the project.",
     )
 
     registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
@@ -6633,13 +6633,13 @@ elif section == "Analysis & report":
     metric_columns[3].metric("Newly discovered", f"{discovered_metric:,}")
     metric_columns[4].metric("Approved for Export", f"{int(approved_for_export_mask(analysis_qa).sum()):,}")
 
-    st.markdown("### Riipen deliverables")
+    st.markdown("### Project deliverables")
     st.caption(
         "Each formal project deliverable now has a corresponding Datablix view. "
         "Use Export only for the final directory CSV."
     )
     st.dataframe(
-        riipen_deliverables_table(),
+        project_deliverables_table(),
         width="stretch",
         hide_index=True,
     )
