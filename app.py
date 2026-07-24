@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Company Lifecycle Workspace 2026.07.23-v8"
+DATABLIX_BUILD = "Human Approval Workflow 2026.07.23-v9"
 
 # =========================================================
 # Configuration
@@ -2106,24 +2106,27 @@ def qa_checks(df):
     out["Workflow Gaps"] = workflow.apply(lambda v: "; ".join(v) if v else "No workflow gaps")
 
     def readiness(row):
+        # Human approval is authoritative for non-critical QA warnings. Critical
+        # identity/data failures still block a record, and the research trail must
+        # still be complete before a record can be treated as ready.
         if row["Record Decision"] == "Remove": return "Excluded from Listings"
         if row["Record Decision"] == "Possible Duplicate": return "Duplicate Review"
         if row["Critical Issue Count"]: return "Fix Critical Data"
         if row["Research Status"] in ["Imported - Needs Review", "Not Started", "In Progress"]: return "Needs Research"
         if row["Research Status"] == "Needs Follow-up": return "Needs Follow-up"
         if row["Research Status"] != "Completed": return "Needs Review"
-        if row["Warning Count"]: return "Needs Data Review"
         if row["Verification Status"] != "Verified": return "Needs Verification"
         if row["Record Decision"] == "Update": return "Needs Update"
         if row["Record Decision"] != "Keep": return "Needs Decision"
         if is_unresolved(row["Source URL"]) and row["Source Status"] != "Unavailable": return "Record Research Source"
         if is_unresolved(row["Date Researched"]) or is_unresolved(row["Researcher"]): return "Complete Research Trail"
         if row["Research Gap Count"] and is_unresolved(row["Missing Information"]): return "Document Research Gaps"
+        if row["Warning Count"]: return "Ready with Reviewed Warnings"
         if row["Research Gap Count"]: return "Ready with Documented Gaps"
         return "Ready to Use"
     out["Record Readiness"] = out.apply(readiness, axis=1)
     out["Follow-up Priority"] = out.apply(
-        lambda r: "None" if r["Record Readiness"] in ["Ready to Use", "Ready with Documented Gaps", "Excluded from Listings"]
+        lambda r: "None" if r["Record Readiness"] in ["Ready to Use", "Ready with Documented Gaps", "Ready with Reviewed Warnings", "Excluded from Listings"]
         else "High" if r["Critical Issue Count"] or r["Record Readiness"] in ["Duplicate Review", "Needs Follow-up"]
         else "Medium" if r["Warning Count"] or r["Research Gap Count"] else "Low", axis=1
     )
@@ -2228,7 +2231,7 @@ def render_listing_preview(df, limit=5):
 
 
 def ready_mask(df):
-    return df["Record Readiness"].isin(["Ready to Use", "Ready with Documented Gaps"])
+    return df["Record Readiness"].isin(["Ready to Use", "Ready with Documented Gaps", "Ready with Reviewed Warnings"])
 
 
 def research_log(df):
@@ -3040,15 +3043,53 @@ def generate_id(df):
 
 
 def save_edits(edited, columns):
+    """Save review edits against stable Record IDs, not only dataframe positions.
+
+    Review tables are filtered views of the working data. Using Record ID as the
+    primary key prevents an edit from being written to the wrong row when a view
+    has been filtered, re-ordered, or rebuilt during a Streamlit rerun.
+    """
     working = st.session_state[S_WORKING].copy()
-    for c in columns:
-        if c in edited.columns:
-            working.loc[edited.index, c] = edited[c]
+    editable_columns = [c for c in columns if c in edited.columns and c in working.columns]
+
+    working_ids = (
+        working["Record ID"].astype("string").fillna("").str.strip()
+        if "Record ID" in working.columns
+        else pd.Series("", index=working.index, dtype="string")
+    )
+
+    for edited_index, edited_row in edited.iterrows():
+        target_index = None
+        record_id = str(edited_row.get("Record ID", "") or "").strip()
+        if record_id:
+            matches = working.index[working_ids.eq(record_id)].tolist()
+            if len(matches) == 1:
+                target_index = matches[0]
+
+        # Safe fallback for legacy rows or duplicate/missing IDs.
+        if target_index is None and edited_index in working.index:
+            target_index = edited_index
+        if target_index is None:
+            continue
+
+        for column in editable_columns:
+            working.at[target_index, column] = edited_row[column]
+
     working["Province"] = working["Province"].apply(canonical_province)
     working["Postal Code"] = working["Postal Code"].apply(postal_code)
     st.session_state[S_WORKING] = normalize_workflow(prepare_data(working))
     st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-    st.session_state[S_FLASH] = "Changes saved. Rental property quality checks have been updated."
+    approved_count = int(
+        (
+            st.session_state[S_WORKING]["Research Status"].eq("Completed")
+            & st.session_state[S_WORKING]["Verification Status"].eq("Verified")
+            & st.session_state[S_WORKING]["Record Decision"].eq("Keep")
+        ).sum()
+    )
+    st.session_state[S_FLASH] = (
+        f"Changes saved. Quality checks refreshed; {approved_count:,} record(s) "
+        "currently have final human approval (Completed + Verified + Keep)."
+    )
 
 
 # =========================================================
@@ -3276,7 +3317,12 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
             ]
         )
         follow_up = int(follow_up_mask.sum())
-        attention_mask = active["QA Status"].isin(["Critical", "Review"]) | follow_up_mask
+        # Reviewed warnings remain visible in QA, but once a record is explicitly
+        # Verified + Keep and passes the mandatory trail checks, they no longer
+        # count as unresolved company attention.
+        attention_mask = (~ready_mask(active)) & (
+            active["QA Status"].isin(["Critical", "Review"]) | follow_up_mask
+        )
         attention = int(attention_mask.sum())
         progress = verified / collected if collected else 0.0
 
@@ -3390,8 +3436,11 @@ def project_progress_snapshot(registry: pd.DataFrame, records: pd.DataFrame) -> 
         )
         attention_records = int(
             (
-                active_qa["QA Status"].isin(["Critical", "Review"])
-                | project_follow_up
+                (~ready_mask(active_qa))
+                & (
+                    active_qa["QA Status"].isin(["Critical", "Review"])
+                    | project_follow_up
+                )
             ).sum()
         )
     else:
