@@ -15,8 +15,6 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
-from openpyxl.styles import Alignment, Border, Font, Side
-from datablix_scanner_panel import render_website_scanner_panel
 
 try:
     from supabase import Client, create_client
@@ -26,7 +24,12 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Scope + Source-First Identity Matching 2026.07.24-v41"
+def render_website_scanner_panel(*args, **kwargs):
+    """Lazy-load the optional scanner only when research scanning is actually used."""
+    from datablix_scanner_panel import render_website_scanner_panel as _render_scanner
+    return _render_scanner(*args, **kwargs)
+
+DATABLIX_BUILD = "Ottawa-First + Lean Runtime 2026.07.24-v43"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -1129,6 +1132,8 @@ def _excel_display_value(value):
 
 def _write_listing_blocks_sheet(ws, listings):
     """Write one apartment building at a time in the supplied two-column layout."""
+    from openpyxl.styles import Alignment, Border, Font, Side
+
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -1341,11 +1346,11 @@ def normalize_workflow(df):
 # -------------------------------------------------------------------------
 # Robust Starting Data identity matching
 # -------------------------------------------------------------------------
-# Discovery status is a project-comparison result, not an AI claim. Datablix
-# therefore uses source-first identity matching and treats "Newly Discovered"
-# as the last possible outcome. Exact/normalized address evidence is checked
-# first, then component-level evidence for compound addresses, then supporting
-# URL/name/location evidence. Ambiguous candidates go to human review.
+# The research CSV and the project Starting Data often describe the same Ottawa
+# property using slightly different address text.  Discovery status therefore
+# must never depend on one literal string key.  The helpers below normalize
+# civic numbers, compound addresses, street types, directions, Ottawa locality
+# labels, postal codes and URLs before Datablix decides that a property is new.
 
 _STREET_TYPE_ALIASES = {
     "street": "st", "st": "st",
@@ -1364,6 +1369,10 @@ _STREET_TYPE_ALIASES = {
     "highway": "hwy", "hwy": "hwy",
 }
 
+# Correct the accidental comma in the static mapping above defensively below.
+_STREET_TYPE_ALIASES["pkwy"] = "pkwy"
+_STREET_TYPE_ALIASES["parkway"] = "pkwy"
+
 _DIRECTION_ALIASES = {
     "north": "n", "n": "n",
     "south": "s", "s": "s",
@@ -1371,7 +1380,7 @@ _DIRECTION_ALIASES = {
     "west": "w", "w": "w",
 }
 
-_OTTAWA_LOCALITY_KEYS = {
+_OTTawa_LOCALITY_KEYS = {
     norm_header(value) for value in OTTAWA_LOCALITY_LABELS
 } | {"ottawa"}
 
@@ -1390,34 +1399,51 @@ def _fold_identity_text(value) -> str:
     return text
 
 
-def _postal_set(value) -> set[str]:
-    """Return every Canadian postal code explicitly present in a cell."""
-    raw = safe_text(value).upper()
-    if not raw:
-        return set()
-    matches = re.findall(
-        r"\b([ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z])[ -]?(\d[ABCEGHJ-NPRSTV-Z]\d)\b",
-        raw,
-        flags=re.I,
-    )
-    postals = {f"{left}{right}".upper() for left, right in matches}
-    if postals:
-        return postals
-    compact = re.sub(r"[^A-Z0-9]", "", raw)
-    return {compact} if re.fullmatch(r"[A-Z]\d[A-Z]\d[A-Z]\d", compact) else set()
-
-
 def _canonical_postal(value) -> str:
-    """Backward-compatible single postal key; matching itself uses _postal_set."""
-    postals = sorted(_postal_set(value))
-    return postals[0] if postals else ""
+    return re.sub(r"[^A-Z0-9]", "", safe_text(value).upper())
 
 
 def _canonical_city(value) -> str:
     key = norm_header(value)
-    if key in _OTTAWA_LOCALITY_KEYS:
+    if key in _OTTawa_LOCALITY_KEYS:
         return "ottawa"
     return key
+
+
+def _ottawa_scope_status(row) -> str:
+    """Return ``in``, ``out`` or ``unknown`` for the fixed Ottawa project scope.
+
+    Explicit non-Ottawa city/province/country evidence is treated as out of scope.
+    Blank locality data is preserved for human review instead of being guessed.
+    """
+    city_raw = safe_text(row.get("City", ""))
+    province_raw = safe_text(row.get("Province", ""))
+    country_raw = safe_text(row.get("Country", ""))
+
+    if province_raw and province_code(province_raw) not in {"ON", ""}:
+        return "out"
+    if country_raw and norm_header(country_raw) not in {"canada", "ca"}:
+        return "out"
+
+    if city_raw:
+        return "in" if _canonical_city(city_raw) == "ottawa" else "out"
+    return "unknown"
+
+
+def filter_to_ottawa_scope(df: pd.DataFrame, *, keep_unknown: bool = True) -> pd.DataFrame:
+    """Keep only rows compatible with the City of Ottawa project boundary."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    status = df.apply(_ottawa_scope_status, axis=1)
+    allowed = status.eq("in") | (status.eq("unknown") if keep_unknown else False)
+    return df.loc[allowed].reset_index(drop=True).copy()
+
+
+def _scope_counts(df: pd.DataFrame) -> dict:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return {"in": 0, "out": 0, "unknown": 0}
+    values = df.apply(_ottawa_scope_status, axis=1).value_counts().to_dict()
+    return {key: int(values.get(key, 0)) for key in ("in", "out", "unknown")}
 
 
 def _canonical_phone(value) -> str:
@@ -1442,120 +1468,82 @@ def _canonical_url(value) -> str:
         return norm_header(raw)
 
 
-def _street_keys(street_text: str) -> tuple[str, str]:
-    """Return strict and direction-insensitive street keys."""
-    text = _fold_identity_text(street_text)
-    # Remove common unit/suite suffixes because directory identity is building-level.
-    text = re.sub(r"\b(?:unit|suite|apt|apartment)\s*#?\s*[a-z0-9-]+\b.*$", "", text, flags=re.I)
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    normalized = []
-    for token in tokens:
-        token = _STREET_TYPE_ALIASES.get(token, token)
-        token = _DIRECTION_ALIASES.get(token, token)
-        if token in {"ottawa", "ontario", "on", "canada"}:
-            continue
-        normalized.append(token)
-    strict = " ".join(normalized).strip()
-    lenient = " ".join(token for token in normalized if token not in {"n", "s", "e", "w"}).strip()
-    return strict, lenient
+def _address_signature(value) -> dict:
+    """Return civic-number and street signatures from a Street Address value.
 
-
-def _address_components(value) -> list[dict]:
-    """Decompose one address cell into explicit civic-number/street components.
-
-    Examples:
-      165 Chapel Street -> 165 + Chapel Street
-      1161-1171 Wellington Street West -> 1161 + Wellington; 1171 + Wellington
-      2816, 2822 & 2826 Sandalwood Drive -> three Sandalwood components
-      2805, 2865 & 2889 Cedarwood Drive; 2898 Baycrest Drive -> four components
-
-    Datablix never invents intermediate civic numbers inside a range.
+    Handles compound values such as ``1161-1171 Wellington Street``,
+    ``1140/1150 Fisher Avenue`` and ``2816, 2822 & 2826 Sandalwood Drive``.
+    Datablix intentionally does NOT invent intermediate civic numbers.
     """
     raw = _fold_identity_text(value)
     if not raw:
-        return []
+        return {"numbers": tuple(), "street": "", "street_lenient": "", "full": ""}
 
-    # Remove postal codes wherever a research tool accidentally included them in
-    # the street-address field. Do not split on comma: commas are also used to list
-    # civic numbers (e.g. 2816, 2822 & 2826 Sandalwood Drive).
-    raw = re.sub(
+    # Remove a trailing locality/province/country portion only when it is clearly
+    # location metadata. Do NOT split on the first comma because commas can separate
+    # civic numbers in legitimate multi-address properties.
+    street_part = raw
+    street_part = re.sub(
         r"\b[abceghj-nprstvxy]\d[abceghj-nprstv-z][ -]?\d[abceghj-nprstv-z]\d\b",
         " ",
-        raw,
+        street_part,
         flags=re.I,
     )
-    raw = re.sub(r"\s+", " ", raw).strip(" ,;")
-
-    components = []
-    # Semicolon is the clearest separator between distinct street tails.
-    segments = [segment.strip(" ,") for segment in raw.split(";") if segment.strip(" ,")]
-    for segment in segments:
-        # Strip a trailing locality only when it comes after a comma and starts
-        # with letters. Numeric commas at the beginning remain intact.
-        segment = re.sub(
-            r",\s*(?:ottawa|nepean|kanata|orleans|orléans|gloucester|barrhaven|stittsville|vanier)\b.*$",
+    locality_terms = sorted(
+        {safe_text(v).lower() for v in OTTAWA_LOCALITY_LABELS}
+        | {"ottawa", "ontario", "on", "canada"},
+        key=len,
+        reverse=True,
+    )
+    locality_pattern = "|".join(re.escape(v) for v in locality_terms if v)
+    if locality_pattern:
+        street_part = re.sub(
+            rf",\s*(?:{locality_pattern})(?:\s*,.*)?$",
             "",
-            segment,
-            flags=re.I,
-        ).strip(" ,")
-
-        # Capture all explicitly written civic numbers before the street name.
-        match = re.match(
-            r"^\s*(?P<numbers>(?:\d+[a-z]?\s*(?:(?:,|/|&|-)\s*|\band\b\s*)?)+)\s+(?P<street>[a-z].+)$",
-            segment,
+            street_part,
             flags=re.I,
         )
-        if not match:
-            single = re.match(r"^\s*(\d+[a-z]?)\s+(.+)$", segment, flags=re.I)
-            if not single:
-                continue
-            number_values = [single.group(1).lower()]
-            street_text = single.group(2)
-        else:
-            number_values = [value.lower() for value in re.findall(r"\d+[a-z]?", match.group("numbers"), flags=re.I)]
-            street_text = match.group("street")
+    street_part = re.sub(r"\s+", " ", street_part).strip(" ,")
 
-        strict, lenient = _street_keys(street_text)
-        if not strict and not lenient:
-            continue
-        for number in dict.fromkeys(number_values):
-            components.append({
-                "number": number,
-                "street": strict,
-                "street_lenient": lenient,
-            })
-
-    # Stable deduplication.
-    unique = []
-    seen = set()
-    for component in components:
-        key = (component["number"], component["street"], component["street_lenient"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(component)
-    return unique
-
-
-def _address_signature(value) -> dict:
-    """Return a backward-compatible signature plus all parsed address components."""
-    components = _address_components(value)
-    numbers = tuple(sorted({component["number"] for component in components}))
-    strict_streets = {component["street"] for component in components if component["street"]}
-    lenient_streets = {component["street_lenient"] for component in components if component["street_lenient"]}
-    street = next(iter(strict_streets)) if len(strict_streets) == 1 else ""
-    street_lenient = next(iter(lenient_streets)) if len(lenient_streets) == 1 else ""
-    full_parts = sorted(
-        f"{component['number']}|{component['street']}"
-        for component in components
-        if component["number"] and component["street"]
+    # Capture explicitly listed civic numbers at the beginning. Commas are valid
+    # separators here (e.g. 2816, 2822 & 2826 Sandalwood Drive).
+    prefix = re.match(
+        r"^\s*((?:\d+[a-z]?)(?:\s*(?:,|-|/|&|\band\b)\s*\d+[a-z]?)*)(?:\s+)(.+)$",
+        street_part,
+        flags=re.I,
     )
+    if prefix:
+        number_text = prefix.group(1)
+        street_text = prefix.group(2)
+        numbers = tuple(dict.fromkeys(re.findall(r"\d+[a-z]?", number_text, flags=re.I)))
+    else:
+        one_number = re.match(r"^\s*(\d+[a-z]?)\s+(.+)$", street_part, flags=re.I)
+        if one_number:
+            numbers = (one_number.group(1),)
+            street_text = one_number.group(2)
+        else:
+            numbers = tuple()
+            street_text = street_part
+
+    tokens = re.findall(r"[a-z0-9]+", street_text.lower())
+    normalized_tokens = []
+    for token in tokens:
+        token = _STREET_TYPE_ALIASES.get(token, token)
+        token = _DIRECTION_ALIASES.get(token, token)
+        normalized_tokens.append(token)
+
+    street = " ".join(normalized_tokens).strip()
+    lenient_tokens = [
+        token for token in normalized_tokens if token not in {"n", "s", "e", "w"}
+    ]
+    street_lenient = " ".join(lenient_tokens).strip()
+    number_key = "/".join(sorted(set(numbers)))
+    full = f"{number_key}|{street}" if number_key or street else ""
     return {
-        "numbers": numbers,
+        "numbers": tuple(sorted(set(numbers))),
         "street": street,
         "street_lenient": street_lenient,
-        "full": "||".join(full_parts),
-        "components": components,
+        "full": full,
     }
 
 
@@ -1573,12 +1561,9 @@ def _row_identity(row) -> dict:
     property_url = _canonical_url(row.get("Property Website", ""))
     website = _canonical_url(row.get("Website", ""))
     source_url = _canonical_url(row.get("Source URL", ""))
-    postals = _postal_set(row.get("Postal Code", ""))
     return {
         "address": address,
-        "raw_address": norm_header(row.get("Street Address", "")),
-        "postal": next(iter(sorted(postals)), ""),
-        "postals": postals,
+        "postal": _canonical_postal(row.get("Postal Code", "")),
         "city": _canonical_city(row.get("City", "")),
         "name": _building_name_key(row.get("Building Name", "")),
         "property_url": property_url,
@@ -1586,244 +1571,240 @@ def _row_identity(row) -> dict:
         "source_url": source_url,
         "phone": _canonical_phone(row.get("Phone", "")),
         "email": safe_text(row.get("Primary Email", "")).lower(),
-        "owner": norm_header(row.get("Management/Owner", "")),
     }
 
 
 def _discovery_keys_for_row(row) -> set[str]:
-    """Return normalized identity keys used by source merge and diagnostics."""
+    """Return normalized identity keys for diagnostics/backward compatibility."""
     identity = _row_identity(row)
-    keys = set()
     address = identity["address"]
-    for component in address.get("components", []):
-        number = component["number"]
-        strict = component["street"]
-        lenient = component["street_lenient"]
-        if number and strict:
-            keys.add(f"civic_street:{number}|{strict}")
-        if number and lenient:
-            keys.add(f"civic_street_lenient:{number}|{lenient}")
-        for postal in identity["postals"]:
-            if strict:
-                keys.add(f"civic_street_postal:{number}|{strict}|{postal}")
-            if lenient:
-                keys.add(f"civic_street_postal_lenient:{number}|{lenient}|{postal}")
-    if identity["raw_address"]:
-        keys.add(f"raw_address:{identity['raw_address']}")
-    if identity["name"]:
-        for postal in identity["postals"]:
-            keys.add(f"name_postal:{identity['name']}|{postal}")
+    keys = set()
+    if address["full"]:
+        keys.add(f"address:{address['full']}")
+    if address["street_lenient"] and address["numbers"]:
+        for number in address["numbers"]:
+            keys.add(f"civic_street:{number}|{address['street_lenient']}")
+    if identity["postal"] and address["street_lenient"]:
+        keys.add(f"street_postal:{address['street_lenient']}|{identity['postal']}")
+    if identity["name"] and identity["postal"]:
+        keys.add(f"name_postal:{identity['name']}|{identity['postal']}")
     return keys
 
 
-def _component_match_score(research: dict, source: dict) -> tuple[int, str]:
-    """Return the strongest component-level civic-address match."""
-    research_components = research["address"].get("components", [])
-    source_components = source["address"].get("components", [])
-    if not research_components or not source_components:
-        return 0, "no parsed civic-address components"
+def _source_match_score_identity(research: dict, source: dict) -> tuple[int, str]:
+    """Score two pre-normalized identities conservatively."""
+    ra = research["address"]
+    sa = source["address"]
 
-    postal_same = bool(research["postals"] & source["postals"])
-    city_same = bool(research["city"] and research["city"] == source["city"])
-
-    best_score = 0
-    best_reason = "no civic-address component match"
-    for research_component in research_components:
-        for source_component in source_components:
-            if research_component["number"] != source_component["number"]:
-                continue
-            strict_same = bool(
-                research_component["street"]
-                and research_component["street"] == source_component["street"]
-            )
-            lenient_same = bool(
-                research_component["street_lenient"]
-                and research_component["street_lenient"] == source_component["street_lenient"]
-            )
-            if strict_same:
-                score = 112 if postal_same else 108 if city_same else 103
-                reason = "same civic address component"
-            elif lenient_same:
-                score = 111 if postal_same else 107 if city_same else 102
-                reason = "same civic address component after direction normalization"
-            else:
-                continue
-            if score > best_score:
-                best_score = score
-                best_reason = reason
-    return best_score, best_reason
-
-
-def _source_match_score(research_row, source_row) -> tuple[int, str]:
-    """Score one research row against one Starting Data row conservatively."""
-    research = _row_identity(research_row)
-    source = _row_identity(source_row)
-
-    postal_same = bool(research["postals"] & source["postals"])
+    numbers_overlap = bool(set(ra["numbers"]) & set(sa["numbers"]))
+    research_numbers_are_component = bool(
+        ra["numbers"] and sa["numbers"] and set(ra["numbers"]).issubset(set(sa["numbers"]))
+    )
+    street_exact = bool(ra["street"] and ra["street"] == sa["street"])
+    street_lenient = bool(ra["street_lenient"] and ra["street_lenient"] == sa["street_lenient"])
+    postal_same = bool(research["postal"] and research["postal"] == source["postal"])
     city_same = bool(research["city"] and research["city"] == source["city"])
     name_same = bool(research["name"] and research["name"] == source["name"])
 
-    # Pass 1: invariant direct identity. This is deliberately independent of the
-    # more complex address parser so an exact source row such as 165 Chapel Street
-    # can never become "new" while that source row is loaded.
-    if research["raw_address"] and research["raw_address"] == source["raw_address"]:
+    if numbers_overlap and street_exact:
         if postal_same:
-            return 125, "exact normalized street address and postal code"
+            return 100, "same civic address and postal code"
         if city_same:
-            return 122, "exact normalized street address and Ottawa locality"
-        return 118, "exact normalized street address"
+            return 97, "same civic address and Ottawa locality"
+        return 93, "same civic address"
 
-    # Pass 2: compare every explicit civic-address component. This handles a
-    # research complex that includes one or more addresses already represented in
-    # a combined or single-address source record.
-    component_score, component_reason = _component_match_score(research, source)
-    if component_score:
-        research_streets = {
-            component["street_lenient"]
-            for component in research["address"].get("components", [])
-            if component["street_lenient"]
-        }
-        source_streets = {
-            component["street_lenient"]
-            for component in source["address"].get("components", [])
-            if component["street_lenient"]
-        }
-        # A multi-street AI row with only a partial source overlap needs review
-        # rather than being automatically treated as fully existing.
-        if len(research_streets) > 1 and not research_streets.issubset(source_streets):
-            return 86, f"partial compound-address source match: {component_reason}"
-        return component_score, component_reason
+    if numbers_overlap and street_lenient:
+        if postal_same:
+            return 99, "same civic address after street-direction normalization"
+        if city_same:
+            return 95, "same civic address after Ottawa/street normalization"
+        return 90, "same civic address after street normalization"
 
-    # Property-specific URLs can rescue formatting-heavy address differences.
-    research_urls = {url for url in [research["property_url"], research["website"], research["source_url"]] if url}
-    source_urls = {url for url in [source["property_url"], source["website"], source["source_url"]] if url}
-    if research_urls & source_urls:
+    if research_numbers_are_component and street_lenient:
+        if postal_same:
+            return 99, "research address is a component of a combined source address"
+        if city_same:
+            return 95, "research address is a component of a combined Ottawa source address"
+        return 90, "research address is a component of a combined source address"
+
+    url_pairs = [
+        (research["property_url"], source["property_url"]),
+        (research["property_url"], source["website"]),
+        (research["website"], source["property_url"]),
+    ]
+    if any(a and b and a == b for a, b in url_pairs):
         if postal_same or city_same:
-            return 96, "same property URL with compatible location"
-        return 84, "same property URL"
+            return 91, "same property website with compatible location"
+        return 82, "same property website"
 
-    # Building name is supporting evidence, never the only strong identity proof.
     if name_same and postal_same:
-        return 92, "same building name and postal code"
+        return 88, "same building name and postal code"
+    if name_same and city_same and street_lenient:
+        return 84, "same building name, Ottawa locality and street"
+    if street_lenient and postal_same:
+        return 80, "same street and postal code but civic number needs review"
     if name_same and city_same:
-        return 76, "same building name and Ottawa locality; address needs review"
-
-    # Nearby/same-street evidence is enough to prevent an automatic new claim,
-    # but not enough to mark the row as an existing source record.
-    research_streets = {
-        component["street_lenient"]
-        for component in research["address"].get("components", [])
-        if component["street_lenient"]
-    }
-    source_streets = {
-        component["street_lenient"]
-        for component in source["address"].get("components", [])
-        if component["street_lenient"]
-    }
-    if research_streets & source_streets:
-        if postal_same:
-            return 82, "same street and postal code but civic number differs"
-        if city_same:
-            return 66, "same Ottawa street but civic number differs"
-
+        return 72, "same building name and Ottawa locality; address needs review"
     return 0, "no credible source match"
 
 
-def _baseline_frame_is_credible(frame: pd.DataFrame) -> bool:
-    """Return True when a source frame is structurally safe for new-record claims."""
-    if not isinstance(frame, pd.DataFrame) or frame.empty:
-        return False
-    if "Street Address" not in frame.columns:
-        return False
-    address_resolved = (~unresolved_mask(frame["Street Address"])).sum()
-    if int(address_resolved) == 0:
-        return False
-    meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
-    if isinstance(meta, dict):
-        expected = pd.to_numeric(meta.get("source_records", 0), errors="coerce")
-        if not pd.isna(expected) and int(expected) > 0 and len(frame) < int(expected):
-            return False
-    return True
+def _source_match_score(research_row, source_row) -> tuple[int, str]:
+    """Backward-compatible wrapper around the indexed identity scorer."""
+    return _source_match_score_identity(_row_identity(research_row), _row_identity(source_row))
+
+
+def _build_source_match_index(source_frame: pd.DataFrame) -> dict:
+    """Build small lookup buckets so each research row avoids a full source scan."""
+    identities = []
+    index = {
+        "civic_strict": {},
+        "civic_lenient": {},
+        "postal": {},
+        "name_postal": {},
+        "name_city": {},
+        "url": {},
+    }
+
+    def add(bucket: str, key, position: int):
+        if not key:
+            return
+        index[bucket].setdefault(key, set()).add(position)
+
+    for position, (_, row) in enumerate(source_frame.iterrows()):
+        identity = _row_identity(row)
+        identities.append(identity)
+        address = identity["address"]
+        for number in address["numbers"]:
+            if address["street"]:
+                add("civic_strict", (number, address["street"]), position)
+            if address["street_lenient"]:
+                add("civic_lenient", (number, address["street_lenient"]), position)
+        add("postal", identity["postal"], position)
+        if identity["name"] and identity["postal"]:
+            add("name_postal", (identity["name"], identity["postal"]), position)
+        if identity["name"] and identity["city"]:
+            add("name_city", (identity["name"], identity["city"]), position)
+        for url_value in {identity["property_url"], identity["website"], identity["source_url"]}:
+            add("url", url_value, position)
+
+    index["identities"] = identities
+    return index
+
+
+def _source_candidate_positions(identity: dict, source_index: dict) -> set[int]:
+    """Return only plausible source rows for one research identity."""
+    candidates = set()
+    address = identity["address"]
+    for number in address["numbers"]:
+        if address["street"]:
+            candidates |= source_index["civic_strict"].get((number, address["street"]), set())
+        if address["street_lenient"]:
+            candidates |= source_index["civic_lenient"].get((number, address["street_lenient"]), set())
+    if identity["name"] and identity["postal"]:
+        candidates |= source_index["name_postal"].get((identity["name"], identity["postal"]), set())
+    if identity["postal"]:
+        candidates |= source_index["postal"].get(identity["postal"], set())
+    if identity["name"] and identity["city"]:
+        candidates |= source_index["name_city"].get((identity["name"], identity["city"]), set())
+    for url_value in {identity["property_url"], identity["website"], identity["source_url"]}:
+        if url_value:
+            candidates |= source_index["url"].get(url_value, set())
+    return candidates
+
+
+def enforce_ottawa_source_state() -> int:
+    """Migrate restored source versions to Ottawa-compatible structured records.
+
+    The original uploaded workbook bytes remain preserved; only the structured
+    comparison baseline is narrowed to the fixed City of Ottawa project scope.
+    """
+    versions = st.session_state.get(S_SOURCE_VERSIONS, [])
+    if not isinstance(versions, list) or not versions:
+        return 0
+    total_removed = 0
+    updated_versions = []
+    active_records = None
+    for version in versions:
+        if not isinstance(version, dict):
+            updated_versions.append(version)
+            continue
+        copied = dict(version)
+        records = copied.get("records")
+        if isinstance(records, pd.DataFrame):
+            counts = _scope_counts(records)
+            filtered = filter_to_ottawa_scope(records, keep_unknown=True)
+            removed = max(0, len(records) - len(filtered))
+            total_removed += removed
+            copied["records"] = filtered
+            meta = dict(copied.get("meta", {}))
+            meta.setdefault("source_records_before_ottawa_filter", len(records))
+            meta["source_records"] = len(filtered)
+            meta["out_of_scope_source_records"] = int(meta.get("out_of_scope_source_records", 0) or 0) + removed
+            meta["ottawa_scope_unknown_records"] = counts.get("unknown", 0)
+            copied["meta"] = meta
+            if bool(copied.get("is_active")):
+                active_records = filtered.copy()
+        updated_versions.append(copied)
+    st.session_state[S_SOURCE_VERSIONS] = updated_versions
+    if isinstance(active_records, pd.DataFrame):
+        st.session_state[S_ORIGINAL] = active_records.copy()
+        active = next((v for v in reversed(updated_versions) if isinstance(v, dict) and bool(v.get("is_active"))), None)
+        if active:
+            st.session_state[S_SOURCE_BASELINE_META] = dict(active.get("meta", {}))
+    return total_removed
 
 
 def current_starting_source_records() -> pd.DataFrame:
-    """Return the active structured Starting Data, repairing it from raw source when needed."""
+    """Return only the active Ottawa-compatible structured Starting Data."""
     versions = st.session_state.get(S_SOURCE_VERSIONS, [])
-    active_version = None
     if isinstance(versions, list):
         for version in reversed(versions):
-            if isinstance(version, dict) and bool(version.get("is_active")):
-                active_version = version
-                break
-        if active_version is None:
-            for version in reversed(versions):
-                if isinstance(version, dict):
-                    active_version = version
-                    break
-
-    candidate = pd.DataFrame()
-    if isinstance(active_version, dict):
-        records = active_version.get("records")
-        if isinstance(records, pd.DataFrame) and not records.empty:
-            candidate = records.copy()
-
-        # Cloud/session state can occasionally retain a partial structured frame.
-        # When raw source bytes are available, reparse them if the structured copy
-        # fails integrity checks or is smaller than the recorded source count.
-        raw_bytes = active_version.get("raw_bytes", b"")
-        meta = active_version.get("meta", {}) if isinstance(active_version.get("meta", {}), dict) else {}
-        expected = pd.to_numeric(meta.get("source_records", 0), errors="coerce")
-        candidate_suspicious = (
-            candidate.empty
-            or "Street Address" not in candidate.columns
-            or (~unresolved_mask(candidate["Street Address"])).sum() == 0
-            or (not pd.isna(expected) and int(expected) > 0 and len(candidate) < int(expected))
-        )
-        if candidate_suspicious and isinstance(raw_bytes, (bytes, bytearray)) and raw_bytes:
-            try:
-                reparsed, _registry, _rules, _mapping, _sheet = _source_baseline_from_workbook(
-                    bytes(raw_bytes),
-                    safe_text(meta.get("assignment_sheet", "")),
-                    st.session_state.get(S_COMPANIES, empty_company_registry()),
-                )
-                if isinstance(reparsed, pd.DataFrame) and len(reparsed) > len(candidate):
-                    candidate = reparsed.copy()
-                    active_version["records"] = reparsed.copy()
-                    st.session_state[S_SOURCE_VERSIONS] = versions
-                    st.session_state[S_ORIGINAL] = reparsed.copy()
-            except Exception:
-                pass
-
-    if not candidate.empty:
-        return candidate
+            if not isinstance(version, dict) or not bool(version.get("is_active")):
+                continue
+            records = version.get("records")
+            if isinstance(records, pd.DataFrame) and not records.empty:
+                return filter_to_ottawa_scope(records, keep_unknown=True)
+        for version in reversed(versions):
+            if not isinstance(version, dict):
+                continue
+            records = version.get("records")
+            if isinstance(records, pd.DataFrame) and not records.empty:
+                return filter_to_ottawa_scope(records, keep_unknown=True)
 
     fallback = st.session_state.get(S_ORIGINAL)
     if isinstance(fallback, pd.DataFrame) and not fallback.empty:
-        return fallback.copy()
+        return filter_to_ottawa_scope(fallback, keep_unknown=True)
     return pd.DataFrame()
 
 
 def classify_discovery_status(df, original=None):
-    """Classify website-research rows against the project Starting Data.
+    """Classify research rows using Ottawa-first indexed Starting Data matching.
 
-    Rules:
-    * exact/normalized source identity -> Existing Source Record;
-    * component-level compound-address identity -> Existing Source Record;
-    * plausible/partial source candidate -> Needs Classification;
-    * Newly Discovered -> only when the source baseline is credible AND no source
-      candidate survives either identity pass AND current-property evidence exists.
+    Unlike earlier builds, this function does not compare every research row with
+    every source row. It builds source lookup buckets once, then checks only plausible
+    candidates. Explicit out-of-Ottawa rows are excluded from discovery claims.
     """
     out = normalize_workflow(df.copy())
     source_frame = pd.DataFrame()
     if isinstance(original, pd.DataFrame) and not original.empty:
-        source_frame = normalize_workflow(original.copy())
-    baseline_credible = _baseline_frame_is_credible(source_frame)
+        source_frame = filter_to_ottawa_scope(normalize_workflow(original.copy()), keep_unknown=True)
+
+    source_index = _build_source_match_index(source_frame) if not source_frame.empty else None
+    source_identities = source_index.get("identities", []) if source_index else []
 
     for idx, row in out.iterrows():
         decision = safe_text(row.get("Record Decision", ""))
         inventory_status = safe_text(row.get("Current Inventory Status", "")).lower()
         verification_status = safe_text(row.get("Verification Status", ""))
+        scope_status = _ottawa_scope_status(row)
 
+        if scope_status == "out":
+            out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
+            out.at[idx, "Reviewer Notes"] = _append_note(
+                row.get("Reviewer Notes", ""),
+                "Excluded from project comparison because the public address is outside the City of Ottawa scope.",
+            )
+            continue
         if decision == "Possible Duplicate":
             out.at[idx, "Directory Discovery Status"] = "Possible Duplicate"
             continue
@@ -1831,84 +1812,53 @@ def classify_discovery_status(df, original=None):
             out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
             continue
 
-        if source_frame.empty:
+        if not source_index:
             out.at[idx, "Directory Discovery Status"] = "Needs Classification"
-            out.at[idx, "Reviewer Notes"] = _append_note(
-                out.at[idx, "Reviewer Notes"],
-                "Starting Data comparison unavailable; Datablix suppressed automatic new-record classification.",
-            )
             continue
 
+        identity = _row_identity(row)
+        candidate_positions = _source_candidate_positions(identity, source_index)
         best_score = 0
         best_reason = "no credible source match"
-        best_source_row = None
-        for _, source_row in source_frame.iterrows():
-            score, reason = _source_match_score(row, source_row)
+        for position in candidate_positions:
+            if position >= len(source_identities):
+                continue
+            score, reason = _source_match_score_identity(identity, source_identities[position])
             if score > best_score:
                 best_score = score
                 best_reason = reason
-                best_source_row = source_row
-                if best_score >= 125:
+                if score >= 100:
                     break
 
         if best_score >= 88:
             out.at[idx, "Directory Discovery Status"] = "Existing Source Record"
-            if best_source_row is not None:
-                source_address = safe_text(best_source_row.get("Street Address", ""))
-                source_owner = safe_text(best_source_row.get("Management/Owner", ""))
-                out.at[idx, "Reviewer Notes"] = _append_note(
-                    out.at[idx, "Reviewer Notes"],
-                    f"Starting Data match: {source_address or 'matched source record'} ({best_reason}).",
-                )
-                research_owner = safe_text(row.get("Management/Owner", ""))
-                if research_owner and source_owner and norm_header(research_owner) != norm_header(source_owner):
-                    out.at[idx, "Reviewer Notes"] = _append_note(
-                        out.at[idx, "Reviewer Notes"],
-                        f"Management/owner differs from Starting Data ({source_owner}); review ownership rather than treating this address as new.",
-                    )
             continue
-
-        # Any plausible candidate blocks an automatic discovery claim.
-        if best_score >= 60:
+        if best_score >= 72:
             out.at[idx, "Directory Discovery Status"] = "Needs Classification"
-            if best_source_row is not None:
-                source_address = safe_text(best_source_row.get("Street Address", ""))
-                out.at[idx, "Reviewer Notes"] = _append_note(
-                    out.at[idx, "Reviewer Notes"],
-                    f"Possible Starting Data match: {source_address or 'source record'} ({best_reason}); automatic new-record classification suppressed.",
-                )
             continue
 
-        identity = _row_identity(row)
-        has_property_identity = bool(identity["address"].get("components")) or bool(identity["property_url"]) or bool(identity["name"] and identity["postals"])
+        has_property_identity = bool(
+            identity["address"]["numbers"] and identity["address"]["street_lenient"]
+        ) or bool(identity["property_url"]) or bool(identity["name"] and identity["postal"])
         current_evidence = (
             inventory_status.startswith("current")
-            or (
-                verification_status == "Verified"
-                and decision in {"Keep", "Update"}
-            )
+            or (verification_status == "Verified" and decision in {"Keep", "Update"})
         )
 
-        if not baseline_credible:
+        # Unknown locality evidence is never enough to declare a new Ottawa property.
+        if scope_status == "unknown":
             out.at[idx, "Directory Discovery Status"] = "Needs Classification"
             out.at[idx, "Reviewer Notes"] = _append_note(
-                out.at[idx, "Reviewer Notes"],
-                "Starting Data baseline failed an integrity check; automatic new-record classification suppressed.",
+                row.get("Reviewer Notes", ""),
+                "Ottawa municipal scope needs confirmation before this record can be treated as newly discovered.",
             )
-            continue
-
-        out.at[idx, "Directory Discovery Status"] = (
-            "Newly Discovered"
-            if has_property_identity and current_evidence
-            else "Needs Classification"
-        )
-        if out.at[idx, "Directory Discovery Status"] == "Newly Discovered":
-            out.at[idx, "Reviewer Notes"] = _append_note(
-                out.at[idx, "Reviewer Notes"],
-                "No credible Starting Data identity candidate remained after exact and compound-address comparison.",
+        else:
+            out.at[idx, "Directory Discovery Status"] = (
+                "Newly Discovered" if has_property_identity and current_evidence else "Needs Classification"
             )
 
     return out
+
 
 def empty_company_registry():
     return pd.DataFrame(columns=COMPANY_COLUMNS)
@@ -3215,6 +3165,12 @@ def append_external_research_results(
     mapped["Record Decision"] = "Undecided"
     mapped["Directory Entry Status"] = "Not Entered"
 
+    # Enforce the fixed project boundary before consolidation or source matching.
+    # Explicit non-Ottawa research rows never enter the active review queue.
+    imported_scope_counts = _scope_counts(mapped)
+    mapped = filter_to_ottawa_scope(mapped, keep_unknown=True)
+    st.session_state["db_last_ottawa_omitted"] = imported_scope_counts.get("out", 0)
+
     # Protect the review queue from AI over-splitting.  When the company clearly
     # leases multiple civic addresses as one named property, retain one row.
     mapped = consolidate_shared_leasing_rows(mapped)
@@ -3406,6 +3362,37 @@ def qa_checks(df):
     out.loc[dates.gt(today), "Freshness Status"] = "Future date"
     out.loc[dates.notna() & dates.le(today) & age.gt(FRESHNESS_DAYS), "Freshness Status"] = "Stale"
     return out
+
+
+def cached_qa_checks(df: pd.DataFrame) -> pd.DataFrame:
+    """Reuse QA results until project data actually changes.
+
+    Streamlit reruns the script for navigation and widget interactions. QA should
+    not be rebuilt for display-only reruns.
+    """
+    if not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+    if df.empty:
+        return qa_checks(df)
+
+    record_ids = tuple(
+        df.get("Record ID", pd.Series("", index=df.index))
+        .astype("string").fillna("").astype(str).tolist()
+    )
+    cache_key = (
+        int(st.session_state.get(S_EDIT_COUNT, 0) or 0),
+        len(df),
+        record_ids,
+    )
+    cache = st.session_state.get("_db_qa_cache")
+    if isinstance(cache, dict) and cache.get("key") == cache_key:
+        cached = cache.get("frame")
+        if isinstance(cached, pd.DataFrame):
+            return cached
+
+    result = qa_checks(df)
+    st.session_state["_db_qa_cache"] = {"key": cache_key, "frame": result}
+    return result
 
 
 def listing_export(df):
@@ -5632,9 +5619,12 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
     source_hash = hashlib.sha256(data).hexdigest()
     current_registry = st.session_state.get(S_COMPANIES, empty_company_registry())
 
-    project_source, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
+    project_source_raw, registry, rules, mapping, building_sheet = _source_baseline_from_workbook(
         data, assignment_sheet, current_registry
     )
+    source_scope_counts = _scope_counts(project_source_raw)
+    project_source = filter_to_ottawa_scope(project_source_raw, keep_unknown=True)
+    out_of_scope_source_records = max(0, len(project_source_raw) - len(project_source))
 
     previous_versions = _source_versions_state()
     replaced_existing = bool(previous_versions or st.session_state.get(S_SOURCE_BASELINE_META))
@@ -5661,6 +5651,9 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
         "imported_at": datetime.now().isoformat(timespec="seconds"),
         "assigned_companies": len(registry),
         "source_records": len(project_source),
+        "source_records_before_ottawa_filter": len(project_source_raw),
+        "out_of_scope_source_records": out_of_scope_source_records,
+        "ottawa_scope_unknown_records": source_scope_counts.get("unknown", 0),
         "project_company_source_records": len(relevant),
         "classification_rules": len(rules),
         "source_hash": source_hash,
@@ -5715,6 +5708,9 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
     return {
         "assigned_companies": len(registry),
         "source_records": len(project_source),
+        "source_records_before_ottawa_filter": len(project_source_raw),
+        "out_of_scope_source_records": out_of_scope_source_records,
+        "ottawa_scope_unknown_records": source_scope_counts.get("unknown", 0),
         "project_company_source_records": len(relevant),
         "working_records": len(research_records),
         "classification_rules": len(rules),
@@ -5935,10 +5931,20 @@ def save_edits(edited, columns):
 
     working["Province"] = working["Province"].apply(canonical_province)
     working["Postal Code"] = working["Postal Code"].apply(postal_code)
-    st.session_state[S_WORKING] = normalize_workflow(prepare_data(working))
+    working = filter_to_ottawa_scope(normalize_workflow(prepare_data(working)), keep_unknown=True)
+    identity_fields = {
+        "Building Name", "Street Address", "City", "Province", "Postal Code",
+        "Property Website", "Website", "Current Inventory Status",
+        "Verification Status", "Record Decision",
+    }
+    if identity_fields.intersection(editable_columns):
+        baseline = current_starting_source_records()
+        working = classify_discovery_status(working, baseline if not baseline.empty else None)
+    st.session_state[S_WORKING] = working
     st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + 1
-    refreshed_qa = qa_checks(st.session_state[S_WORKING].copy())
+    refreshed_qa = cached_qa_checks(st.session_state[S_WORKING].copy())
     approved_count = int(approved_for_export_mask(refreshed_qa).sum())
+    autosave_current_project()
     st.session_state[S_FLASH] = (
         f"Changes saved. Quality checks refreshed; {approved_count:,} record(s) "
         "are currently Approved for Export."
@@ -6684,7 +6690,7 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
         if company_records.empty:
             st.info("No building records have been added for this company yet.")
         else:
-            company_qa = qa_checks(company_records)
+            company_qa = cached_qa_checks(company_records)
             coverage = pd.DataFrame({
                 "Stage": ["Collected", "Reviewed", "Verified", "Need attention"],
                 "Records": [snapshot["collected"], snapshot["reviewed"], snapshot["verified"], snapshot["attention"]],
@@ -7499,19 +7505,35 @@ if S_WORKING not in st.session_state:
 if S_FLASH in st.session_state:
     st.toast(st.session_state.pop(S_FLASH), icon="✅")
 
-working, project_registry = synchronize_company_registry(
-    st.session_state[S_WORKING].copy(),
-    st.session_state.get(S_COMPANIES),
-)
-_comparison_baseline = current_starting_source_records()
-working = classify_discovery_status(
-    working,
-    _comparison_baseline if not _comparison_baseline.empty else None,
-)
-st.session_state[S_WORKING] = working
+# Keep runtime work Ottawa-only and avoid the old O(research_rows × source_rows)
+# comparison on every Streamlit rerun. Source matching is recalculated only when
+# source data, imported research, or identity-relevant review fields change.
+if not st.session_state.get("_db_v42_scope_migrated"):
+    removed_source_rows = enforce_ottawa_source_state()
+    st.session_state["_db_v42_scope_migrated"] = True
+    if removed_source_rows:
+        st.session_state[S_FLASH] = (
+            f"Ottawa scope applied: {removed_source_rows:,} explicit out-of-scope Starting Data row(s) were removed from the active comparison baseline."
+        )
+
+# Keep ordinary Streamlit reruns cheap. Ottawa filtering, registry synchronization,
+# and source comparison happen when data is imported/edited, not during navigation.
+working = st.session_state[S_WORKING].copy()
+project_registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
 st.session_state[S_COMPANIES] = project_registry
+
+if not st.session_state.get("_db_v42_identity_migrated"):
+    working = filter_to_ottawa_scope(working, keep_unknown=True)
+    _comparison_baseline = current_starting_source_records()
+    working = classify_discovery_status(
+        working,
+        _comparison_baseline if not _comparison_baseline.empty else None,
+    )
+    st.session_state[S_WORKING] = working
+    st.session_state["_db_v42_identity_migrated"] = True
+
 has_records = not working.empty
-qa = qa_checks(working) if has_records else None
+qa = None
 
 # -----------------------------
 # Primary navigation
@@ -7581,26 +7603,11 @@ st.markdown(
 
 visible_active_section = PRIMARY_ACTIVE_SECTION[st.session_state["db_section"]]
 
-# Progress is shown directly in the main navigation so there is only one workflow row.
+# Navigation itself does not require QA. Heavy QA is loaded lazily only where used.
 active_company_id = (
     str(active_header_company.get("Company ID", "")).strip()
     if active_header_company is not None
     else ""
-)
-company_records = (
-    working.loc[working["Company ID"].astype(str).eq(active_company_id)].copy()
-    if active_company_id and "Company ID" in working.columns
-    else working.iloc[0:0].copy()
-)
-company_qa = (
-    qa.loc[qa["Company ID"].astype(str).eq(active_company_id)].copy()
-    if active_company_id and isinstance(qa, pd.DataFrame) and "Company ID" in qa.columns
-    else pd.DataFrame()
-)
-review_population = (
-    company_qa.loc[~company_qa["Record Decision"].eq("Remove")].copy()
-    if not company_qa.empty and "Record Decision" in company_qa.columns
-    else company_qa
 )
 
 NAV_DESCRIPTIONS = {
@@ -7628,6 +7635,9 @@ with st.container(key="db_nav_row"):
                 st.rerun()
 
 section = st.session_state["db_section"]
+if has_records and section in {"Overview", "Review records", "Analysis & report", "Downloads"}:
+    qa = cached_qa_checks(working)
+
 st.markdown(
     f'<div class="db-nav-context"><strong>{escape(NAV_LABELS[section])}</strong> — '
     f'{escape(NAV_DESCRIPTIONS[section])}</div>',
@@ -8688,7 +8698,7 @@ elif section == "Website scanner":
     st.divider()
     st.subheader("2. Import the single completed CSV research deliverable")
     st.caption(
-        "Exactly one consolidated CSV is the required research-deliverable format. The AI file contains website research only. When imported, Datablix first consolidates clearly shared leasing-property rows, then compares normalized civic addresses, compound addresses, Ottawa locality labels, postal codes, names and property URLs against the current Starting Data baseline before any row can be called newly discovered."
+        "Exactly one consolidated CSV is the required research-deliverable format. Datablix first removes explicit out-of-Ottawa rows, then consolidates clearly shared leasing-property rows and compares the remaining records against the Ottawa-only Starting Data baseline before any row can be called newly discovered."
     )
     import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
     with import_tabs[0]:
@@ -8725,8 +8735,10 @@ elif section == "Website scanner":
                     company_website=company_website,
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
+                omitted_count = int(st.session_state.pop("db_last_ottawa_omitted", 0) or 0)
+                scope_note = f" {omitted_count:,} explicit out-of-Ottawa row(s) were omitted." if omitted_count else ""
                 st.session_state[S_FLASH] = (
-                    f"Imported {added_count:,} website-research row(s) for {company_name}. Datablix compared them with the current Starting Data when available; review the comparison, evidence, duplicates, and missing information next."
+                    f"Imported {added_count:,} Ottawa-compatible website-research row(s) for {company_name}.{scope_note} Datablix compared them with the current Ottawa Starting Data; review the comparison, evidence, duplicates, and missing information next."
                 )
                 go_to("Review records")
                 st.rerun()
@@ -8758,8 +8770,10 @@ elif section == "Website scanner":
                     company_website=company_website,
                 )
                 st.session_state[S_EDIT_COUNT] = st.session_state.get(S_EDIT_COUNT, 0) + added_count
+                omitted_count = int(st.session_state.pop("db_last_ottawa_omitted", 0) or 0)
+                scope_note = f" {omitted_count:,} explicit out-of-Ottawa row(s) were omitted." if omitted_count else ""
                 st.session_state[S_FLASH] = (
-                    f"Imported {added_count:,} Google Sheets research row(s) for {company_name}. Datablix compared them with the current Starting Data when available; review the findings before verification."
+                    f"Imported {added_count:,} Ottawa-compatible Google Sheets research row(s) for {company_name}.{scope_note} Datablix compared them with the current Ottawa Starting Data; review the findings before verification."
                 )
                 go_to("Review records")
                 st.rerun()
@@ -8789,6 +8803,13 @@ elif section == "Website scanner":
                 if column not in merged.columns:
                     merged[column] = pd.NA
             merged = ensure_ids(normalize_workflow(prepare_data(merged)))
+            before_scope_count = len(merged)
+            merged = filter_to_ottawa_scope(merged, keep_unknown=True)
+            scanner_scope_omitted = max(0, before_scope_count - len(merged))
+            baseline = current_starting_source_records()
+            merged = classify_discovery_status(
+                merged, baseline if not baseline.empty else None
+            )
             merged, registry = synchronize_company_registry(
                 merged,
                 st.session_state.get(S_COMPANIES),
@@ -8802,8 +8823,12 @@ elif section == "Website scanner":
                 st.session_state.get(S_EDIT_COUNT, 0)
                 + int(scan_result.get("added", 0))
             )
+            scanner_scope_note = (
+                f" {scanner_scope_omitted:,} explicit out-of-Ottawa scanner row(s) were omitted."
+                if scanner_scope_omitted else ""
+            )
             st.session_state[S_FLASH] = (
-                f"Added {int(scan_result.get('added', 0))} scanner cross-check record(s) for {company_name}. Compare them with the imported research before verification."
+                f"Added {int(scan_result.get('added', 0))} scanner cross-check record(s) for {company_name}.{scanner_scope_note} Compare the Ottawa-compatible findings with the imported research before verification."
             )
             go_to("Review records")
             st.rerun()
@@ -9128,7 +9153,9 @@ elif section == "Review records":
                     st.rerun()
 
     if has_records:
-        render_review_quality_progress(qa_checks(st.session_state[S_WORKING].copy()), review_quality_company_id)
+        # Reuse the QA frame already calculated for this rerun instead of running
+        # the full quality engine a second time in the Review page.
+        render_review_quality_progress(qa, review_quality_company_id)
 
 # -----------------------------
 # Analysis and report
@@ -9755,5 +9782,32 @@ elif section == "Downloads":
         )
 
 
-# Persist the latest completed state after every Streamlit rerun.
-autosave_current_project()
+def _light_autosave_revision_token():
+    """Return a cheap revision token without serializing the full project."""
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    registry_bits = []
+    if not registry.empty:
+        for _, row in registry.iterrows():
+            registry_bits.append((
+                safe_text(row.get("Company ID")),
+                safe_text(row.get("Management/Owner")),
+                safe_text(row.get("Company Status")),
+                safe_text(row.get("Prompt Updated")),
+            ))
+    working_state = st.session_state.get(S_WORKING)
+    working_count = len(working_state) if isinstance(working_state, pd.DataFrame) else 0
+    return (
+        int(st.session_state.get(S_EDIT_COUNT, 0) or 0),
+        working_count,
+        safe_text(st.session_state.get(S_PROJECT_NAME, "")),
+        safe_text(st.session_state.get(S_ACTIVE_COMPANY, "")),
+        tuple(registry_bits),
+    )
+
+
+# Save after meaningful changes only. Display-only reruns no longer serialize, hash,
+# and upload the entire workspace.
+_revision = _light_autosave_revision_token()
+if _revision != st.session_state.get("_db_last_autosave_revision"):
+    autosave_current_project()
+    st.session_state["_db_last_autosave_revision"] = _revision
