@@ -26,7 +26,36 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Website Research + Datablix Compare 2026.07.24-v37"
+DATABLIX_BUILD = "Ottawa Scope + Address-Based Classification Research 2026.07.24-v39"
+
+# This project is intentionally limited to rental apartment buildings within the
+# municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
+# must not be included in research deliverables for this project.
+PROJECT_CITY = "Ottawa"
+PROJECT_PROVINCE = "Ontario"
+PROJECT_COUNTRY = "Canada"
+PROJECT_GEOGRAPHIC_SCOPE = "City of Ottawa, Ontario, Canada"
+
+# Height-based building classification used by the project.
+# Classification is derived only when a reliable storey count (or multiple
+# non-conflicting counts that remain in the same band) supports the result.
+BUILDING_CLASSIFICATION_BANDS = (
+    ("Low-rise", 1, 4),
+    ("Mid-rise", 5, 11),
+    ("High-rise", 12, None),
+)
+
+# Common locality labels that can still be inside the City of Ottawa municipal
+# boundary. This list is used only to reduce false QA warnings; it is NOT used
+# to automatically include/exclude a property. Public address evidence remains
+# the source of truth for municipal scope.
+OTTAWA_LOCALITY_LABELS = {
+    "ottawa", "kanata", "nepean", "orleans", "orléans", "gloucester",
+    "barrhaven", "stittsville", "vanier", "rockcliffe park", "manotick",
+    "carp", "cumberland", "greely", "metcalfe", "osgoode", "richmond",
+    "north gower", "navan", "vars", "constance bay", "dunrobin",
+    "fitzroy harbour", "munster", "sarsfield", "kinburn",
+}
 
 # =========================================================
 # Configuration
@@ -187,7 +216,8 @@ CLASSIFICATION_LABELS = {
 CORE_FIELDS = ["Management/Owner", "Street Address", "City"]
 TARGET_FIELDS = [
     "Building Name", "Province", "Postal Code", "Phone", "Primary Email",
-    "Website", "Number of Apartments", "Building Classification",
+    "Website", "Number of Apartments", "Number of Storeys",
+    "Building Classification",
 ]
 ALL_RESEARCH_FIELDS = CORE_FIELDS + TARGET_FIELDS
 
@@ -1772,6 +1802,58 @@ def derive_classification(df):
     return df[available].apply(derive, axis=1)
 
 
+def classification_from_storey_value(value):
+    """Return Low-rise, Mid-rise, or High-rise when storey evidence supports one band.
+
+    Examples:
+    - 4 -> Low-rise
+    - 11 -> Mid-rise
+    - 12 -> High-rise
+    - "14 or 15" -> High-rise because both reported counts remain in one band
+    - "11 or 12" -> unresolved because the conflicting counts cross a band boundary
+    """
+    if is_unresolved(value):
+        return pd.NA
+
+    numbers = [
+        int(number)
+        for number in re.findall(r"\b\d+\b", str(value))
+        if int(number) > 0
+    ]
+    if not numbers:
+        return pd.NA
+
+    labels = set()
+    for storeys in numbers:
+        if 1 <= storeys <= 4:
+            labels.add("Low-rise")
+        elif 5 <= storeys <= 11:
+            labels.add("Mid-rise")
+        elif storeys >= 12:
+            labels.add("High-rise")
+
+    return next(iter(labels)) if len(labels) == 1 else pd.NA
+
+
+def derive_height_classification_from_storeys(series: pd.Series) -> pd.Series:
+    """Derive the project's controlled height classification from storey evidence."""
+    return series.apply(classification_from_storey_value).astype("object")
+
+
+def normalize_height_classification(value):
+    """Normalize common wording to the project's three controlled labels."""
+    if is_unresolved(value):
+        return pd.NA
+    key = norm_header(value)
+    mapping = {
+        "lowrise": "Low-rise",
+        "midrise": "Mid-rise",
+        "highrise": "High-rise",
+        "hirise": "High-rise",
+    }
+    return mapping.get(key, str(value).strip())
+
+
 def ensure_ids(df):
     """Ensure every Datablix row has one unique stable Record ID."""
     out = df.copy()
@@ -1833,10 +1915,19 @@ def map_schema(df):
                         row["Imported Column(s)"] = ", ".join(combined)
                         row["Mapping Status"] = "Derived"
 
-    derived = derive_classification(imported)
-    current = resolved(mapped["Building Classification"])
-    mask = unresolved_mask(current) & ~unresolved_mask(derived)
-    current.loc[mask] = derived.loc[mask]
+    # Preserve an explicitly supplied classification, but normalize common height
+    # wording. When classification is blank, first use verified storey evidence
+    # because the project defines Low-rise/Mid-rise/High-rise by storey count.
+    current = resolved(mapped["Building Classification"]).apply(normalize_height_classification)
+    height_derived = derive_height_classification_from_storeys(mapped["Number of Storeys"])
+    height_mask = unresolved_mask(current) & ~unresolved_mask(height_derived)
+    current.loc[height_mask] = height_derived.loc[height_mask]
+
+    # Legacy source category columns are kept only as a final fallback so older
+    # project files remain readable. They must not override a storey-based result.
+    legacy_derived = derive_classification(imported)
+    legacy_mask = unresolved_mask(current) & ~unresolved_mask(legacy_derived)
+    current.loc[legacy_mask] = legacy_derived.loc[legacy_mask]
     mapped["Building Classification"] = current
 
     source = resolved(mapped["Source URL"])
@@ -2181,7 +2272,7 @@ def build_company_website_research_prompt(
     source_policy: str,
     output_notes: str,
 ) -> str:
-    """Create a website-only research prompt. Source comparison happens in Datablix after import."""
+    """Create an Ottawa-only website research prompt. Source comparison happens in Datablix after import."""
     return f"""# Datablix Website-Only Company Research Prompt
 
 You are acting as a careful public-source rental-property research analyst. Research the company below and produce exactly ONE downloadable consolidated CSV file for import into Datablix.
@@ -2197,7 +2288,16 @@ Your job here is to establish what the company's current public web presence sup
 ## Company context
 - Company or management owner: {company_name or '[enter company name]'}
 - Official company website: {company_website or '[enter official website]'}
-- Geographic scope: {geographic_scope or 'Ontario, Canada'}
+- Geographic scope: {PROJECT_GEOGRAPHIC_SCOPE}
+
+## Non-negotiable Ottawa-only project boundary
+This project covers ONLY apartment properties physically located within the municipal boundary of the City of Ottawa, Ontario, Canada.
+
+- Do not include properties elsewhere in Ontario or Canada simply because the selected company manages them.
+- Do not include Toronto, Cornwall, Gatineau, Renfrew, Kingston, or any other municipality outside the City of Ottawa.
+- Ottawa neighbourhood/locality labels such as Kanata, Nepean, Orléans, Gloucester, Barrhaven, or Stittsville may be included only when public address evidence supports that the property is within the City of Ottawa municipal boundary.
+- A property that is outside Ottawa is OUT OF PROJECT SCOPE. Omit it completely from the CSV; do not keep it as an Excluded/legacy row.
+- If municipal inclusion is genuinely uncertain, do not guess. Research the address further. Include the property only when there is reasonable public evidence that it is within the City of Ottawa; otherwise omit it and mention the scope limitation only in minimal commentary outside the CSV if necessary.
 
 ## Core principle
 Do NOT begin by collecting every property URL that happens to exist.
@@ -2261,6 +2361,7 @@ For each Current property, inspect the complete relevant official property conte
 - laundry;
 - utilities;
 - elevator/accessibility information;
+- number of storeys and height-based building classification;
 - pet and smoke-free policies;
 - leasing/availability pages;
 - official PDFs or brochures;
@@ -2285,10 +2386,12 @@ Before producing the final CSV:
 5. Verify every field before listing it under Missing Information.
 6. Remove duplicate rows created by the WEBSITE RESEARCH ITSELF, primarily using normalized street address and postal code, then property URL and building name plus city.
 7. Ensure ONE row per unique identifiable physical property in this website-research result.
-8. Check that City, Province, and Postal Code agree.
-9. Ensure every populated value is traceable to public evidence.
-10. Distinguish official-source findings from secondary-source findings.
-11. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
+8. Check that every returned property is within the City of Ottawa municipal boundary; remove out-of-Ottawa rows from the deliverable.
+9. Check that City, Province, and Postal Code agree.
+10. Recheck Number of Storeys and Building Classification using the exact project rules below.
+11. Ensure every populated value is traceable to public evidence.
+12. Distinguish official-source findings from secondary-source findings.
+13. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
 
 Do NOT compare any row with Datablix Starting Data during this quality check. Datablix handles project-level existing/new/duplicate comparison after import.
 
@@ -2310,6 +2413,13 @@ Field guidance:
 - Property Website: the official property-specific homepage.
 - Company Website: the official corporate or management-company homepage.
 - Source URL: the strongest exact official page supporting the property's identity/current website status.
+- Number of Storeys: actively research the building's storey/floor count. The VERIFIED FULL STREET ADDRESS is the primary research key whenever the official property page does not state the count. Do not leave this blank after checking only the property landing page. Using a web-enabled research tool, search the exact verified address with queries such as "[full street address, Ottawa ON] number of storeys", "[full street address, Ottawa ON] number of floors", "[full street address, Ottawa ON] apartment building storeys", and the building name plus address when a reliable building name is known. Check the official property site first, then official City of Ottawa planning/development records and documents, official PDFs/brochures, and reliable secondary property sources. A missing building name is NOT a reason to stop: the verified address alone should be used to continue the storey search. Do not mark Number of Storeys as missing until reasonable exact-address research has been attempted and documented. Record conflicting counts rather than choosing a number without evidence.
+- Building Classification: use ONLY the project's height-based labels below and base the result on reliable storey evidence:
+  - Low-rise = 1–4 storeys
+  - Mid-rise = 5–11 storeys
+  - High-rise = 12+ storeys
+  Ottawa planning/zoning practice generally treats buildings of 12 storeys and higher as high-rise developments. Do not use marketing labels, unit count, elevator presence, words such as tower, luxury, low rental, garden home, or visual appearance as substitutes for storey evidence.
+  If reliable sources disagree on the exact storey count but every supported count falls in the SAME classification band (for example 14 vs 15), Building Classification may still use that shared band while Number of Storeys remains blank and the conflict is documented. If the supported counts cross a classification boundary (for example 11 vs 12), leave Building Classification blank and document the conflict.
 - Current Inventory Status: Current, Review, or Excluded — not in current website inventory.
 - Inventory Evidence: explain the official website inventory source(s) supporting the status.
 - Found on City/Portfolio Page: Yes, No, or Unknown.
@@ -2333,15 +2443,19 @@ Field guidance:
 9. Preserve conflicting values and explain the conflict instead of choosing one without evidence.
 10. Deduplicate only within this website-research result. Do not compare against Datablix/project source records.
 11. Do not merge separate buildings merely because they belong to one complex. Do not split one building merely because several source pages describe it.
-12. Keep only properties inside the stated geographic scope. Put uncertain locations in Reviewer Notes and Current Inventory Status = Review rather than silently guessing.
-13. Validate Canadian postal-code formatting where available, but do not manufacture missing postal codes.
-14. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
-15. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
-16. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it.
-17. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain it and research missing details elsewhere.
-18. Do not classify a property as Existing Source Record, Newly Discovered, or Possible Duplicate relative to the project. Datablix assigns project-comparison status after import.
+12. Ottawa scope is mandatory. Return only properties within the City of Ottawa municipal boundary. Omit out-of-Ottawa properties entirely; do not label geographic out-of-scope properties as Excluded/legacy.
+13. Research Number of Storeys before finalizing Building Classification. Use Low-rise for 1–4 storeys, Mid-rise for 5–11 storeys, and High-rise for 12+ storeys. Never guess classification from appearance, unit count, building name, elevator presence, or marketing terminology.
+14. If no reliable storey evidence can support a classification after a reasonable search, leave Building Classification blank and list it under Missing Information. If storey sources conflict across classification bands, also leave Building Classification blank and explain the conflict in Reviewer Notes/Supporting Evidence.
+15. Validate Canadian postal-code formatting where available, but do not manufacture missing postal codes.
+16. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
+17. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
+18. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it.
+19. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain it and research missing details elsewhere.
+20. Do not classify a property as Existing Source Record, Newly Discovered, or Possible Duplicate relative to the project. Datablix assigns project-comparison status after import.
 
 ## Priority or company-specific instructions
+The Ottawa-only geographic boundary and the height-based building-classification rules above are project-wide requirements. Company-specific notes may refine research priorities, but they must NEVER broaden the scope beyond the City of Ottawa or override the 1–4 / 5–11 / 12+ classification rules. Ignore any older saved note that conflicts with those project-wide requirements.
+
 {priority_notes or 'No additional priorities were provided.'}
 
 ## Required deliverable — EXACTLY ONE consolidated CSV file
@@ -2468,6 +2582,43 @@ def qa_checks(df):
     flag(~unresolved_mask(out["Phone"]) & ~phone.str.len().isin([10, 11]), "Warning", "Phone number does not contain 10 or 11 digits")
     pc = out["Postal Code"].astype("string").fillna("").str.upper().str.strip()
     flag(~unresolved_mask(out["Postal Code"]) & ~pc.str.match(r"^[A-Z]\d[A-Z][ -]?\d[A-Z]\d$", na=False), "Warning", "Invalid Canadian postal code format")
+
+    # Ottawa-only project scope checks. Locality labels such as Kanata or Orléans
+    # can still be within Ottawa, so unfamiliar locality wording is flagged for
+    # review instead of being automatically deleted.
+    province_text = out["Province"].astype("string").fillna("").str.strip().str.lower()
+    country_text = out["Country"].astype("string").fillna("").str.strip().str.lower()
+    city_text = out["City"].astype("string").fillna("").str.strip().str.lower()
+    flag(~unresolved_mask(out["Province"]) & ~province_text.isin({"ontario", "on"}), "Critical", "Outside Ottawa project province")
+    flag(~unresolved_mask(out["Country"]) & ~country_text.isin({"canada", "ca"}), "Critical", "Outside Ottawa project country")
+    flag(~unresolved_mask(out["City"]) & ~city_text.isin(OTTAWA_LOCALITY_LABELS), "Warning", "Verify City of Ottawa municipal scope")
+
+    # Classification consistency: a reliable storey count determines the height
+    # band. Conflicting or non-standard classifications must be reviewed.
+    derived_height = derive_height_classification_from_storeys(out["Number of Storeys"])
+    normalized_classification = out["Building Classification"].apply(normalize_height_classification)
+    controlled_labels = {"Low-rise", "Mid-rise", "High-rise"}
+    flag(
+        ~unresolved_mask(out["Building Classification"])
+        & ~normalized_classification.isin(controlled_labels),
+        "Warning",
+        "Building classification is not Low-rise, Mid-rise, or High-rise",
+    )
+    flag(
+        ~unresolved_mask(derived_height)
+        & ~unresolved_mask(normalized_classification)
+        & normalized_classification.isin(controlled_labels)
+        & normalized_classification.ne(derived_height),
+        "Warning",
+        "Building classification conflicts with storey count",
+    )
+    flag(
+        ~unresolved_mask(normalized_classification)
+        & normalized_classification.isin(controlled_labels)
+        & unresolved_mask(out["Number of Storeys"]),
+        "Warning",
+        "Building classification lacks supporting storey evidence",
+    )
     for field in ["Website", "Source URL"]:
         urls = out[field].astype("string").fillna("").str.lower().str.strip()
         flag(~unresolved_mask(out[field]) & ~urls.str.startswith(("http://", "https://"), na=False), "Warning", f"Invalid {field}")
@@ -7662,9 +7813,9 @@ elif section == "Website scanner":
             "but Datablix cannot classify imported rows as existing versus newly discovered until a source is loaded."
         )
 
-    default_scope = "Ontario, Canada"
+    default_scope = PROJECT_GEOGRAPHIC_SCOPE
     default_source_policy = (
-        "Use current official city/property-search/portfolio pages and the current human-readable HTML sitemap first to establish active inventory. "
+        "Use current official Ottawa city/property-search/portfolio pages and the current human-readable HTML sitemap first to establish the company's active Ottawa inventory. "
         "Use official property pages, leasing pages, official PDFs, and official property websites for detailed fields. "
         "Technical XML sitemaps are discovery evidence only, not proof that a property is current. "
         "Use reliable third-party public sources only for genuine field gaps after a property is confirmed as current; clearly label them as secondary evidence. "
@@ -7672,11 +7823,11 @@ elif section == "Website scanner":
         "Ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence; a URL alone must never create a property row."
     )
     default_priority_notes = (
-        "Establish the complete current Ontario inventory from the company's current official website structure. "
+        "Establish the complete current City of Ottawa inventory from the company's current official website structure and omit all properties outside Ottawa. "
         "Exclude meaningful legacy property pages only when current website inventory evidence supports exclusion. "
         "Before creating any property row, ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence. "
         "Keep legitimate current properties even when their dedicated page is sparse, and recheck each valid property across permitted sources for postal code, amenities, unit count, "
-        "contact details, and other requested fields before declaring information missing. Preserve exact evidence and flag uncertain inventory for review."
+        "contact details, and other requested fields before declaring information missing. For Number of Storeys, use the verified full Ottawa street address as an explicit web-search key (for example: exact address + number of storeys/floors) before treating the field as unavailable; then derive Building Classification from the verified storey evidence. Preserve exact evidence and flag uncertain inventory for review."
     )
     default_output_notes = (
         "Return exactly one downloadable CSV file only. Use one row per unique identifiable physical property and keep the exact requested headings in the exact requested order. "
@@ -7685,18 +7836,22 @@ elif section == "Website scanner":
         "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The CSV must be ready for direct Datablix import."
     )
 
-    saved_scope = str(active_company.get("Prompt Scope", "") or "").strip() or default_scope
+    # Geographic scope is project-wide and fixed. Do not restore older saved values such as "Ontario, Canada".
+    saved_scope = PROJECT_GEOGRAPHIC_SCOPE
     saved_source_policy = str(active_company.get("Prompt Source Policy", "") or "").strip() or default_source_policy
     saved_priority_notes = str(active_company.get("Prompt Priority Notes", "") or "").strip() or default_priority_notes
     saved_output_notes = str(active_company.get("Prompt Output Notes", "") or "").strip() or default_output_notes
 
     prompt_left, prompt_right = st.columns(2)
-    geographic_scope = prompt_left.text_input(
+    geographic_scope = PROJECT_GEOGRAPHIC_SCOPE
+    prompt_left.text_input(
         "Geographic scope",
-        value=saved_scope,
+        value=PROJECT_GEOGRAPHIC_SCOPE,
         key=f"db_prompt_scope_{company_id}",
-        help="Saved separately for this company.",
+        disabled=True,
+        help="Fixed project scope: only properties within the City of Ottawa municipal boundary belong in this project.",
     )
+    prompt_left.caption("Project-wide rule: company properties outside Ottawa must be omitted from the research CSV.")
 
     prompt_right.caption("Starting Data comparison is handled inside Datablix after you import the completed CSV.")
 
@@ -7785,7 +7940,7 @@ elif section == "Website scanner":
     ):
         registry_prompt = normalize_company_registry(st.session_state.get(S_COMPANIES))
         company_mask = registry_prompt["Company ID"].astype(str).eq(company_id)
-        registry_prompt.loc[company_mask, "Prompt Scope"] = geographic_scope.strip()
+        registry_prompt.loc[company_mask, "Prompt Scope"] = PROJECT_GEOGRAPHIC_SCOPE
         registry_prompt.loc[company_mask, "Prompt Source Policy"] = source_policy.strip()
         registry_prompt.loc[company_mask, "Prompt Priority Notes"] = priority_notes.strip()
         registry_prompt.loc[company_mask, "Prompt Output Notes"] = output_notes.strip()
