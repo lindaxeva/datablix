@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Project Source Research Package 2026.07.24-v31"
+DATABLIX_BUILD = "Robust Source Sheet Detection 2026.07.24-v32"
 
 # =========================================================
 # Configuration
@@ -4038,6 +4038,174 @@ def _registry_match_index(owner_name: str, registry: pd.DataFrame):
     return None
 
 
+def _source_sheet_structure_score(
+    data: bytes,
+    sheet_name: str,
+) -> tuple[int, bool]:
+    """Score a worksheet by the property-table columns Datablix can map."""
+    try:
+        sample = pd.read_excel(
+            io.BytesIO(data),
+            sheet_name=sheet_name,
+            nrows=30,
+            engine="openpyxl",
+        )
+        sample = prepare_data(sample)
+    except Exception:
+        return 0, False
+
+    if sample.empty or len(sample.columns) == 0:
+        return 0, False
+
+    groups = {
+        "building": ALIASES["Building Name"],
+        "owner": ALIASES["Management/Owner"],
+        "address": ALIASES["Street Address"],
+        "city": ALIASES["City"],
+        "location": COMBINED_LOCATION_ALIASES,
+        "website": ALIASES["Website"],
+        "phone": ALIASES["Phone"],
+        "apartments": ALIASES["Number of Apartments"],
+        "classification": ALIASES["Building Classification"],
+    }
+
+    found = {
+        key: bool(source_columns(sample, aliases))
+        for key, aliases in groups.items()
+    }
+
+    score = sum(int(value) for value in found.values())
+
+    # Require an address plus at least one other property-identity signal.
+    strong_identity = (
+        found["address"]
+        and (
+            found["owner"]
+            or found["building"]
+            or found["city"]
+            or found["location"]
+        )
+    )
+
+    return score, strong_identity
+
+
+def _find_source_building_sheet(
+    data: bytes,
+    sheet_names: list[str],
+    assignment_sheet: str = "",
+) -> str | None:
+    """Find the project building table by both worksheet name and schema."""
+    if not sheet_names:
+        return None
+
+    preferred_tokens = [
+        "apartmentbuildings",
+        "apartmentbuilding",
+        "buildingdirectory",
+        "apartmentdirectory",
+        "buildingdata",
+        "propertydirectory",
+        "properties",
+        "buildings",
+        "listings",
+    ]
+
+    # First try likely worksheet names, but verify their columns.
+    named_candidates = []
+    for name in sheet_names:
+        if safe_text(name) == safe_text(assignment_sheet):
+            continue
+
+        normalized = norm_header(name)
+        if any(token in normalized for token in preferred_tokens):
+            score, strong = _source_sheet_structure_score(
+                data,
+                name,
+            )
+            if strong:
+                named_candidates.append((score, name))
+
+    if named_candidates:
+        named_candidates.sort(
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        return named_candidates[0][1]
+
+    # Fallback: ignore the title entirely and inspect worksheet structure.
+    reserved = {
+        norm_header(assignment_sheet),
+        "listofcompanies",
+        "buildingclassifications",
+        "classificationrules",
+    }
+
+    structural_candidates = []
+    for name in sheet_names:
+        if norm_header(name) in reserved:
+            continue
+
+        score, strong = _source_sheet_structure_score(
+            data,
+            name,
+        )
+        if strong:
+            structural_candidates.append((score, name))
+
+    if not structural_candidates:
+        return None
+
+    structural_candidates.sort(
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    return structural_candidates[0][1]
+
+
+def _find_classification_sheet(
+    data: bytes,
+    sheet_names: list[str],
+) -> str | None:
+    """Find building-classification rules by title or Type/Height structure."""
+    named = next(
+        (
+            name
+            for name in sheet_names
+            if (
+                "buildingclassifications" in norm_header(name)
+                or "classificationrules" in norm_header(name)
+            )
+        ),
+        None,
+    )
+    if named:
+        return named
+
+    for name in sheet_names:
+        try:
+            raw = pd.read_excel(
+                io.BytesIO(data),
+                sheet_name=name,
+                header=None,
+                nrows=25,
+                engine="openpyxl",
+            )
+        except Exception:
+            continue
+
+        if raw.empty or raw.shape[1] < 2:
+            continue
+
+        for idx in raw.index:
+            first = norm_header(raw.iloc[idx, 0])
+            second = norm_header(raw.iloc[idx, 1])
+            if first == "type" and "height" in second:
+                return name
+
+    return None
+
+
 def _parse_classification_rules(data: bytes, sheet_name: str | None) -> pd.DataFrame:
     if not sheet_name:
         return pd.DataFrame(columns=["Type", "Typical Height"])
@@ -4081,19 +4249,27 @@ def _source_baseline_from_workbook(data: bytes, assignment_sheet: str, existing_
     with pd.ExcelFile(io.BytesIO(data), engine="openpyxl") as workbook:
         sheet_names = workbook.sheet_names
 
-    building_sheet = next(
-        (name for name in sheet_names if "apartmentbuildings" in norm_header(name)),
-        None,
+    building_sheet = _find_source_building_sheet(
+        data,
+        sheet_names,
+        assignment_sheet=assignment_sheet,
     )
     if not building_sheet:
+        detected = ", ".join(
+            f"'{safe_text(name)}'"
+            for name in sheet_names
+        )
         raise ValueError(
-            "Datablix could not find the source building sheet. "
-            "Expected a worksheet named similar to 'Apartment Buildings'."
+            "Datablix could not identify a worksheet containing the project building records. "
+            "The tab does not need a specific name, but its first row should contain property "
+            "headings such as Street Address plus Building Name, Management/Owner, City, "
+            "or City and Postal Code. "
+            f"Worksheets detected: {detected}"
         )
 
-    classification_sheet = next(
-        (name for name in sheet_names if "buildingclassifications" in norm_header(name)),
-        None,
+    classification_sheet = _find_classification_sheet(
+        data,
+        sheet_names,
     )
 
     incoming_registry = _assignment_registry_from_block_sheet(data, assignment_sheet)
