@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Single Navigation Progress 2026.07.23-v16"
+DATABLIX_BUILD = "Clean Arrow Navigation 2026.07.23-v17"
 
 # =========================================================
 # Configuration
@@ -4402,7 +4402,18 @@ button[data-testid="stSidebarCollapseButton"]::after{
     opacity:.72;
 }
 
-/* One navigation row only: progress lives inside the main navigation buttons. */
+/* One clean navigation row. The active page is indicated by button styling;
+   small arrows show workflow direction without adding status symbols to labels. */
+.db-nav-arrow{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:2.65rem;
+    color:var(--db-muted);
+    font-size:.82rem;
+    opacity:.58;
+    user-select:none;
+}
 .db-nav-context{
     margin:.35rem 0 1.15rem;
     padding:.2rem .15rem;
@@ -4840,18 +4851,6 @@ review_population = (
     else company_qa
 )
 
-stage_complete = {
-    "Research projects & companies": not project_registry.empty,
-    "Website scanner": not company_records.empty,
-    "Review records": bool(
-        not review_population.empty
-        and approved_for_export_mask(review_population).all()
-    ),
-    # Report and Export are outputs rather than gates; they remain unmarked until active.
-    "Analysis & report": False,
-    "Downloads": False,
-}
-
 NAV_DESCRIPTIONS = {
     "Research projects & companies": "Set up your project and company workspaces.",
     "Website scanner": "Research the selected company and add or import building records.",
@@ -4860,26 +4859,31 @@ NAV_DESCRIPTIONS = {
     "Downloads": "Choose the company, records, and columns, preview them, then download CSV.",
 }
 
-nav_columns = st.columns([1, 1, 1.18, 1, 1])
-for nav_column, section_key in zip(nav_columns, primary_sections):
+# Keep navigation labels clean. Small arrows indicate workflow direction;
+# the current section is identified only by the blue primary button.
+nav_columns = st.columns([1, 0.06, 1, 0.06, 1.18, 0.06, 1, 0.06, 1])
+button_columns = nav_columns[0::2]
+arrow_columns = nav_columns[1::2]
+
+for index, (nav_column, section_key) in enumerate(zip(button_columns, primary_sections)):
     is_active = visible_active_section == section_key
-    base_label = NAV_LABELS[section_key]
-    if is_active:
-        button_label = f"● {base_label}"
-    elif stage_complete.get(section_key, False):
-        button_label = f"✓ {base_label}"
-    else:
-        button_label = base_label
 
     with nav_column:
         if st.button(
-            button_label,
+            NAV_LABELS[section_key],
             type="primary" if is_active else "secondary",
             width="stretch",
             key=f"db_nav_{norm_header(section_key)}",
         ):
             go_to(section_key)
             st.rerun()
+
+    if index < len(arrow_columns):
+        with arrow_columns[index]:
+            st.markdown(
+                '<div class="db-nav-arrow" aria-hidden="true">→</div>',
+                unsafe_allow_html=True,
+            )
 
 section = st.session_state["db_section"]
 st.markdown(
