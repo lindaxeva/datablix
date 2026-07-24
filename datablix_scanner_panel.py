@@ -22,7 +22,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Current Inventory + Rich Extraction 2026.07.23-r2"
+SCANNER_BUILD = "Ottawa Scope + Storey Classification 2026.07.24-r3"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -182,6 +182,7 @@ DIRECTORY_FIELD_MAP = {
     "primary_email": "Primary Email",
     "website": "Website",
     "number_of_apartments": "Number of Apartments",
+    "number_of_storeys": "Number of Storeys",
     "amenities": "Amenities",
     "building_classification": "Building Classification",
     "inventory_status": "Current Inventory Status",
@@ -195,20 +196,20 @@ DIRECTORY_FIELD_MAP = {
     "extraction_method": "Extraction Method",
     "confidence": "Detection Confidence",
     "evidence": "Supporting Evidence",
-    "ontario_scope_status": "Ontario Scope Status",
-    "ontario_scope_reason": "Ontario Scope Reason",
+    "ottawa_scope_status": "Ottawa Scope Status",
+    "ottawa_scope_reason": "Ottawa Scope Reason",
     "scan_start_url": "Scan Start URL",
 }
 
 
-ONTARIO_SCOPE_CONFIRMED = "Confirmed Ontario"
-ONTARIO_SCOPE_LIKELY = "Likely Ontario — Review"
-ONTARIO_SCOPE_UNCLEAR = "Location Unclear"
-ONTARIO_SCOPE_OUTSIDE = "Outside Ontario"
+OTTAWA_SCOPE_CONFIRMED = "Confirmed Ottawa"
+OTTAWA_SCOPE_LIKELY = "Likely Ottawa — Review"
+OTTAWA_SCOPE_UNCLEAR = "Ottawa Scope Unclear"
+OTTAWA_SCOPE_OUTSIDE = "Outside Ottawa"
 
-ONTARIO_APPROVABLE_STATUSES = {
-    ONTARIO_SCOPE_CONFIRMED,
-    ONTARIO_SCOPE_LIKELY,
+OTTAWA_APPROVABLE_STATUSES = {
+    OTTAWA_SCOPE_CONFIRMED,
+    OTTAWA_SCOPE_LIKELY,
 }
 
 INVENTORY_STATUS_CURRENT = "Current inventory"
@@ -222,8 +223,6 @@ def _inventory_eligible_mask(frame: pd.DataFrame) -> pd.Series:
     return ~frame["inventory_status"].fillna(INVENTORY_STATUS_REVIEW).eq(
         INVENTORY_STATUS_EXCLUDED
     )
-
-ONTARIO_POSTAL_PREFIXES = set("KLMNP")
 
 CANADIAN_PROVINCE_ALIASES = {
     "alberta": "AB", "ab": "AB",
@@ -242,9 +241,20 @@ CANADIAN_PROVINCE_ALIASES = {
     "yukon": "YT", "yt": "YT",
 }
 
-# Municipality names are supporting evidence only. Province and postal-code
-# evidence take precedence whenever they are available.
-ONTARIO_MUNICIPALITIES = {
+# Locality labels that may legitimately appear on addresses within the current
+# City of Ottawa municipal boundary. They are geographic evidence, not a general
+# Ontario whitelist.
+OTTAWA_LOCALITIES = {
+    "ottawa", "kanata", "nepean", "orleans", "gloucester", "barrhaven",
+    "stittsville", "vanier", "rockcliffe park", "manotick", "carp",
+    "cumberland", "greely", "metcalfe", "osgoode", "richmond",
+    "north gower", "navan", "vars", "constance bay", "dunrobin",
+    "fitzroy harbour", "munster", "sarsfield", "kinburn",
+}
+
+# Known Ontario municipality labels are used only to identify clear non-Ottawa
+# records when the page explicitly names another municipality.
+KNOWN_NON_OTTAWA_ONTARIO_MUNICIPALITIES = {
     "ajax", "alexandria", "alliston", "almonte", "amherstburg", "ancaster",
     "arnprior", "aurora", "aylmer", "bancroft", "barrie", "beamsville",
     "belle river", "belleville", "blind river", "bolton", "bracebridge",
@@ -255,28 +265,32 @@ ONTARIO_MUNICIPALITIES = {
     "dryden", "dunnville", "east gwillimbury", "elliot lake", "elmira",
     "elora", "embrun", "erin", "espanola", "essex", "etobicoke", "fergus",
     "fort erie", "fort frances", "gananoque", "georgetown", "geraldton",
-    "gloucester", "goderich", "grand bend", "gravenhurst", "greater napanee",
+    "goderich", "grand bend", "gravenhurst", "greater napanee",
     "greater sudbury", "grimsby", "guelph", "haliburton", "hamilton",
     "hanover", "harriston", "hawkesbury", "hearst", "huntsville",
-    "ingersoll", "iroquois falls", "kanata", "kapuskasing", "kawartha lakes",
+    "ingersoll", "iroquois falls", "kapuskasing", "kawartha lakes",
     "kemptville", "kenora", "keswick", "kincardine", "kingston",
     "kirkland lake", "kitchener", "lasalle", "leamington", "lindsay",
     "listowel", "london", "markham", "midland", "milton", "mississauga",
-    "mitchell", "napanee", "nepean", "new hamburg", "new liskeard",
-    "newmarket", "niagara falls", "niagara on the lake", "north bay",
-    "north york", "oakville", "orangeville", "orillia", "oshawa", "ottawa",
-    "owen sound", "paris", "parry sound", "pembroke", "perth", "petawawa",
-    "peterborough", "petrolia", "pickering", "port colborne", "port elgin",
-    "port hope", "prescott", "prince edward county", "renfrew",
-    "richmond hill", "rockland", "sarnia", "sault ste marie", "scarborough",
-    "simcoe", "smiths falls", "south porcupine", "st catharines",
-    "st marys", "st thomas", "stittsville", "stratford", "strathroy",
-    "sturgeon falls", "sudbury", "tecumseh", "temiskaming shores",
-    "thunder bay", "tillsonburg", "timmins", "toronto", "trenton",
-    "uxbridge", "vaughan", "walkerton", "wallaceburg", "waterdown",
-    "waterloo", "welland", "whitby", "wiarton", "windsor", "wingham",
-    "woodstock",
+    "mitchell", "napanee", "new hamburg", "new liskeard", "newmarket",
+    "niagara falls", "niagara on the lake", "north bay", "north york",
+    "oakville", "orangeville", "orillia", "oshawa", "owen sound", "paris",
+    "parry sound", "pembroke", "perth", "petawawa", "peterborough",
+    "petrolia", "pickering", "port colborne", "port elgin", "port hope",
+    "prescott", "prince edward county", "renfrew", "richmond hill",
+    "rockland", "sarnia", "sault ste marie", "scarborough", "simcoe",
+    "smiths falls", "south porcupine", "st catharines", "st marys",
+    "st thomas", "stratford", "strathroy", "sturgeon falls", "sudbury",
+    "tecumseh", "temiskaming shores", "thunder bay", "tillsonburg",
+    "timmins", "toronto", "trenton", "uxbridge", "vaughan", "walkerton",
+    "wallaceburg", "waterdown", "waterloo", "welland", "whitby", "wiarton",
+    "windsor", "wingham", "woodstock",
 }
+
+# K1 and K2 are strong urban-Ottawa postal evidence. Rural Ottawa can use K0A,
+# so K0A is deliberately not used for automatic approval because it also covers
+# municipalities outside the City of Ottawa.
+OTTAWA_URBAN_POSTAL_PREFIXES = {"K1", "K2"}
 
 CANADIAN_POSTAL_PATTERN = re.compile(
     r"^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$",
@@ -309,117 +323,123 @@ def _country_is_canada(value) -> bool:
     return not normalized or normalized in {"canada", "ca", "can"}
 
 
-def _classify_ontario_scope(row: pd.Series) -> tuple[str, str]:
+def _classify_ottawa_scope(row: pd.Series) -> tuple[str, str]:
+    """Classify a scanner candidate against the City of Ottawa project boundary.
+
+    Province-level or Ontario postal evidence is never enough on its own. A record
+    must contain Ottawa-specific locality/postal/source evidence before it can be
+    approved for this project.
+    """
     province_text = _clean_value(row.get("province"))
     province_code = _province_code(province_text)
     city = _normalize_location_text(row.get("city"))
+    city_display = _clean_value(row.get("city"))
     street = _clean_value(row.get("street_address"))
     postal = _normalized_postal_code(row.get("postal_code"))
+    postal_display = _clean_value(row.get("postal_code"))
     country = _clean_value(row.get("country"))
 
     source_context = " ".join(
         _normalize_location_text(row.get(field))
         for field in ["source_page_title", "evidence", "source_url"]
     )
-
+    source_mentions_ottawa = bool(re.search(r"\bottawa\b", source_context))
     postal_is_canadian = bool(CANADIAN_POSTAL_PATTERN.fullmatch(postal))
-    postal_is_ontario = (
+    postal_is_urban_ottawa = (
         postal_is_canadian
-        and bool(postal)
-        and postal[0] in ONTARIO_POSTAL_PREFIXES
+        and len(postal) >= 2
+        and postal[:2] in OTTAWA_URBAN_POSTAL_PREFIXES
     )
-    city_is_ontario = city in ONTARIO_MUNICIPALITIES
-    source_mentions_ontario = bool(re.search(r"\bontario\b", source_context))
+    city_is_ottawa = city in OTTAWA_LOCALITIES
+    city_is_known_non_ottawa = city in KNOWN_NON_OTTAWA_ONTARIO_MUNICIPALITIES
 
     if not _country_is_canada(country):
-        return ONTARIO_SCOPE_OUTSIDE, f"Country is recorded as {country}."
+        return OTTAWA_SCOPE_OUTSIDE, f"Country is recorded as {country}."
 
     if province_code and province_code != "ON":
-        if postal_is_ontario:
-            return (
-                ONTARIO_SCOPE_UNCLEAR,
-                "Province conflicts with an Ontario postal-code pattern.",
-            )
-        return ONTARIO_SCOPE_OUTSIDE, f"Province is recorded as {province_text}."
+        return OTTAWA_SCOPE_OUTSIDE, f"Province is recorded as {province_text}."
 
-    if province_code == "ON":
-        details = ["Province is Ontario"]
+    # A recognized Ottawa locality is the strongest address-level evidence.
+    if city_is_ottawa:
+        details = [f"city/locality is {city_display or city}"]
+        if province_code == "ON":
+            details.append("province is Ontario")
         if street:
             details.append("a street address is present")
-        if city:
-            details.append(f"city is {_clean_value(row.get('city'))}")
-        return ONTARIO_SCOPE_CONFIRMED, "; ".join(details) + "."
+        if postal_is_urban_ottawa:
+            details.append(f"postal code {postal_display} follows an Ottawa K1/K2 pattern")
+        return OTTAWA_SCOPE_CONFIRMED, "; ".join(details) + "."
 
-    if postal_is_ontario:
+    # An explicit different Ontario municipality is outside the project unless
+    # the postal data itself conflicts, in which case human review is safer.
+    if city_is_known_non_ottawa:
+        if postal_is_urban_ottawa:
+            return (
+                OTTAWA_SCOPE_UNCLEAR,
+                f"City is recorded as {city_display}, but postal code {postal_display} looks like urban Ottawa; resolve the conflict.",
+            )
+        return OTTAWA_SCOPE_OUTSIDE, f"City is recorded as {city_display}, outside the City of Ottawa."
+
+    # K1/K2 without a conflicting municipality is strong Ottawa evidence, but we
+    # retain a review step when the city/locality was not captured from the page.
+    if postal_is_urban_ottawa:
         return (
-            ONTARIO_SCOPE_CONFIRMED,
-            f"Postal code {_clean_value(row.get('postal_code'))} follows an Ontario pattern.",
+            OTTAWA_SCOPE_LIKELY,
+            f"Postal code {postal_display} follows an urban Ottawa K1/K2 pattern; confirm the City of Ottawa address before final verification.",
         )
 
-    if city_is_ontario and street:
+    if source_mentions_ottawa and street:
         return (
-            ONTARIO_SCOPE_LIKELY,
-            f"{_clean_value(row.get('city'))} is recognized as an Ontario municipality and a street address is present.",
+            OTTAWA_SCOPE_LIKELY,
+            "The source explicitly mentions Ottawa and a street address is present; confirm the municipal address before final verification.",
         )
 
-    if city_is_ontario:
+    if source_mentions_ottawa:
         return (
-            ONTARIO_SCOPE_LIKELY,
-            f"{_clean_value(row.get('city'))} is recognized as an Ontario municipality; confirm the street or province.",
-        )
-
-    if source_mentions_ontario and street:
-        return (
-            ONTARIO_SCOPE_LIKELY,
-            "The source mentions Ontario and a street address is present; confirm the city or postal code.",
-        )
-
-    if source_mentions_ontario:
-        return (
-            ONTARIO_SCOPE_LIKELY,
-            "The source mentions Ontario; confirm the city and street address.",
+            OTTAWA_SCOPE_UNCLEAR,
+            "The source mentions Ottawa, but the extracted address is not complete enough to confirm municipal scope.",
         )
 
     if street or city or postal or province_text:
         return (
-            ONTARIO_SCOPE_UNCLEAR,
-            "The available location details do not yet confirm Ontario.",
+            OTTAWA_SCOPE_UNCLEAR,
+            "The available location details do not yet confirm that the property is within the City of Ottawa municipal boundary.",
         )
 
     return (
-        ONTARIO_SCOPE_UNCLEAR,
-        "No province, Ontario postal code, recognized Ontario municipality, or street evidence was detected.",
+        OTTAWA_SCOPE_UNCLEAR,
+        "No Ottawa-specific city/locality, K1/K2 postal code, or source evidence was detected.",
     )
 
 
-def _apply_ontario_scope(frame: pd.DataFrame) -> pd.DataFrame:
+def _apply_ottawa_scope(frame: pd.DataFrame) -> pd.DataFrame:
     scoped = frame.copy()
     if scoped.empty:
-        scoped["ontario_scope_status"] = pd.Series(dtype="object")
-        scoped["ontario_scope_reason"] = pd.Series(dtype="object")
+        scoped["ottawa_scope_status"] = pd.Series(dtype="object")
+        scoped["ottawa_scope_reason"] = pd.Series(dtype="object")
         return scoped
 
-    classifications = scoped.apply(_classify_ontario_scope, axis=1)
-    scoped["ontario_scope_status"] = classifications.map(lambda result: result[0])
-    scoped["ontario_scope_reason"] = classifications.map(lambda result: result[1])
+    classifications = scoped.apply(_classify_ottawa_scope, axis=1)
+    scoped["ottawa_scope_status"] = classifications.map(lambda result: result[0])
+    scoped["ottawa_scope_reason"] = classifications.map(lambda result: result[1])
 
     if "approved" not in scoped.columns:
         scoped["approved"] = False
 
-    outside_or_unclear = scoped["ontario_scope_status"].isin(
-        {ONTARIO_SCOPE_OUTSIDE, ONTARIO_SCOPE_UNCLEAR}
+    outside_or_unclear = scoped["ottawa_scope_status"].isin(
+        {OTTAWA_SCOPE_OUTSIDE, OTTAWA_SCOPE_UNCLEAR}
     )
     scoped.loc[outside_or_unclear, "approved"] = False
     return scoped
 
 
-def _ontario_eligible_mask(frame: pd.DataFrame) -> pd.Series:
+def _ottawa_eligible_mask(frame: pd.DataFrame) -> pd.Series:
     scoped = (
         frame
-        if "ontario_scope_status" in frame.columns
-        else _apply_ontario_scope(frame)
+        if "ottawa_scope_status" in frame.columns
+        else _apply_ottawa_scope(frame)
     )
-    return scoped["ontario_scope_status"].isin(ONTARIO_APPROVABLE_STATUSES)
+    return scoped["ottawa_scope_status"].isin(OTTAWA_APPROVABLE_STATUSES)
 
 
 def _apply_candidate_status(frame: pd.DataFrame) -> pd.DataFrame:
@@ -428,7 +448,7 @@ def _apply_candidate_status(frame: pd.DataFrame) -> pd.DataFrame:
     if "approved" not in out.columns:
         out["approved"] = False
     requested = out["approved"].fillna(False).astype(bool)
-    location_ok = _ontario_eligible_mask(out)
+    location_ok = _ottawa_eligible_mask(out)
     inventory_ok = _inventory_eligible_mask(out)
     eligible = location_ok & inventory_ok
 
@@ -450,18 +470,18 @@ def _records_dataframe(report) -> pd.DataFrame:
                 "street_address",
                 "address_line_2", "city", "province", "postal_code", "country",
                 "phone", "primary_email", "website", "number_of_apartments",
-                "amenities", "building_classification",
+                "number_of_storeys", "amenities", "building_classification",
                 "inventory_status", "inventory_evidence",
                 "found_on_city_page", "found_on_html_sitemap",
                 "found_on_xml_sitemap", "exclusion_reason",
                 "source_url", "source_page_title",
                 "extraction_method", "confidence",
                 "review_status", "candidate_status", "evidence",
-                "ontario_scope_status", "ontario_scope_reason",
+                "ottawa_scope_status", "ottawa_scope_reason",
             ]
         )
     frame["confidence"] = pd.to_numeric(frame["confidence"], errors="coerce").fillna(0.0)
-    return _apply_ontario_scope(frame)
+    return _apply_height_classification(_apply_ottawa_scope(frame))
 
 
 def _pages_dataframe(report) -> pd.DataFrame:
@@ -473,6 +493,7 @@ SCAN_LISTING_FIELDS = [
     ("Street Address", "street_address"),
     ("City and Postal Code", None),
     ("Building Classification", "building_classification"),
+    ("Storeys", "number_of_storeys"),
     ("Number of Apartments", "number_of_apartments"),
     ("Apartment Building Management/Owner", "management_owner"),
     ("Phone Number", "phone"),
@@ -494,8 +515,8 @@ SCAN_ADDITIONAL_FIELDS = [
     ("Source Page Title", "source_page_title"),
     ("Extraction Method", "extraction_method"),
     ("Confidence", "confidence"),
-    ("Ontario Scope Status", "ontario_scope_status"),
-    ("Ontario Scope Reason", "ontario_scope_reason"),
+    ("Ottawa Scope Status", "ottawa_scope_status"),
+    ("Ottawa Scope Reason", "ottawa_scope_reason"),
     ("Evidence", "evidence"),
 ]
 
@@ -504,6 +525,61 @@ def _clean_value(value) -> str:
     if value is None or pd.isna(value):
         return ""
     return str(value).strip()
+
+
+BUILDING_CLASSIFICATION_BANDS = (
+    ("Low-rise", 1, 4),
+    ("Mid-rise", 5, 11),
+    ("High-rise", 12, None),
+)
+
+
+def _classification_for_storey_count(storeys: int) -> str:
+    if 1 <= storeys <= 4:
+        return "Low-rise"
+    if 5 <= storeys <= 11:
+        return "Mid-rise"
+    if storeys >= 12:
+        return "High-rise"
+    return ""
+
+
+def _classification_from_storey_evidence(value) -> str:
+    """Derive classification only when storey evidence supports one band.
+
+    Multiple reported counts are allowed only when all counts remain in the same
+    classification band, e.g. 14 vs 15 -> High-rise. Evidence crossing a band
+    boundary, e.g. 11 vs 12, intentionally returns blank for human follow-up.
+    """
+    raw = _clean_value(value)
+    if not raw:
+        return ""
+    counts = []
+    for token in re.findall(r"\b\d{1,3}\b", raw):
+        number = int(token)
+        if 1 <= number <= 200 and number not in counts:
+            counts.append(number)
+    if not counts:
+        return ""
+    bands = {_classification_for_storey_count(number) for number in counts}
+    bands.discard("")
+    return next(iter(bands)) if len(bands) == 1 else ""
+
+
+def _apply_height_classification(frame: pd.DataFrame) -> pd.DataFrame:
+    """Enforce the project's storey-based Low/Mid/High-rise classification."""
+    out = frame.copy()
+    if "number_of_storeys" not in out.columns:
+        out["number_of_storeys"] = ""
+    if "building_classification" not in out.columns:
+        out["building_classification"] = ""
+
+    # The project classification must be evidence-based. Existing marketing or
+    # legacy labels are not accepted without storey evidence.
+    out["building_classification"] = out["number_of_storeys"].apply(
+        _classification_from_storey_evidence
+    )
+    return out
 
 
 def _scan_location(row: pd.Series) -> str:
@@ -581,18 +657,18 @@ def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> by
             pd.Series(False, index=records_df.index),
         ).fillna(False)
         approved = records_df.loc[
-            approved_mask & _ontario_eligible_mask(records_df)
+            approved_mask & _ottawa_eligible_mask(records_df)
         ].copy()
         approved_listings = _approved_listing_table(approved)
         ws = writer.book.create_sheet("Approved Listings")
         _write_approved_listing_blocks(ws, approved_listings)
         records_df.to_excel(writer, sheet_name="Record Candidates", index=False)
         records_df.loc[
-            records_df["ontario_scope_status"].eq(ONTARIO_SCOPE_OUTSIDE)
-        ].to_excel(writer, sheet_name="Outside Ontario", index=False)
+            records_df["ottawa_scope_status"].eq(OTTAWA_SCOPE_OUTSIDE)
+        ].to_excel(writer, sheet_name="Outside Ottawa", index=False)
         records_df.loc[
-            records_df["ontario_scope_status"].eq(ONTARIO_SCOPE_UNCLEAR)
-        ].to_excel(writer, sheet_name="Location Review", index=False)
+            records_df["ottawa_scope_status"].eq(OTTAWA_SCOPE_UNCLEAR)
+        ].to_excel(writer, sheet_name="Ottawa Scope Review", index=False)
         if "inventory_status" in records_df.columns:
             records_df.loc[
                 records_df["inventory_status"].eq(INVENTORY_STATUS_EXCLUDED)
@@ -717,7 +793,7 @@ def _persist_scan_evidence(
         "approved",
         pd.Series(False, index=records_df.index),
     ).fillna(False)
-    eligible_mask = _ontario_eligible_mask(records_df)
+    eligible_mask = _ottawa_eligible_mask(records_df)
     approved_count = int((approval_mask & eligible_mask).sum())
 
     history = _history_frame(history_key, SCAN_HISTORY_COLUMNS)
@@ -968,8 +1044,13 @@ def render_website_scanner_panel(
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="db-guidance"><strong>Ontario-only research scope.</strong>'
-        '<span>Use this optional scanner to cross-check website coverage and possible omissions. Only Ontario properties can be approved, added, or exported; confirmed non-Ontario records remain in the scan log.</span></div>',
+        '<div class="db-guidance"><strong>Ottawa-only research scope.</strong>'
+        '<span>Use this optional scanner to cross-check website coverage and possible omissions. Only properties within the City of Ottawa municipal boundary can be approved, added, or exported; out-of-Ottawa records remain in the scan log.</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="db-guidance"><strong>Storeys drive building classification.</strong>'
+        '<span>The scanner can use storey evidence found on the company website, but it does not replace address-based web research. If storeys are missing, use the Datablix AI research prompt with the verified full Ottawa street address to search for the number of storeys/floors, then let Datablix derive Low-rise (1–4), Mid-rise (5–11), or High-rise (12+).</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -1486,7 +1567,7 @@ def render_website_scanner_panel(
         scan_start_url,
     )
 
-    records_df = _apply_ontario_scope(records_df)
+    records_df = _apply_height_classification(_apply_ottawa_scope(records_df))
     records_df = _attach_scan_context(
         records_df,
         scan_id=scan_id,
@@ -1563,15 +1644,15 @@ def render_website_scanner_panel(
     m3.metric("JavaScript pages", rendered_pages)
     m4.metric("Blocked or failed", len(report.blocked_urls) + len(report.errors))
 
-    scope_counts = records_df["ontario_scope_status"].value_counts()
+    scope_counts = records_df["ottawa_scope_status"].value_counts()
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Confirmed Ontario", int(scope_counts.get(ONTARIO_SCOPE_CONFIRMED, 0)))
-    s2.metric("Likely Ontario — review", int(scope_counts.get(ONTARIO_SCOPE_LIKELY, 0)))
-    s3.metric("Location unclear", int(scope_counts.get(ONTARIO_SCOPE_UNCLEAR, 0)))
-    s4.metric("Outside Ontario", int(scope_counts.get(ONTARIO_SCOPE_OUTSIDE, 0)))
+    s1.metric("Confirmed Ottawa", int(scope_counts.get(OTTAWA_SCOPE_CONFIRMED, 0)))
+    s2.metric("Likely Ottawa — review", int(scope_counts.get(OTTAWA_SCOPE_LIKELY, 0)))
+    s3.metric("Ottawa scope unclear", int(scope_counts.get(OTTAWA_SCOPE_UNCLEAR, 0)))
+    s4.metric("Outside Ottawa", int(scope_counts.get(OTTAWA_SCOPE_OUTSIDE, 0)))
     st.caption(
-        "Only Confirmed Ontario and human-approved Likely Ontario candidates can "
-        "move into the selected company records. Location Unclear and Outside Ontario records are "
+        "Only Confirmed Ottawa and human-approved Likely Ottawa candidates can "
+        "move into the selected company records. Ottawa Scope Unclear and Outside Ottawa records are "
         "kept for traceability but excluded automatically."
     )
 
@@ -1632,13 +1713,14 @@ def render_website_scanner_panel(
 
     required_review_columns = [
         "approved",
-        "ontario_scope_status",
-        "ontario_scope_reason",
+        "ottawa_scope_status",
+        "ottawa_scope_reason",
         "building_name",
         "street_address",
         "city",
         "province",
         "postal_code",
+        "number_of_storeys",
         "building_classification",
         "number_of_apartments",
         "amenities",
@@ -1653,8 +1735,8 @@ def render_website_scanner_panel(
     ]
     additional_review_columns = [
         "approved",
-        "ontario_scope_status",
-        "ontario_scope_reason",
+        "ottawa_scope_status",
+        "ottawa_scope_reason",
         "inventory_status",
         "inventory_evidence",
         "found_on_city_page",
@@ -1676,7 +1758,7 @@ def render_website_scanner_panel(
         "building_name", "management_owner", "street_address",
         "address_line_2", "city", "province", "postal_code", "country",
         "phone", "primary_email", "website", "number_of_apartments",
-        "amenities", "building_classification",
+        "number_of_storeys", "building_classification", "amenities",
         "inventory_status", "inventory_evidence",
         "found_on_city_page", "found_on_html_sitemap", "found_on_xml_sitemap",
         "exclusion_reason", "source_url", "source_page_title",
@@ -1716,8 +1798,8 @@ def render_website_scanner_panel(
         disabled=[
             column for column in [
                 "confidence", "source_page_title", "extraction_method",
-                "candidate_status", "ontario_scope_status", "ontario_scope_reason",
-                "inventory_status", "inventory_evidence", "found_on_city_page",
+                "candidate_status", "ottawa_scope_status", "ottawa_scope_reason",
+                "building_classification", "inventory_status", "inventory_evidence", "found_on_city_page",
                 "found_on_html_sitemap", "found_on_xml_sitemap", "exclusion_reason"
             ] if column in visible_review_columns
         ],
@@ -1727,19 +1809,19 @@ def render_website_scanner_panel(
                 default=False,
                 help=(
                     "Approve only after checking the source and confirming the "
-                    "candidate is in Ontario."
+                    "candidate is within the City of Ottawa municipal boundary."
                 ),
             ),
-            "ontario_scope_status": st.column_config.TextColumn(
-                "Ontario Scope Status",
+            "ottawa_scope_status": st.column_config.TextColumn(
+                "Ottawa Scope Status",
                 width="medium",
                 help=(
-                    "Confirmed Ontario may be approved. Likely Ontario requires "
-                    "human review. Unclear and outside-Ontario records are excluded."
+                    "Confirmed Ottawa may be approved. Likely Ottawa requires "
+                    "human review. Unclear and out-of-Ottawa records are excluded."
                 ),
             ),
-            "ontario_scope_reason": st.column_config.TextColumn(
-                "Ontario Scope Reason",
+            "ottawa_scope_reason": st.column_config.TextColumn(
+                "Ottawa Scope Reason",
                 width="large",
             ),
             "building_name": st.column_config.TextColumn("Apartment Building Name", width="large"),
@@ -1773,9 +1855,23 @@ def render_website_scanner_panel(
             "primary_email": st.column_config.TextColumn("Email Contact", width="large"),
             "website": st.column_config.LinkColumn("Website", width="large"),
             "number_of_apartments": st.column_config.TextColumn("Number of Apartments"),
+            "number_of_storeys": st.column_config.TextColumn(
+                "Storeys",
+                help=(
+                    "Enter verified storey evidence. If the company website does not state it, "
+                    "use the Datablix AI research prompt to search the verified full Ottawa address "
+                    "for the number of storeys/floors. Datablix derives Low-rise for 1–4, "
+                    "Mid-rise for 5–11, and High-rise for 12+. If sources disagree but "
+                    "stay in one band (for example 14 / 15), the shared classification "
+                    "is allowed; 11 / 12 remains unclassified."
+                ),
+            ),
             "building_classification": st.column_config.TextColumn(
                 "Building Classification",
-                help="For example: High Rise, Low Rise, Townhome, or Duplex.",
+                help=(
+                    "Derived from Storeys only: Low-rise 1–4, Mid-rise 5–11, "
+                    "High-rise 12+. Marketing labels and visual appearance are not evidence."
+                ),
             ),
             "source_url": st.column_config.LinkColumn("Official Source URL", width="large"),
             "source_page_title": st.column_config.TextColumn("Source Page Title", width="large"),
@@ -1799,15 +1895,17 @@ def render_website_scanner_panel(
     for column in visible_review_columns:
         updated_records.loc[edited_review.index, column] = edited_review[column]
 
-    updated_records = _apply_candidate_status(_apply_ontario_scope(updated_records))
+    updated_records = _apply_candidate_status(
+        _apply_height_classification(_apply_ottawa_scope(updated_records))
+    )
     st.session_state["website_scan_records"] = updated_records
 
     requested_approval = updated_records["approved"].fillna(False)
-    ontario_eligible = _ontario_eligible_mask(updated_records)
+    ottawa_eligible = _ottawa_eligible_mask(updated_records)
     inventory_eligible = _inventory_eligible_mask(updated_records)
-    eligible_approval = ontario_eligible & inventory_eligible
-    blocked_location_count = int((requested_approval & ~ontario_eligible).sum())
-    blocked_inventory_count = int((requested_approval & ontario_eligible & ~inventory_eligible).sum())
+    eligible_approval = ottawa_eligible & inventory_eligible
+    blocked_location_count = int((requested_approval & ~ottawa_eligible).sum())
+    blocked_inventory_count = int((requested_approval & ottawa_eligible & ~inventory_eligible).sum())
 
     approved = updated_records.loc[
         requested_approval & eligible_approval
@@ -1829,7 +1927,7 @@ def render_website_scanner_panel(
     if blocked_location_count:
         st.warning(
             f"{blocked_location_count} selected candidate(s) were not approved because "
-            "their location is unclear or confirmed outside Ontario. Update the city, "
+            "their location is unclear or confirmed outside Ottawa. Update the city, "
             "province, street address, or postal code, then review again."
         )
     if blocked_inventory_count:
@@ -1844,7 +1942,7 @@ def render_website_scanner_panel(
         with action_left:
             st.subheader("Add approved records to project")
             st.write(
-                f"{len(approved):,} Ontario-eligible candidate(s) are approved at the scanner stage. "
+                f"{len(approved):,} Ottawa-eligible candidate(s) are approved at the scanner stage. "
                 "When added to the project, they begin final record verification in Review records; "
                 "scanner approval itself is not the final human verification decision."
             )
@@ -1903,8 +2001,8 @@ def render_website_scanner_panel(
             "found_on_html_sitemap",
             "found_on_xml_sitemap",
             "exclusion_reason",
-            "ontario_scope_status",
-            "ontario_scope_reason",
+            "ottawa_scope_status",
+            "ottawa_scope_reason",
             "building_name",
             "amenities",
             "building_classification",
@@ -1950,14 +2048,14 @@ def render_website_scanner_panel(
             "Download raw scan data — JSON",
             data=json.dumps(
                 {
-                    "research_scope": "Ontario only",
+                    "research_scope": "City of Ottawa, Ontario, Canada only",
                     "scan_report": report.as_dict(),
                     "reviewed_records": reviewed_records_json,
                 },
                 indent=2,
                 ensure_ascii=False,
             ),
-            file_name="website_scan_report_ontario.json",
+            file_name="website_scan_report_ottawa.json",
             mime="application/json",
             width="stretch",
         )
