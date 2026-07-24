@@ -25,7 +25,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "NA-Safe Starting Data Import 2026.07.23-v27"
+DATABLIX_BUILD = "Source-Aware Research Prompt 2026.07.24-v28"
 
 # =========================================================
 # Configuration
@@ -1977,12 +1977,67 @@ def ai_research_template(company_name: str = "", company_website: str = "") -> p
     return pd.DataFrame([row])
 
 
+def prompt_record_identity_lines(
+    df: pd.DataFrame,
+    company_id: str = "",
+    company_name: str = "",
+    limit: int = 150,
+) -> list[str]:
+    """Return unique property identity lines for one company."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+
+    rows = df.copy()
+    clean_company_id = safe_text(company_id)
+
+    if clean_company_id and "Company ID" in rows.columns:
+        matched = rows.loc[
+            rows["Company ID"].astype("string").fillna("").str.strip().eq(clean_company_id)
+        ].copy()
+    else:
+        matched = pd.DataFrame(columns=rows.columns)
+
+    if matched.empty and company_name and "Management/Owner" in rows.columns:
+        matched = rows.loc[
+            rows["Management/Owner"].apply(
+                lambda value: _company_core_matches(
+                    safe_text(value),
+                    safe_text(company_name),
+                )
+            )
+        ].copy()
+
+    if matched.empty:
+        return []
+
+    lines = []
+    seen = set()
+    for _, row in matched.iterrows():
+        parts = []
+        for field in ["Building Name", "Street Address", "City", "Postal Code"]:
+            value = safe_text(row.get(field, ""))
+            if value and not is_unresolved(value):
+                parts.append(value)
+
+        label = " · ".join(parts)
+        normalized = norm_header(label)
+        if label and normalized not in seen:
+            seen.add(normalized)
+            lines.append(f"- {label}")
+
+        if len(lines) >= max(1, int(limit)):
+            break
+
+    return lines
+
+
 def build_company_website_research_prompt(
     *,
     company_name: str,
     company_website: str,
     geographic_scope: str,
     known_records: str,
+    known_records_context: str,
     priority_notes: str,
     source_policy: str,
     output_notes: str,
@@ -1996,8 +2051,14 @@ You are acting as a careful public-source rental-property research analyst. Rese
 - Company or management owner: {company_name or '[enter company name]'}
 - Official company website: {company_website or '[enter official website]'}
 - Geographic scope: {geographic_scope or 'Ontario, Canada'}
-- Known records that may already exist and must be checked for duplicates:
-{known_records or 'None provided.'}
+
+## Starting record context
+{known_records_context}
+
+Starting/known property records for this company:
+{known_records or '- No starting records are currently available for this company.'}
+
+IMPORTANT: These records are a comparison and reconciliation checklist. They are NOT automatic proof that a property is still current, still managed by the company, or still belongs in the final directory.
 
 ## Core principle
 Do NOT begin by collecting every property URL that happens to exist.
@@ -2007,6 +2068,23 @@ First establish the company's CURRENT in-scope property inventory from the stron
 A dedicated property URL that still loads is NOT, by itself, proof that the property currently belongs in the company's active portfolio.
 
 ## Research workflow
+
+### Phase 0 — Reconcile the starting source records
+Before broad property discovery, use the starting/known records above as a checklist.
+
+For EACH starting source record:
+1. Look for the same property in the company's current official inventory.
+2. Match identity primarily by normalized street address and postal code.
+3. Use property URL and building name plus city as supporting identity evidence.
+4. Do not treat a changed building name, branding change, or slightly different address formatting as a new property when the underlying property identity is the same.
+5. If current official evidence supports the property, retain ONE current property row.
+6. If current official evidence indicates it is no longer in the active inventory, classify it as Excluded and document why.
+7. If the evidence is incomplete, conflicting, blocked, or unavailable, classify it as Review rather than guessing.
+8. Do not create a duplicate row simply because the starting source record and current website use different labels for the same building.
+
+After reconciling the starting records, continue searching the company's current official inventory for additional in-scope properties that are NOT represented in the starting source records.
+
+A legitimate current property found outside the starting source records is a potential newly discovered property. Include it when supported by current inventory evidence. Do not let the starting list limit discovery.
 
 ### Phase 1 — Establish the current company inventory
 Start with current official inventory/navigation sources whenever they exist, especially:
@@ -2082,15 +2160,18 @@ Clearly label secondary evidence in Supporting Evidence and keep the official co
 ### Phase 4 — Quality-check before delivery
 Before producing the final CSV file:
 1. Recheck every included property against current company inventory evidence.
-2. Remove Excluded legacy/orphaned properties from the active deliverable and remove non-record orphan/empty pages from all property deliverables.
-3. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
-4. Verify every field before listing it under Missing Information.
-5. Check duplicates primarily by normalized street address and postal code, then property URL and building name plus city.
-6. Check that City, Province, and Postal Code agree.
-7. Ensure every populated value is traceable to public evidence.
-8. Distinguish official-source findings from secondary-source findings.
-9. Keep genuine unresolved information separate from extraction failures.
-10. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
+2. Reconcile every starting source record: Current, Review, Excluded, or matched to another current row representing the same property.
+3. Confirm that legitimate current properties discovered outside the starting source list have not been missed.
+4. Remove Excluded legacy/orphaned properties from the active deliverable and remove non-record orphan/empty pages from all property deliverables.
+5. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
+6. Verify every field before listing it under Missing Information.
+7. Check duplicates primarily by normalized street address and postal code, then property URL and building name plus city.
+8. Ensure the final active CSV has ONE row per unique property, even when the starting source and current website use different names or formatting.
+9. Check that City, Province, and Postal Code agree.
+10. Ensure every populated value is traceable to public evidence.
+11. Distinguish official-source findings from secondary-source findings.
+12. Keep genuine unresolved information separate from extraction failures.
+13. Report coverage limitations, blocked content, conflicts, assumptions, and recommended human follow-up.
 
 ## Source policy
 {source_policy}
@@ -2137,9 +2218,12 @@ Field guidance:
 13. Validate Canadian postal-code formatting where available, but do not manufacture missing postal codes.
 14. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
 15. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
-16. Record information that appears stale, archived, historical, or no longer current in Reviewer Notes and use inventory evidence to determine whether it belongs in the active directory.
-17. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it rather than creating a Current, Review, or Excluded property row.
-18. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain the property and research missing details elsewhere.
+16. Treat the starting source records as historical/start-state evidence only. Re-verify them; do not automatically carry them forward as current.
+17. Do not label a property as newly discovered merely because its current name or URL differs from the starting source. Compare normalized address, postal code, property identity, and management evidence first.
+18. Record information that appears stale, archived, historical, or no longer current in Reviewer Notes and use inventory evidence to determine whether it belongs in the active directory.
+19. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it rather than creating a Current, Review, or Excluded property row.
+20. Do not confuse a sparse current property page with an orphan non-record page. If current official inventory evidence confirms the property, retain the property and research missing details elsewhere.
+21. The starting source list is a reconciliation checklist, not a ceiling. Continue searching current authoritative inventory sources for legitimate properties missing from the source.
 
 ## Priority or company-specific instructions
 {priority_notes or 'No additional priorities were provided.'}
@@ -6616,25 +6700,83 @@ elif section == "Website scanner":
         "Datablix personalizes one comprehensive prompt for this company. The prompt requires CSV output and remains editable before you copy or download it."
     )
 
-    company_rows = working.loc[working["Company ID"].astype(str).eq(company_id)].copy()
-    known_default = ""
-    if not company_rows.empty:
-        known_lines = []
-        for _, row in company_rows.head(100).iterrows():
-            label = " · ".join(
-                value for value in [
-                    "" if is_unresolved(row.get("Building Name")) else str(row.get("Building Name")).strip(),
-                    "" if is_unresolved(row.get("Street Address")) else str(row.get("Street Address")).strip(),
-                    "" if is_unresolved(row.get("City")) else str(row.get("City")).strip(),
-                    "" if is_unresolved(row.get("Postal Code")) else str(row.get("Postal Code")).strip(),
-                ] if value
-            )
-            if label:
-                known_lines.append(f"- {label}")
-        known_default = "\n".join(known_lines)
+    company_rows = working.loc[
+        working["Company ID"].astype("string").fillna("").str.strip().eq(company_id)
+    ].copy()
+
+    source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
+    source_baseline = st.session_state.get(S_ORIGINAL)
+    has_source_baseline = (
+        isinstance(source_meta, dict)
+        and bool(source_meta)
+        and isinstance(source_baseline, pd.DataFrame)
+        and not source_baseline.empty
+    )
+
+    source_lines = (
+        prompt_record_identity_lines(
+            source_baseline,
+            company_id=company_id,
+            company_name=company_name,
+            limit=150,
+        )
+        if has_source_baseline
+        else []
+    )
+    working_lines = prompt_record_identity_lines(
+        company_rows,
+        company_id=company_id,
+        company_name=company_name,
+        limit=150,
+    )
+
+    if source_lines:
+        known_default = "\n".join(source_lines)
+        known_records_context = (
+            f"{len(source_lines):,} starting source record(s) were provided for this company "
+            "through the project's Starting Data workbook. Reconcile every one against current "
+            "official inventory evidence before deciding whether it remains current, is excluded, "
+            "or corresponds to another current property row."
+        )
+        known_records_ui_label = "Starting source records for comparison"
+        known_records_help = (
+            "Pulled automatically from Starting Data for the active company. "
+            "These records must be checked, but they are not assumed to be current."
+        )
+    elif has_source_baseline:
+        known_default = ""
+        known_records_context = (
+            "A Starting Data workbook is loaded, but no source building rows were matched to this "
+            "company. Treat current official inventory research as the discovery starting point."
+        )
+        known_records_ui_label = "Starting source records for comparison"
+        known_records_help = "No starting source records were matched to this active company."
+    elif working_lines:
+        known_default = "\n".join(working_lines)
+        known_records_context = (
+            "No Starting Data baseline is currently available for this company. The records below "
+            "are existing Datablix workspace records and should be checked for duplicate identity "
+            "during research."
+        )
+        known_records_ui_label = "Known Datablix records for duplicate checking"
+        known_records_help = (
+            "No Starting Data baseline is available, so current workspace records are used only "
+            "as duplicate-check context."
+        )
+    else:
+        known_default = ""
+        known_records_context = (
+            "No Starting Data baseline or existing Datablix property records are currently "
+            "available for this company. Establish the current inventory from authoritative sources."
+        )
+        known_records_ui_label = "Starting source records for comparison"
+        known_records_help = (
+            "Import Starting Data on the Project page to provide original source records."
+        )
 
     default_scope = "Ontario, Canada"
     default_source_policy = (
+        "Use Starting Data records as a reconciliation checklist, not proof of current inventory. "
         "Use current official city/property-search/portfolio pages and the current human-readable HTML sitemap first to establish active inventory. "
         "Use official property pages, leasing pages, official PDFs, and official property websites for detailed fields. "
         "Technical XML sitemaps are discovery evidence only, not proof that a property is current. "
@@ -6643,7 +6785,8 @@ elif section == "Website scanner":
         "Ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence; a URL alone must never create a property row."
     )
     default_priority_notes = (
-        "Establish the current Ontario inventory first. Exclude dedicated legacy property pages that are absent from both the current city/portfolio index "
+        "Reconcile every Starting Data record for this company, then establish the complete current Ontario inventory and search for additional current properties missing from the source. "
+        "Exclude dedicated legacy property pages that are absent from both the current city/portfolio index "
         "and current HTML sitemap when both authoritative sources are available. Before creating any property row, ignore orphan/legacy/isolated pages that contain no meaningful property-specific evidence. "
         "Keep legitimate current properties even when their dedicated page is sparse, and recheck each valid property across permitted sources for postal code, amenities, unit count, "
         "contact details, and other requested fields before declaring information missing. Preserve exact evidence and flag uncertain inventory for review."
@@ -6668,8 +6811,8 @@ elif section == "Website scanner":
         help="Saved separately for this company.",
     )
 
-    # Known records are live context, not a saved prompt field. They refresh whenever
-    # the company's Datablix records change, preventing stale duplicate-check context.
+    # Starting/known records are live context, not a saved prompt field.
+    # Starting Data is preferred so research reconciles the original source before discovery.
     known_records = known_default
     known_signature = hashlib.sha256(known_records.encode("utf-8")).hexdigest()[:10]
     known_key_prefix = f"db_prompt_known_{company_id}_"
@@ -6678,12 +6821,12 @@ elif section == "Website scanner":
         if str(session_key).startswith(known_key_prefix) and session_key != known_key:
             st.session_state.pop(session_key, None)
     prompt_right.text_area(
-        "Known records for duplicate checking",
-        value=known_records or "No current Datablix records are registered for this company yet.",
+        known_records_ui_label,
+        value=known_records or "No starting source records are available for this company yet.",
         height=120,
         disabled=True,
         key=known_key,
-        help="This list refreshes automatically from the active company's current Datablix records.",
+        help=known_records_help,
     )
 
     source_policy = prompt_left.text_area(
@@ -6713,6 +6856,7 @@ elif section == "Website scanner":
         company_website=company_website,
         geographic_scope=geographic_scope,
         known_records=known_records,
+        known_records_context=known_records_context,
         priority_notes=priority_notes,
         source_policy=source_policy,
         output_notes=output_notes,
