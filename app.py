@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Scope + Address-Based Classification Research 2026.07.24-v39"
+DATABLIX_BUILD = "Ottawa Scope + Robust Source Matching 2026.07.24-v40"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -1338,41 +1338,313 @@ def normalize_workflow(df):
     return out
 
 
+# -------------------------------------------------------------------------
+# Robust Starting Data identity matching
+# -------------------------------------------------------------------------
+# The research CSV and the project Starting Data often describe the same Ottawa
+# property using slightly different address text.  Discovery status therefore
+# must never depend on one literal string key.  The helpers below normalize
+# civic numbers, compound addresses, street types, directions, Ottawa locality
+# labels, postal codes and URLs before Datablix decides that a property is new.
+
+_STREET_TYPE_ALIASES = {
+    "street": "st", "st": "st",
+    "avenue": "ave", "ave": "ave",
+    "road": "rd", "rd": "rd",
+    "boulevard": "blvd", "blvd": "blvd",
+    "drive": "dr", "dr": "dr",
+    "lane": "ln", "ln": "ln",
+    "court": "ct", "ct": "ct",
+    "place": "pl", "pl": "pl",
+    "crescent": "cres", "cres": "cres",
+    "terrace": "terr", "terr": "terr",
+    "parkway": "pkwy", "pkwy": "pkwy",
+    "way": "way", "trail": "trl", "trl": "trl",
+    "circle": "cir", "cir": "cir",
+    "highway": "hwy", "hwy": "hwy",
+}
+
+# Correct the accidental comma in the static mapping above defensively below.
+_STREET_TYPE_ALIASES["pkwy"] = "pkwy"
+_STREET_TYPE_ALIASES["parkway"] = "pkwy"
+
+_DIRECTION_ALIASES = {
+    "north": "n", "n": "n",
+    "south": "s", "s": "s",
+    "east": "e", "e": "e",
+    "west": "w", "w": "w",
+}
+
+_OTTawa_LOCALITY_KEYS = {
+    norm_header(value) for value in OTTAWA_LOCALITY_LABELS
+} | {"ottawa"}
+
+
+def _fold_identity_text(value) -> str:
+    """Lowercase and simplify punctuation for identity comparison only."""
+    text = safe_text(value).lower()
+    text = (
+        text.replace("–", "-")
+        .replace("—", "-")
+        .replace("−", "-")
+        .replace("’", "'")
+    )
+    text = re.sub(r"[.]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _canonical_postal(value) -> str:
+    return re.sub(r"[^A-Z0-9]", "", safe_text(value).upper())
+
+
+def _canonical_city(value) -> str:
+    key = norm_header(value)
+    if key in _OTTawa_LOCALITY_KEYS:
+        return "ottawa"
+    return key
+
+
+def _canonical_phone(value) -> str:
+    digits = re.sub(r"\D+", "", safe_text(value))
+    if len(digits) > 10:
+        digits = digits[-10:]
+    return digits
+
+
+def _canonical_url(value) -> str:
+    raw = safe_text(value)
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        host = (parsed.netloc or "").lower().removeprefix("www.")
+        path = re.sub(r"/+", "/", parsed.path or "/").rstrip("/")
+        if not host:
+            return norm_header(raw)
+        return f"{host}{path}"
+    except Exception:
+        return norm_header(raw)
+
+
+def _address_signature(value) -> dict:
+    """Return civic-number and street signatures from a Street Address value.
+
+    Compound values such as ``1161-1171 Wellington Street`` and
+    ``1140/1150 Fisher Avenue`` expose every explicitly written civic number.
+    Datablix intentionally does NOT invent intermediate numbers in a range.
+    """
+    raw = _fold_identity_text(value)
+    if not raw:
+        return {"numbers": tuple(), "street": "", "street_lenient": "", "full": ""}
+
+    # A research tool occasionally puts city/province/postal text into the Street
+    # Address cell.  Comparison uses only the street-address part before a comma.
+    street_part = raw.split(",", 1)[0].strip()
+    street_part = re.sub(
+        r"\b[abceghj-nprstvxy]\d[abceghj-nprstv-z][ -]?\d[abceghj-nprstv-z]\d\b",
+        " ",
+        street_part,
+        flags=re.I,
+    )
+    street_part = re.sub(r"\s+", " ", street_part).strip()
+
+    # Capture an explicitly listed civic-number sequence at the beginning.
+    prefix = re.match(
+        r"^\s*((?:\d+[a-z]?)(?:\s*(?:-|/|&|\band\b)\s*\d+[a-z]?)*)(?:\s+)(.+)$",
+        street_part,
+        flags=re.I,
+    )
+    if prefix:
+        number_text = prefix.group(1)
+        street_text = prefix.group(2)
+        numbers = tuple(dict.fromkeys(re.findall(r"\d+[a-z]?", number_text, flags=re.I)))
+    else:
+        one_number = re.match(r"^\s*(\d+[a-z]?)\s+(.+)$", street_part, flags=re.I)
+        if one_number:
+            numbers = (one_number.group(1),)
+            street_text = one_number.group(2)
+        else:
+            numbers = tuple()
+            street_text = street_part
+
+    tokens = re.findall(r"[a-z0-9]+", street_text.lower())
+    normalized_tokens = []
+    for token in tokens:
+        token = _STREET_TYPE_ALIASES.get(token, token)
+        token = _DIRECTION_ALIASES.get(token, token)
+        normalized_tokens.append(token)
+
+    street = " ".join(normalized_tokens).strip()
+    lenient_tokens = [
+        token for token in normalized_tokens if token not in {"n", "s", "e", "w"}
+    ]
+    street_lenient = " ".join(lenient_tokens).strip()
+    number_key = "/".join(sorted(set(numbers)))
+    full = f"{number_key}|{street}" if number_key or street else ""
+    return {
+        "numbers": tuple(sorted(set(numbers))),
+        "street": street,
+        "street_lenient": street_lenient,
+        "full": full,
+    }
+
+
+def _building_name_key(value) -> str:
+    key = norm_header(value)
+    generic = {
+        "apartments", "apartment", "property", "properties", "building",
+        "residences", "residence", "community", "communities",
+    }
+    return "" if key in generic else key
+
+
+def _row_identity(row) -> dict:
+    address = _address_signature(row.get("Street Address", ""))
+    property_url = _canonical_url(row.get("Property Website", ""))
+    website = _canonical_url(row.get("Website", ""))
+    source_url = _canonical_url(row.get("Source URL", ""))
+    return {
+        "address": address,
+        "postal": _canonical_postal(row.get("Postal Code", "")),
+        "city": _canonical_city(row.get("City", "")),
+        "name": _building_name_key(row.get("Building Name", "")),
+        "property_url": property_url,
+        "website": website,
+        "source_url": source_url,
+        "phone": _canonical_phone(row.get("Phone", "")),
+        "email": safe_text(row.get("Primary Email", "")).lower(),
+    }
+
+
 def _discovery_keys_for_row(row) -> set[str]:
-    """Return stable identity keys used to compare research rows with the starting source data."""
-    name = norm_header(row.get("Building Name", ""))
-    address = norm_header(row.get("Street Address", ""))
-    city = norm_header(row.get("City", ""))
-    postal = norm_header(row.get("Postal Code", ""))
+    """Return normalized identity keys for diagnostics/backward compatibility."""
+    identity = _row_identity(row)
+    address = identity["address"]
     keys = set()
-    if address and postal:
-        keys.add(f"address_postal:{address}|{postal}")
-    if address and city:
-        keys.add(f"address_city:{address}|{city}")
-    if name and city:
-        keys.add(f"name_city:{name}|{city}")
+    if address["full"]:
+        keys.add(f"address:{address['full']}")
+    if address["street_lenient"] and address["numbers"]:
+        for number in address["numbers"]:
+            keys.add(f"civic_street:{number}|{address['street_lenient']}")
+    if identity["postal"] and address["street_lenient"]:
+        keys.add(f"street_postal:{address['street_lenient']}|{identity['postal']}")
+    if identity["name"] and identity["postal"]:
+        keys.add(f"name_postal:{identity['name']}|{identity['postal']}")
     return keys
 
 
-def classify_discovery_status(df, original=None):
-    """Compare research records with the project's starting source baseline.
+def _source_match_score(research_row, source_row) -> tuple[int, str]:
+    """Score one research row against one Starting Data row conservatively."""
+    research = _row_identity(research_row)
+    source = _row_identity(source_row)
+    ra = research["address"]
+    sa = source["address"]
 
-    A source match is marked Existing Source Record. An unmatched row is marked
-    Newly Discovered only when there is enough property identity and current/verified
-    evidence; otherwise it remains Needs Classification for human review.
+    numbers_overlap = bool(set(ra["numbers"]) & set(sa["numbers"]))
+    research_numbers_are_component = bool(
+        ra["numbers"]
+        and sa["numbers"]
+        and set(ra["numbers"]).issubset(set(sa["numbers"]))
+    )
+    street_exact = bool(ra["street"] and ra["street"] == sa["street"])
+    street_lenient = bool(
+        ra["street_lenient"]
+        and ra["street_lenient"] == sa["street_lenient"]
+    )
+    postal_same = bool(research["postal"] and research["postal"] == source["postal"])
+    city_same = bool(research["city"] and research["city"] == source["city"])
+    name_same = bool(research["name"] and research["name"] == source["name"])
+
+    # Strongest signal: same civic address after standardizing street wording.
+    if numbers_overlap and street_exact:
+        if postal_same:
+            return 100, "same civic address and postal code"
+        if city_same:
+            return 97, "same civic address and Ottawa locality"
+        return 93, "same civic address"
+
+    # Directional text is often omitted from either the research or source file.
+    if numbers_overlap and street_lenient:
+        if postal_same:
+            return 99, "same civic address after street-direction normalization"
+        if city_same:
+            return 95, "same civic address after Ottawa/street normalization"
+        return 90, "same civic address after street normalization"
+
+    # A single AI row may represent one component of a combined source address,
+    # e.g. 1171 Wellington versus 1161-1171 Wellington.
+    if research_numbers_are_component and street_lenient:
+        if postal_same:
+            return 99, "research address is a component of a combined source address"
+        if city_same:
+            return 95, "research address is a component of a combined Ottawa source address"
+        return 90, "research address is a component of a combined source address"
+
+    # Property-specific URLs can rescue a formatting-heavy address mismatch.
+    url_pairs = [
+        (research["property_url"], source["property_url"]),
+        (research["property_url"], source["website"]),
+        (research["website"], source["property_url"]),
+    ]
+    if any(a and b and a == b for a, b in url_pairs):
+        if postal_same or city_same:
+            return 91, "same property website with compatible location"
+        return 82, "same property website"
+
+    # Building name is supporting evidence, not enough by itself to force a match.
+    if name_same and postal_same:
+        return 88, "same building name and postal code"
+    if name_same and city_same and street_lenient:
+        return 84, "same building name, Ottawa locality and street"
+    if street_lenient and postal_same:
+        return 80, "same street and postal code but civic number needs review"
+    if name_same and city_same:
+        return 72, "same building name and Ottawa locality; address needs review"
+    return 0, "no credible source match"
+
+
+def current_starting_source_records() -> pd.DataFrame:
+    """Return the active structured Starting Data with a safe legacy fallback."""
+    versions = st.session_state.get(S_SOURCE_VERSIONS, [])
+    if isinstance(versions, list):
+        for version in reversed(versions):
+            if not isinstance(version, dict) or not bool(version.get("is_active")):
+                continue
+            records = version.get("records")
+            if isinstance(records, pd.DataFrame) and not records.empty:
+                return records.copy()
+        for version in reversed(versions):
+            if not isinstance(version, dict):
+                continue
+            records = version.get("records")
+            if isinstance(records, pd.DataFrame) and not records.empty:
+                return records.copy()
+
+    fallback = st.session_state.get(S_ORIGINAL)
+    if isinstance(fallback, pd.DataFrame) and not fallback.empty:
+        return fallback.copy()
+    return pd.DataFrame()
+
+
+def classify_discovery_status(df, original=None):
+    """Classify website-research rows against the current project Starting Data.
+
+    The status is deliberately conservative:
+    * strong normalized source match -> Existing Source Record;
+    * plausible/ambiguous source candidate -> Needs Classification;
+    * Newly Discovered -> only after every Starting Data row fails the stronger
+      identity checks and the research row has current-property evidence.
     """
     out = normalize_workflow(df.copy())
-    original_keys = set()
+    source_frame = pd.DataFrame()
     if isinstance(original, pd.DataFrame) and not original.empty:
         source_frame = normalize_workflow(original.copy())
-        for _, original_row in source_frame.iterrows():
-            original_keys.update(_discovery_keys_for_row(original_row))
 
     for idx, row in out.iterrows():
         decision = safe_text(row.get("Record Decision", ""))
         inventory_status = safe_text(row.get("Current Inventory Status", "")).lower()
         verification_status = safe_text(row.get("Verification Status", ""))
-        current_status = safe_text(row.get("Directory Discovery Status", ""))
 
         if decision == "Possible Duplicate":
             out.at[idx, "Directory Discovery Status"] = "Possible Duplicate"
@@ -1381,18 +1653,35 @@ def classify_discovery_status(df, original=None):
             out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
             continue
 
-        if not original_keys:
-            if current_status not in {"Newly Discovered", "Possible Duplicate", "Excluded / Not Current"}:
-                out.at[idx, "Directory Discovery Status"] = "Needs Classification"
+        if source_frame.empty:
+            out.at[idx, "Directory Discovery Status"] = "Needs Classification"
             continue
 
-        row_keys = _discovery_keys_for_row(row)
-        if row_keys & original_keys:
+        best_score = 0
+        best_reason = "no credible source match"
+        for _, source_row in source_frame.iterrows():
+            score, reason = _source_match_score(row, source_row)
+            if score > best_score:
+                best_score = score
+                best_reason = reason
+                if best_score >= 100:
+                    break
+
+        if best_score >= 88:
             out.at[idx, "Directory Discovery Status"] = "Existing Source Record"
             continue
 
-        # A missing source match alone is not enough to claim a new current building.
-        has_identity = bool(row_keys)
+        # A plausible source candidate blocks an automatic "new" claim.  Human
+        # review is safer than overstating discovery when address evidence conflicts.
+        if best_score >= 72:
+            out.at[idx, "Directory Discovery Status"] = "Needs Classification"
+            continue
+
+        identity = _row_identity(row)
+        has_property_identity = bool(
+            identity["address"]["numbers"]
+            and identity["address"]["street_lenient"]
+        ) or bool(identity["property_url"]) or bool(identity["name"] and identity["postal"])
         current_evidence = (
             inventory_status.startswith("current")
             or (
@@ -1400,10 +1689,11 @@ def classify_discovery_status(df, original=None):
                 and decision in {"Keep", "Update"}
             )
         )
-        if has_identity and current_evidence:
-            out.at[idx, "Directory Discovery Status"] = "Newly Discovered"
-        elif current_status != "Newly Discovered":
-            out.at[idx, "Directory Discovery Status"] = "Needs Classification"
+        out.at[idx, "Directory Discovery Status"] = (
+            "Newly Discovered"
+            if has_property_identity and current_evidence
+            else "Needs Classification"
+        )
 
     return out
 
@@ -2385,7 +2675,7 @@ Before producing the final CSV:
 4. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields.
 5. Verify every field before listing it under Missing Information.
 6. Remove duplicate rows created by the WEBSITE RESEARCH ITSELF, primarily using normalized street address and postal code, then property URL and building name plus city.
-7. Ensure ONE row per unique identifiable physical property in this website-research result.
+7. Use the company's leasing/property record as the row boundary. When multiple civic addresses are presented under the same property/complex name and share the same official property or leasing page, leasing contact information, management, and leasing/availability process, keep them together as ONE property row and preserve a combined address such as 1161-1171 Wellington Street. Do not split them merely because more than one civic number is visible. Split only when reliable official evidence shows the addresses are independently marketed or leased as separate properties.
 8. Check that every returned property is within the City of Ottawa municipal boundary; remove out-of-Ottawa rows from the deliverable.
 9. Check that City, Province, and Postal Code agree.
 10. Recheck Number of Storeys and Building Classification using the exact project rules below.
@@ -2401,7 +2691,7 @@ Do NOT compare any row with Datablix Starting Data during this quality check. Da
 Official company and official property sources are the primary evidence. Do not silently rely on search-result snippets, social media, forums, user-generated listings, scraped directories, or unverified third-party sources.
 
 ## Fields to collect for each property
-Return one row per unique identifiable property discovered through this website-research process, including Current, Review, and meaningful Excluded/legacy website records when supported.
+Return one row per unique company-leased property record discovered through this website-research process, including Current, Review, and meaningful Excluded/legacy website records when supported. A company-leased property record may contain more than one civic address when the company presents and leases those addresses together as one complex/property.
 
 Use these exact column headings:
 
@@ -2442,7 +2732,7 @@ Field guidance:
 8. Keep Property Website, Company Website, and Source URL separate.
 9. Preserve conflicting values and explain the conflict instead of choosing one without evidence.
 10. Deduplicate only within this website-research result. Do not compare against Datablix/project source records.
-11. Do not merge separate buildings merely because they belong to one complex. Do not split one building merely because several source pages describe it.
+11. Do not merge unrelated properties merely because they share the same management company. However, when multiple civic addresses share the same official property/complex name AND the same property/leasing page or leasing contact/process, treat the company's leasing record as one property row and preserve the combined civic address. Do not split such a property merely because it contains separate towers or civic numbers. Split only when official evidence shows independent marketing/leasing records.
 12. Ottawa scope is mandatory. Return only properties within the City of Ottawa municipal boundary. Omit out-of-Ottawa properties entirely; do not label geographic out-of-scope properties as Excluded/legacy.
 13. Research Number of Storeys before finalizing Building Classification. Use Low-rise for 1–4 storeys, Mid-rise for 5–11 storeys, and High-rise for 12+ storeys. Never guess classification from appearance, unit count, building name, elevator presence, or marketing terminology.
 14. If no reliable storey evidence can support a classification after a reasonable search, leave Building Classification blank and list it under Missing Information. If storey sources conflict across classification bands, also leave Building Classification blank and explain the conflict in Reviewer Notes/Supporting Evidence.
@@ -2465,7 +2755,7 @@ Name the file clearly, for example:
 `company_name_website_research_results.csv`
 
 The single CSV must:
-- contain one unique identifiable physical property per row;
+- contain one unique company-leased property record per row; when the company leases multiple civic addresses together as one named property/complex, keep those addresses in one combined row;
 - use the exact column headings listed above, in the exact order provided;
 - contain Current, Review, and meaningful identifiable Excluded/legacy website records together when applicable;
 - use Current Inventory Status to distinguish Current, Review, and Excluded website-inventory status;
@@ -2489,6 +2779,198 @@ Single-CSV format rule: This requirement overrides any conflicting output-format
 Additional output instructions:
 {output_notes or 'Return exactly one clean, evidence-based website-research CSV file, ready for direct import into Datablix.'}
 """
+
+def _same_resolved_value(a, b, normalizer=lambda value: safe_text(value).lower()) -> bool:
+    left = normalizer(a)
+    right = normalizer(b)
+    return bool(left and right and left == right)
+
+
+def _strong_shared_leasing_identity(left, right) -> bool:
+    """Return True only when two AI rows clearly represent one leased property.
+
+    Same-company contact information alone is NOT enough.  Datablix requires the
+    same property/building name, the same street, and shared property/leasing
+    evidence before it combines civic addresses.
+    """
+    left_id = _row_identity(left)
+    right_id = _row_identity(right)
+    la = left_id["address"]
+    ra = right_id["address"]
+
+    if not left_id["name"] or left_id["name"] != right_id["name"]:
+        return False
+    if not la["street_lenient"] or la["street_lenient"] != ra["street_lenient"]:
+        return False
+
+    property_url_same = bool(
+        left_id["property_url"]
+        and left_id["property_url"] == right_id["property_url"]
+    )
+    source_url_same = bool(
+        left_id["source_url"]
+        and left_id["source_url"] == right_id["source_url"]
+        and left_id["source_url"].count("/") >= 1
+    )
+    phone_same = bool(left_id["phone"] and left_id["phone"] == right_id["phone"])
+    email_same = bool(left_id["email"] and left_id["email"] == right_id["email"])
+
+    # Postal conflict is a warning sign.  Do not auto-merge it unless a property
+    # URL itself is shared, which is strong evidence that the company leases it
+    # as one record.
+    postal_conflict = bool(
+        left_id["postal"] and right_id["postal"] and left_id["postal"] != right_id["postal"]
+    )
+    if postal_conflict and not property_url_same:
+        return False
+
+    return property_url_same or source_url_same or (phone_same and email_same) or phone_same
+
+
+def _street_tail_for_display(value) -> str:
+    text = safe_text(value).strip()
+    text = text.replace("–", "-").replace("—", "-")
+    match = re.match(
+        r"^\s*(?:\d+[A-Za-z]?)(?:\s*(?:-|/|&|\band\b)\s*\d+[A-Za-z]?)*\s+(.+)$",
+        text,
+        flags=re.I,
+    )
+    return match.group(1).strip() if match else text
+
+
+def _combined_address_for_group(group: pd.DataFrame) -> str:
+    signatures = [_address_signature(value) for value in group["Street Address"]]
+    streets = [signature["street_lenient"] for signature in signatures if signature["street_lenient"]]
+    if not streets or len(set(streets)) != 1:
+        return safe_text(group.iloc[0].get("Street Address", ""))
+
+    civic_numbers = []
+    for signature in signatures:
+        for number in signature["numbers"]:
+            if number not in civic_numbers:
+                civic_numbers.append(number)
+    if not civic_numbers:
+        return safe_text(group.iloc[0].get("Street Address", ""))
+
+    def number_sort_key(value):
+        match = re.match(r"(\d+)([a-z]?)", str(value), flags=re.I)
+        return (int(match.group(1)) if match else 10**9, (match.group(2) if match else ""))
+
+    civic_numbers = sorted(civic_numbers, key=number_sort_key)
+    tail = _street_tail_for_display(group.iloc[0].get("Street Address", ""))
+    if len(civic_numbers) == 1:
+        return f"{civic_numbers[0]} {tail}".strip()
+    if len(civic_numbers) == 2:
+        number_text = f"{civic_numbers[0]}-{civic_numbers[1]}"
+    else:
+        number_text = "/".join(civic_numbers)
+    return f"{number_text} {tail}".strip()
+
+
+def _append_note(existing, note) -> str:
+    current = safe_text(existing)
+    note = safe_text(note)
+    if not note:
+        return current
+    if not current:
+        return note
+    if note.lower() in current.lower():
+        return current
+    return f"{current}; {note}"
+
+
+def consolidate_shared_leasing_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Consolidate AI rows the company clearly leases as one property record.
+
+    This is intentionally conservative.  It protects against research tools
+    splitting a multi-address complex into one row per civic number when the
+    company itself uses one property name and one leasing identity.
+    """
+    if not isinstance(df, pd.DataFrame) or len(df) < 2:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    work = df.reset_index(drop=True).copy()
+    parent = list(range(len(work)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for left_index in range(len(work)):
+        for right_index in range(left_index + 1, len(work)):
+            if _strong_shared_leasing_identity(work.iloc[left_index], work.iloc[right_index]):
+                union(left_index, right_index)
+
+    groups = {}
+    for index in range(len(work)):
+        groups.setdefault(find(index), []).append(index)
+
+    rows = []
+    list_like_fields = {
+        "Amenities", "Suite Types", "Rental Rate Range", "Supporting Evidence",
+        "Missing Information", "Reviewer Notes",
+    }
+    protected_conflict_fields = {
+        "Number of Apartments", "Number of Storeys", "Postal Code", "Phone",
+        "Primary Email", "Secondary Email", "Building Classification",
+    }
+
+    for member_indexes in groups.values():
+        group = work.iloc[member_indexes].copy()
+        if len(group) == 1:
+            rows.append(group.iloc[0].to_dict())
+            continue
+
+        merged = group.iloc[0].to_dict()
+        merged["Street Address"] = _combined_address_for_group(group)
+        conflicts = []
+
+        for column in group.columns:
+            if column in {"Street Address", "Record ID"}:
+                continue
+            values = []
+            for value in group[column]:
+                if is_unresolved(value):
+                    continue
+                clean = safe_text(value)
+                if clean and clean not in values:
+                    values.append(clean)
+            if not values:
+                continue
+            if len(values) == 1:
+                merged[column] = values[0]
+            elif column in list_like_fields:
+                merged[column] = "; ".join(values)
+            elif column == "Current Inventory Status":
+                lowered = [value.lower() for value in values]
+                merged[column] = "Current" if any(value.startswith("current") for value in lowered) else values[0]
+            elif column == "Confidence":
+                rank = {"low": 0, "medium": 1, "high": 2}
+                merged[column] = min(values, key=lambda value: rank.get(value.lower(), 1))
+            elif column in protected_conflict_fields:
+                # Preserve the first value but force the disagreement into human review.
+                merged[column] = values[0]
+                conflicts.append(f"{column} differs across consolidated AI rows: {' | '.join(values)}")
+            else:
+                merged[column] = values[0]
+
+        merged["Reviewer Notes"] = _append_note(
+            merged.get("Reviewer Notes", ""),
+            f"Datablix consolidated {len(group)} AI rows because they shared the same property name, street and leasing identity; civic addresses were kept as one property record.",
+        )
+        for conflict in conflicts:
+            merged["Reviewer Notes"] = _append_note(merged.get("Reviewer Notes", ""), conflict)
+        rows.append(merged)
+
+    return pd.DataFrame(rows, columns=work.columns)
+
 
 def append_external_research_results(
     imported: pd.DataFrame,
@@ -2521,19 +3003,23 @@ def append_external_research_results(
     mapped["Record Decision"] = "Undecided"
     mapped["Directory Entry Status"] = "Not Entered"
 
+    # Protect the review queue from AI over-splitting.  When the company clearly
+    # leases multiple civic addresses as one named property, retain one row.
+    mapped = consolidate_shared_leasing_rows(mapped)
+
     current = st.session_state.get(S_WORKING, pd.DataFrame()).copy()
     combined = pd.concat([current, mapped], ignore_index=True, sort=False)
     combined = ensure_ids(normalize_workflow(prepare_data(combined)))
 
     # Project-level source comparison belongs in Datablix, not in the AI prompt.
-    active_source = _active_source_version()
-    active_source_records = (
-        active_source.get("records")
-        if isinstance(active_source, dict)
-        else pd.DataFrame()
+    # Always prefer the active source-version records, with S_ORIGINAL only as a
+    # fallback.  This prevents a valid source row such as 165 Chapel Street from
+    # being called new because a stale/empty session copy was consulted.
+    active_source_records = current_starting_source_records()
+    combined = classify_discovery_status(
+        combined,
+        active_source_records if not active_source_records.empty else None,
     )
-    if isinstance(active_source_records, pd.DataFrame) and not active_source_records.empty:
-        combined = classify_discovery_status(combined, active_source_records)
 
     st.session_state[S_WORKING] = combined
     return len(mapped)
@@ -6805,9 +7291,10 @@ working, project_registry = synchronize_company_registry(
     st.session_state[S_WORKING].copy(),
     st.session_state.get(S_COMPANIES),
 )
+_comparison_baseline = current_starting_source_records()
 working = classify_discovery_status(
     working,
-    st.session_state.get(S_ORIGINAL),
+    _comparison_baseline if not _comparison_baseline.empty else None,
 )
 st.session_state[S_WORKING] = working
 st.session_state[S_COMPANIES] = project_registry
@@ -7830,7 +8317,7 @@ elif section == "Website scanner":
         "contact details, and other requested fields before declaring information missing. For Number of Storeys, use the verified full Ottawa street address as an explicit web-search key (for example: exact address + number of storeys/floors) before treating the field as unavailable; then derive Building Classification from the verified storey evidence. Preserve exact evidence and flag uncertain inventory for review."
     )
     default_output_notes = (
-        "Return exactly one downloadable CSV file only. Use one row per unique identifiable physical property and keep the exact requested headings in the exact requested order. "
+        "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record and keep the exact requested headings in the exact requested order. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
         "Preserve blanks for genuinely unknown values. Keep Current, Review, and meaningful identifiable Excluded website records in the same CSV when applicable. "
         "Do not create any CSV row for orphan/empty/generic pages that lack meaningful property-specific evidence. "
         "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The CSV must be ready for direct Datablix import."
@@ -7989,7 +8476,7 @@ elif section == "Website scanner":
     st.divider()
     st.subheader("2. Import the single completed CSV research deliverable")
     st.caption(
-        "Exactly one consolidated CSV is the required research-deliverable format. The AI file contains website research only. When imported, Datablix maps the rows, compares them against the current Starting Data baseline, flags existing/new/possible-review cases, and then sends them through quality checks and human approval."
+        "Exactly one consolidated CSV is the required research-deliverable format. The AI file contains website research only. When imported, Datablix first consolidates clearly shared leasing-property rows, then compares normalized civic addresses, compound addresses, Ottawa locality labels, postal codes, names and property URLs against the current Starting Data baseline before any row can be called newly discovered."
     )
     import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
     with import_tabs[0]:
