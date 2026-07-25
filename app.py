@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Postal + Classification Lookup Exceptions 2026.07.24-v47"
+DATABLIX_BUILD = "Ottawa Website Scan + Postal + Classification Manual Override + Performance 2026.07.24-v49"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -72,9 +72,9 @@ INTERNAL_COLUMNS = [
     "Current Inventory Status", "Inventory Evidence",
     "Found on City/Portfolio Page", "Found on HTML Sitemap",
     "Found on XML Sitemap", "Inventory Exclusion Reason",
-    "Directory Discovery Status", "Directory Entry Status", "Source URL", "Date Researched", "Researcher", "Research Status",
+    "Directory Discovery Status", "Discovery Status Source", "Directory Entry Status", "Source URL", "Date Researched", "Researcher", "Research Status",
     "Source Status", "Verification Status", "Missing Information",
-    "Reviewer Notes", "Record Decision", "Directory Entry Status",
+    "Reviewer Notes", "Record Decision",
 ]
 
 LISTING_COLUMNS = [
@@ -187,6 +187,7 @@ ALIASES = {
     "Found on XML Sitemap": ["Found on XML Sitemap", "On XML Sitemap"],
     "Inventory Exclusion Reason": ["Inventory Exclusion Reason", "Exclusion Reason"],
     "Directory Discovery Status": ["Directory Discovery Status", "Discovery Status", "Record Origin", "Directory Origin"],
+    "Discovery Status Source": ["Discovery Status Source", "Discovery Classification Source", "Discovery Override Source"],
     "Directory Entry Status": ["Directory Entry Status", "Entry Status", "Directory Submission Status"],
     "Source URL": ["Source URL", "Official Source URL", "Research Source", "Website / Source URL"],
     "Date Researched": ["Date Researched", "Date Verified", "Verification Date", "Research Date"],
@@ -235,6 +236,7 @@ DISCOVERY_STATUSES = [
     "Possible Duplicate",
     "Excluded / Not Current",
 ]
+DISCOVERY_STATUS_SOURCES = ["Automatic", "Manual"]
 DIRECTORY_ENTRY_STATUSES = ["Not Entered", "Entered", "Needs Correction"]
 
 COMPANY_STATUSES = [
@@ -1299,13 +1301,24 @@ def normalize_choice(series, choices, default, aliases=None):
 
 
 def synchronize_missing_information(df):
-    """Keep Missing Information aligned with the current research-field gaps."""
+    """Keep Missing Information aligned with current gaps using column masks.
+
+    This avoids repeated scalar ``.at`` access for every row/field combination,
+    which was noticeable on larger project datasets during every Streamlit rerun.
+    """
     out = df.copy()
-    missing_text = pd.Series("", index=out.index, dtype="object")
-    for idx in out.index:
-        gaps = [field for field in TARGET_FIELDS if is_unresolved(out.at[idx, field])]
-        missing_text.at[idx] = ", ".join(gaps)
-    out["Missing Information"] = missing_text
+    if out.empty:
+        out["Missing Information"] = pd.Series(index=out.index, dtype="object")
+        return out
+
+    # Build each field's unresolved mask once, then assemble the row labels.
+    gap_masks = {field: unresolved_mask(out[field]).to_numpy() for field in TARGET_FIELDS}
+    missing_values = []
+    for position in range(len(out)):
+        missing_values.append(
+            ", ".join(field for field in TARGET_FIELDS if gap_masks[field][position])
+        )
+    out["Missing Information"] = pd.Series(missing_values, index=out.index, dtype="object")
     return out
 
 
@@ -1326,6 +1339,14 @@ def normalize_workflow(df):
         out["Directory Discovery Status"],
         DISCOVERY_STATUSES,
         "Needs Classification",
+    )
+    # Track whether discovery classification came from Datablix or a human reviewer.
+    # Legacy/imported projects default to Automatic until a reviewer explicitly
+    # changes Directory Discovery Status in the review table.
+    out["Discovery Status Source"] = normalize_choice(
+        out["Discovery Status Source"],
+        DISCOVERY_STATUS_SOURCES,
+        "Automatic",
     )
     out["Directory Entry Status"] = normalize_choice(
         out["Directory Entry Status"],
@@ -1534,18 +1555,18 @@ def _discovery_keys_for_row(row) -> set[str]:
     return keys
 
 
-def _source_match_score(research_row, source_row) -> tuple[int, str]:
-    """Score one research row against one Starting Data row conservatively."""
-    research = _row_identity(research_row)
-    source = _row_identity(source_row)
+def _source_match_score_from_identities(research: dict, source: dict) -> tuple[int, str]:
+    """Score two pre-normalized property identities conservatively."""
     ra = research["address"]
     sa = source["address"]
 
-    numbers_overlap = bool(set(ra["numbers"]) & set(sa["numbers"]))
+    research_numbers = set(ra["numbers"])
+    source_numbers = set(sa["numbers"])
+    numbers_overlap = bool(research_numbers & source_numbers)
     research_numbers_are_component = bool(
-        ra["numbers"]
-        and sa["numbers"]
-        and set(ra["numbers"]).issubset(set(sa["numbers"]))
+        research_numbers
+        and source_numbers
+        and research_numbers.issubset(source_numbers)
     )
     street_exact = bool(ra["street"] and ra["street"] == sa["street"])
     street_lenient = bool(
@@ -1604,6 +1625,115 @@ def _source_match_score(research_row, source_row) -> tuple[int, str]:
     return 0, "no credible source match"
 
 
+def _source_match_score(research_row, source_row) -> tuple[int, str]:
+    """Backward-compatible row scorer used by diagnostics and tests."""
+    return _source_match_score_from_identities(
+        _row_identity(research_row),
+        _row_identity(source_row),
+    )
+
+
+def _build_discovery_source_index(source_frame: pd.DataFrame) -> tuple[list[dict], dict]:
+    """Pre-normalize Starting Data and index every signal that can score > 0.
+
+    Earlier versions reparsed every source address/URL for every research row.
+    The index keeps the exact same scoring rules while limiting comparisons to
+    source rows that share at least one possible matching signal.
+    """
+    identities = []
+    indexes = {
+        "civic_exact": {},
+        "civic_lenient": {},
+        "property_url": {},
+        "website": {},
+        "name_postal": {},
+        "name_city_street": {},
+        "street_postal": {},
+        "name_city": {},
+    }
+
+    def add(index_name: str, key, position: int) -> None:
+        if key is None or key == "" or key == ():
+            return
+        indexes[index_name].setdefault(key, []).append(position)
+
+    for position, source_row in enumerate(source_frame.to_dict(orient="records")):
+        identity = _row_identity(source_row)
+        identities.append(identity)
+        address = identity["address"]
+
+        for number in address["numbers"]:
+            if address["street"]:
+                add("civic_exact", (number, address["street"]), position)
+            if address["street_lenient"]:
+                add("civic_lenient", (number, address["street_lenient"]), position)
+
+        if identity["property_url"]:
+            add("property_url", identity["property_url"], position)
+        if identity["website"]:
+            add("website", identity["website"], position)
+        if identity["name"] and identity["postal"]:
+            add("name_postal", (identity["name"], identity["postal"]), position)
+        if identity["name"] and identity["city"] and address["street_lenient"]:
+            add(
+                "name_city_street",
+                (identity["name"], identity["city"], address["street_lenient"]),
+                position,
+            )
+        if address["street_lenient"] and identity["postal"]:
+            add("street_postal", (address["street_lenient"], identity["postal"]), position)
+        if identity["name"] and identity["city"]:
+            add("name_city", (identity["name"], identity["city"]), position)
+
+    return identities, indexes
+
+
+def _candidate_source_positions(research: dict, indexes: dict) -> set[int]:
+    """Return only source rows capable of receiving a non-zero match score."""
+    positions = set()
+    address = research["address"]
+
+    for number in address["numbers"]:
+        if address["street"]:
+            positions.update(indexes["civic_exact"].get((number, address["street"]), ()))
+        if address["street_lenient"]:
+            positions.update(
+                indexes["civic_lenient"].get((number, address["street_lenient"]), ())
+            )
+
+    # Preserve the asymmetric URL comparisons from _source_match_score.
+    if research["property_url"]:
+        positions.update(indexes["property_url"].get(research["property_url"], ()))
+        positions.update(indexes["website"].get(research["property_url"], ()))
+    if research["website"]:
+        positions.update(indexes["property_url"].get(research["website"], ()))
+
+    if research["name"] and research["postal"]:
+        positions.update(
+            indexes["name_postal"].get((research["name"], research["postal"]), ())
+        )
+    if research["name"] and research["city"] and address["street_lenient"]:
+        positions.update(
+            indexes["name_city_street"].get(
+                (research["name"], research["city"], address["street_lenient"]),
+                (),
+            )
+        )
+    if address["street_lenient"] and research["postal"]:
+        positions.update(
+            indexes["street_postal"].get(
+                (address["street_lenient"], research["postal"]),
+                (),
+            )
+        )
+    if research["name"] and research["city"]:
+        positions.update(
+            indexes["name_city"].get((research["name"], research["city"]), ())
+        )
+
+    return positions
+
+
 def current_starting_source_records() -> pd.DataFrame:
     """Return the active structured Starting Data with a safe legacy fallback."""
     versions = st.session_state.get(S_SOURCE_VERSIONS, [])
@@ -1635,53 +1765,82 @@ def classify_discovery_status(df, original=None):
     * plausible/ambiguous source candidate -> Needs Classification;
     * Newly Discovered -> only after every Starting Data row fails the stronger
       identity checks and the research row has current-property evidence.
+
+    Performance note: Starting Data identities are normalized once and indexed by
+    the same address/name/URL signals used by the scorer. This preserves the v48
+    thresholds while avoiding an all-against-all comparison on every rerun.
     """
-    out = normalize_workflow(df.copy())
+    out = normalize_workflow(df)
+
     source_frame = pd.DataFrame()
+    source_identities = []
+    source_indexes = {}
     if isinstance(original, pd.DataFrame) and not original.empty:
-        source_frame = normalize_workflow(original.copy())
+        # Discovery comparison only needs property identity fields. Avoid running
+        # the full workflow normalizer over Starting Data on every rerun.
+        source_frame = coalesce_duplicate_columns(original.copy())
+        source_identities, source_indexes = _build_discovery_source_index(source_frame)
 
     for idx, row in out.iterrows():
         decision = safe_text(row.get("Record Decision", ""))
         inventory_status = safe_text(row.get("Current Inventory Status", "")).lower()
         verification_status = safe_text(row.get("Verification Status", ""))
+        discovery_source = safe_text(row.get("Discovery Status Source", "Automatic"))
+        current_discovery_status = safe_text(row.get("Directory Discovery Status", ""))
 
+        # Record-level decisions still take precedence over discovery classification.
         if decision == "Possible Duplicate":
             out.at[idx, "Directory Discovery Status"] = "Possible Duplicate"
+            out.at[idx, "Discovery Status Source"] = "Automatic"
             continue
         if decision == "Remove" or inventory_status.startswith("excluded"):
             out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
+            out.at[idx, "Discovery Status Source"] = "Automatic"
+            continue
+
+        # A human-reviewed classification is final unless the reviewer changes it
+        # again. This prevents the app-wide rerun from undoing a saved choice.
+        if discovery_source == "Manual" and current_discovery_status in DISCOVERY_STATUSES:
             continue
 
         if source_frame.empty:
             out.at[idx, "Directory Discovery Status"] = "Needs Classification"
+            out.at[idx, "Discovery Status Source"] = "Automatic"
             continue
 
+        research_identity = _row_identity(row)
+        candidate_positions = _candidate_source_positions(
+            research_identity, source_indexes
+        )
+
         best_score = 0
-        best_reason = "no credible source match"
-        for _, source_row in source_frame.iterrows():
-            score, reason = _source_match_score(row, source_row)
+        for position in candidate_positions:
+            score, _reason = _source_match_score_from_identities(
+                research_identity, source_identities[position]
+            )
             if score > best_score:
                 best_score = score
-                best_reason = reason
                 if best_score >= 100:
                     break
 
         if best_score >= 88:
             out.at[idx, "Directory Discovery Status"] = "Existing Source Record"
+            out.at[idx, "Discovery Status Source"] = "Automatic"
             continue
 
-        # A plausible source candidate blocks an automatic "new" claim.  Human
+        # A plausible source candidate blocks an automatic "new" claim. Human
         # review is safer than overstating discovery when address evidence conflicts.
         if best_score >= 72:
             out.at[idx, "Directory Discovery Status"] = "Needs Classification"
+            out.at[idx, "Discovery Status Source"] = "Automatic"
             continue
 
-        identity = _row_identity(row)
+        address = research_identity["address"]
         has_property_identity = bool(
-            identity["address"]["numbers"]
-            and identity["address"]["street_lenient"]
-        ) or bool(identity["property_url"]) or bool(identity["name"] and identity["postal"])
+            address["numbers"] and address["street_lenient"]
+        ) or bool(research_identity["property_url"]) or bool(
+            research_identity["name"] and research_identity["postal"]
+        )
         current_evidence = (
             inventory_status.startswith("current")
             or (
@@ -1694,6 +1853,7 @@ def classify_discovery_status(df, original=None):
             if has_property_identity and current_evidence
             else "Needs Classification"
         )
+        out.at[idx, "Discovery Status Source"] = "Automatic"
 
     return out
 
@@ -3049,8 +3209,9 @@ def append_external_research_results(
 # Quality checks and output views
 # =========================================================
 
+@st.cache_data(show_spinner=False, ttl=300, max_entries=16)
 def qa_checks(df):
-    out = normalize_workflow(df.copy())
+    out = normalize_workflow(df)
     issues = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
     core_gaps = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
     research_gaps = pd.Series([[] for _ in range(len(out))], index=out.index, dtype="object")
@@ -5723,14 +5884,18 @@ def save_edits(edited, columns):
         if "Record ID" in working.columns
         else pd.Series("", index=working.index, dtype="string")
     )
+    id_counts = working_ids[working_ids.ne("")].value_counts()
+    id_to_index = {
+        record_id: index
+        for index, record_id in working_ids.items()
+        if record_id and int(id_counts.get(record_id, 0)) == 1
+    }
 
     for edited_index, edited_row in edited.iterrows():
         target_index = None
         record_id = str(edited_row.get("Record ID", "") or "").strip()
         if record_id:
-            matches = working.index[working_ids.eq(record_id)].tolist()
-            if len(matches) == 1:
-                target_index = matches[0]
+            target_index = id_to_index.get(record_id)
 
         # Safe fallback for legacy rows or duplicate/missing IDs.
         if target_index is None and edited_index in working.index:
@@ -5738,8 +5903,26 @@ def save_edits(edited, columns):
         if target_index is None:
             continue
 
+        previous_discovery_status = safe_text(
+            working.at[target_index, "Directory Discovery Status"]
+            if "Directory Discovery Status" in working.columns
+            else ""
+        )
+
         for column in editable_columns:
             working.at[target_index, column] = edited_row[column]
+
+        # If a reviewer explicitly changes discovery status, remember that choice.
+        # Choosing Needs Classification hands the row back to automatic logic; any
+        # resolved classification becomes a manual override and survives reruns.
+        if "Directory Discovery Status" in editable_columns:
+            new_discovery_status = safe_text(working.at[target_index, "Directory Discovery Status"])
+            if new_discovery_status != previous_discovery_status:
+                working.at[target_index, "Discovery Status Source"] = (
+                    "Automatic"
+                    if new_discovery_status == "Needs Classification"
+                    else "Manual"
+                )
 
     working["Province"] = working["Province"].apply(canonical_province)
     working["Postal Code"] = working["Postal Code"].apply(postal_code)
@@ -8816,7 +8999,7 @@ elif section == "Review records":
                 if preset == "Custom fields":
                     edit_fields = st.multiselect(
                         "Fields to edit",
-                        [c for c in INTERNAL_COLUMNS if c not in {"Record ID", "Missing Information"}],
+                        [c for c in INTERNAL_COLUMNS if c not in {"Record ID", "Missing Information", "Discovery Status Source"}],
                         default=[
                             "Building Name", "Management/Owner", "Phone", "Primary Email",
                             "Website", "Directory Discovery Status", "Research Status",
@@ -8895,7 +9078,7 @@ elif section == "Review records":
                             "Directory Discovery Status",
                             options=DISCOVERY_STATUSES,
                             required=True,
-                            help="Existing Source Record means it matches the starting source dataset; Newly Discovered means Datablix did not find a starting-data match.",
+                            help="Existing Source Record means it matches the starting source dataset; Newly Discovered means Datablix did not find a starting-data match. A reviewer change is saved as a manual override and will not be replaced on rerun.",
                         ),
                         "Research Status": st.column_config.SelectboxColumn(
                             "Research Status", options=RESEARCH_STATUSES, required=True
