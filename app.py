@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Postal + Classification Manual Override + Performance 2026.07.24-v49"
+DATABLIX_BUILD = "Ottawa Website Scan + Postal + Classification Manual Override + Pandas NA Fix 2026.07.25-v50"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -3262,26 +3262,43 @@ def qa_checks(df):
 
     # Classification consistency: a reliable storey count determines the height
     # band. Conflicting or non-standard classifications must be reviewed.
+    #
+    # IMPORTANT: pandas 3.x can raise ``TypeError: boolean value of NA is
+    # ambiguous`` when two object Series containing pd.NA are compared directly
+    # with ``Series.ne``. Build NA-free comparison Series first, then apply the
+    # validity masks. This keeps manual classifications and unresolved values
+    # working without crashing the demo, sidebar, or QA view.
     derived_height = derive_height_classification_from_storeys(out["Number of Storeys"])
     normalized_classification = out["Building Classification"].apply(normalize_height_classification)
     controlled_labels = {"Low-rise", "Mid-rise", "High-rise"}
+
+    derived_height_text = derived_height.astype("string").fillna("").str.strip()
+    normalized_classification_text = (
+        normalized_classification.astype("string").fillna("").str.strip()
+    )
+
+    classification_is_controlled = normalized_classification_text.isin(controlled_labels)
+    classification_conflicts = (
+        ~unresolved_mask(derived_height)
+        & ~unresolved_mask(normalized_classification)
+        & classification_is_controlled
+        & normalized_classification_text.ne(derived_height_text)
+    )
+
     flag(
         ~unresolved_mask(out["Building Classification"])
-        & ~normalized_classification.isin(controlled_labels),
+        & ~classification_is_controlled,
         "Warning",
         "Building classification is not Low-rise, Mid-rise, or High-rise",
     )
     flag(
-        ~unresolved_mask(derived_height)
-        & ~unresolved_mask(normalized_classification)
-        & normalized_classification.isin(controlled_labels)
-        & normalized_classification.ne(derived_height),
+        classification_conflicts,
         "Warning",
         "Building classification conflicts with storey count",
     )
     flag(
         ~unresolved_mask(normalized_classification)
-        & normalized_classification.isin(controlled_labels)
+        & classification_is_controlled
         & unresolved_mask(out["Number of Storeys"]),
         "Warning",
         "Building classification lacks supporting storey evidence",
