@@ -26,15 +26,21 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Research Activity vs Listing Eligibility Fix 2026.07.28-v61"
+DATABLIX_BUILD = "Greater Ottawa Website Scan + Regional Portfolio Scope 2026.07.28-v62"
 
-# This project is intentionally limited to rental apartment buildings within the
-# municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
-# must not be included in research deliverables for this project.
+# Project-wide regional boundary. Research may include current apartment
+# properties in Ottawa and nearby Eastern Ontario communities when the selected
+# company's official website presents them as part of its Ottawa-region,
+# Greater Ottawa Area, or surrounding Eastern Ontario portfolio. The project
+# remains Ontario-only; unrelated markets and Quebec properties stay out of scope.
 PROJECT_CITY = "Ottawa"
 PROJECT_PROVINCE = "Ontario"
 PROJECT_COUNTRY = "Canada"
-PROJECT_GEOGRAPHIC_SCOPE = "City of Ottawa, Ontario, Canada"
+PROJECT_REGION_NAME = "Greater Ottawa Area"
+PROJECT_GEOGRAPHIC_SCOPE = (
+    "Greater Ottawa Area and surrounding Eastern Ontario communities shown in "
+    "the company's current official Ottawa-region portfolio, Ontario, Canada"
+)
 
 # Height-based building classification used by the project.
 # Classification is derived only when a reliable storey count (or multiple
@@ -45,17 +51,33 @@ BUILDING_CLASSIFICATION_BANDS = (
     ("High-rise", 12, None),
 )
 
-# Common locality labels that can still be inside the City of Ottawa municipal
-# boundary. This list is used only to reduce false QA warnings; it is NOT used
-# to automatically include/exclude a property. Public address evidence remains
-# the source of truth for municipal scope.
-OTTAWA_LOCALITY_LABELS = {
+# Locality labels physically within the City of Ottawa. These remain separate
+# from nearby municipalities so identity matching does not collapse Carleton
+# Place, Smiths Falls, Renfrew, or another independent city into "Ottawa".
+OTTAWA_MUNICIPAL_LOCALITIES = {
     "ottawa", "kanata", "nepean", "orleans", "orléans", "gloucester",
     "barrhaven", "stittsville", "vanier", "rockcliffe park", "manotick",
     "carp", "cumberland", "greely", "metcalfe", "osgoode", "richmond",
     "north gower", "navan", "vars", "constance bay", "dunrobin",
     "fitzroy harbour", "munster", "sarsfield", "kinburn",
 }
+
+# Regional labels used only to reduce false QA warnings. This is an illustrative,
+# review-oriented allowlist—not automatic inclusion evidence. A property's exact
+# address and the company's current official Ottawa-region portfolio remain the
+# sources of truth. Unfamiliar Ontario municipalities are flagged for review
+# rather than deleted.
+GREATER_OTTAWA_LOCALITY_LABELS = OTTAWA_MUNICIPAL_LOCALITIES | {
+    "carleton place", "smiths falls", "renfrew", "arnprior", "almonte",
+    "mississippi mills", "perth", "kemptville", "north grenville",
+    "rockland", "clarence-rockland", "casselman", "embrun", "russell",
+    "winchester", "north dundas", "alexandria", "north glengarry",
+    "hawkesbury", "cornwall",
+}
+
+# Backward-compatible name for code that specifically needs Ottawa municipal
+# locality normalization rather than the wider regional QA list.
+OTTAWA_LOCALITY_LABELS = OTTAWA_MUNICIPAL_LOCALITIES
 
 # =========================================================
 # Configuration
@@ -1364,11 +1386,12 @@ def normalize_workflow(df):
 # -------------------------------------------------------------------------
 # Robust Starting Data identity matching
 # -------------------------------------------------------------------------
-# The research CSV and the project Starting Data often describe the same Ottawa
+# The research CSV and the project Starting Data often describe the same regional
 # property using slightly different address text.  Discovery status therefore
 # must never depend on one literal string key.  The helpers below normalize
-# civic numbers, compound addresses, street types, directions, Ottawa locality
-# labels, postal codes and URLs before Datablix decides that a property is new.
+# civic numbers, compound addresses, street types, directions, Ottawa municipal
+# locality labels, other municipality names, postal codes and URLs before Datablix
+# decides that a property is new.
 
 _STREET_TYPE_ALIASES = {
     "street": "st", "st": "st",
@@ -1864,6 +1887,19 @@ def empty_company_registry():
     return pd.DataFrame(columns=COMPANY_COLUMNS)
 
 
+def _contains_legacy_ottawa_only_scope(value) -> bool:
+    """Identify saved prompt text that would wrongly restore the old city-only rule."""
+    text = safe_text(value).lower()
+    legacy_markers = (
+        "current city of ottawa apartment listings only",
+        "omit every property outside ottawa",
+        "only properties within the city of ottawa municipal boundary",
+        "ottawa-only geographic boundary",
+        "must never broaden the scope beyond the city of ottawa",
+    )
+    return any(marker in text for marker in legacy_markers)
+
+
 def normalize_company_registry(registry):
     if not isinstance(registry, pd.DataFrame):
         registry = empty_company_registry()
@@ -1888,6 +1924,20 @@ def normalize_company_registry(registry):
         "Prompt Output Notes", "Research Prompt",
     ]:
         out[prompt_column] = out[prompt_column].fillna("").astype(str)
+
+    # Project scope is fixed globally. Migrate every existing company away from
+    # previously saved Ottawa-municipal-only defaults so old notes cannot narrow
+    # a newly generated prompt back to the former boundary.
+    out["Prompt Scope"] = PROJECT_GEOGRAPHIC_SCOPE
+    legacy_priority_mask = out["Prompt Priority Notes"].apply(
+        _contains_legacy_ottawa_only_scope
+    )
+    out.loc[legacy_priority_mask, "Prompt Priority Notes"] = ""
+    legacy_source_mask = out["Prompt Source Policy"].apply(
+        _contains_legacy_ottawa_only_scope
+    )
+    out.loc[legacy_source_mask, "Prompt Source Policy"] = ""
+
     out["Prompt Updated"] = out["Prompt Updated"].fillna("").astype(str).str.strip()
     out["AI Tool Used"] = out["AI Tool Used"].fillna("").astype(str).str.strip()
     out = out.loc[out["Management/Owner"].ne("") | out["Company ID"].ne("")].copy()
@@ -3218,7 +3268,7 @@ def build_company_website_research_prompt(
     source_policy: str,
     output_notes: str,
 ) -> str:
-    """Create an Ottawa-only website research prompt. Source comparison happens in Datablix after import."""
+    """Create a Greater Ottawa Area website-research prompt for Datablix import."""
     return f"""# Datablix Website-Only Company Research Prompt
 
 You are acting as a careful public-source rental-property research analyst. Research the company below and produce exactly ONE downloadable consolidated CSV file for import into Datablix.
@@ -3234,16 +3284,17 @@ Your job here is to establish what the company's current public web presence sup
 ## Company context
 - Company or management owner: {company_name or '[enter company name]'}
 - Official company website: {company_website or '[enter official website]'}
-- Geographic scope: {PROJECT_GEOGRAPHIC_SCOPE}
+- Geographic scope: {geographic_scope or PROJECT_GEOGRAPHIC_SCOPE}
 
-## Non-negotiable Ottawa-only project boundary
-This project covers ONLY apartment properties physically located within the municipal boundary of the City of Ottawa, Ontario, Canada.
+## Non-negotiable Greater Ottawa Area project boundary
+This project covers current apartment properties in Ontario that fall within the City of Ottawa OR a nearby Eastern Ontario community reasonably supported as part of the company's current Ottawa-region, Greater Ottawa Area, National Capital-area Ontario, or surrounding Eastern Ontario portfolio.
 
-- Do not include properties elsewhere in Ontario or Canada simply because the selected company manages them.
-- Do not include Toronto, Cornwall, Gatineau, Renfrew, Kingston, or any other municipality outside the City of Ottawa.
-- Ottawa neighbourhood/locality labels such as Kanata, Nepean, Orléans, Gloucester, Barrhaven, or Stittsville may be included only when public address evidence supports that the property is within the City of Ottawa municipal boundary.
-- A property that is outside Ottawa is OUT OF PROJECT SCOPE. Omit it completely from the CSV; do not keep it as an Excluded/legacy row.
-- If municipal inclusion is genuinely uncertain, do not guess. Research the address further. Include the property only when there is reasonable public evidence that it is within the City of Ottawa; otherwise omit it and mention the scope limitation only in minimal commentary outside the CSV if necessary.
+- Include City of Ottawa properties and nearby Ontario communities when the company's current official portfolio/location/navigation evidence supports them. Examples include Carleton Place, Smiths Falls, and Renfrew; examples are illustrative, not exhaustive.
+- Ottawa neighbourhood/locality labels such as Kanata, Nepean, Orléans, Gloucester, Barrhaven, and Stittsville remain in scope when address evidence supports their Ontario location.
+- Do not include unrelated company markets merely because the selected company manages them. Toronto, Kingston, and other portfolios not reasonably connected to the company's Ottawa-region inventory remain out of scope.
+- The project remains Ontario-only. Omit Gatineau and all other Quebec properties even when a company calls them part of the National Capital Region.
+- A property outside the supported Greater Ottawa Area / surrounding Eastern Ontario portfolio is OUT OF PROJECT SCOPE. Omit it completely from the CSV; do not keep it as an Excluded/legacy row.
+- Do not guess regional inclusion. Use the official portfolio grouping plus exact city, province, and address evidence. When the website's regional grouping is unclear, include the property only when its Ontario location is reasonably within the Greater Ottawa / surrounding Eastern Ontario study area; otherwise omit it and briefly document the limitation outside the CSV if necessary.
 
 ## Core principle
 Do NOT begin by collecting every property URL that happens to exist.
@@ -3317,15 +3368,15 @@ For each Current property, inspect the complete relevant official property conte
 Missing means researched and not found — not merely missed during the first extraction pass.
 
 ### Phase 3 — Controlled external lookup exceptions: Postal Code and Storeys / Classification ONLY
-The main research task remains an Ottawa listing scan of the selected company's official website. Do NOT use outside sources to discover additional properties, decide whether a property is current, or fill other ordinary property fields.
+The main research task remains a Greater Ottawa Area / surrounding Eastern Ontario listing scan of the selected company's official website. Do NOT use outside sources to discover additional properties, decide whether a property is current, or fill other ordinary property fields.
 
-ONLY after a property has been confirmed as a Current Ottawa listing from the company's official website, the following two external lookup exceptions are permitted when the official company/property pages do not provide the field:
+ONLY after a property has been confirmed as a Current in-scope Ontario listing from the company's official website, the following two external lookup exceptions are permitted when the official company/property pages do not provide the field:
 
 #### Exception A — Postal Code recovery
 When the exact physical street address is already verified from the company's official website but Postal Code is missing:
-- search the exact full address using a web-enabled research tool, for example: "[full street address], Ottawa, ON postal code";
+- search the exact full address using a web-enabled research tool, for example: "[full street address], [city], ON postal code";
 - Google or another search engine may be used to locate the address result; Google Maps/address information may be used when it clearly matches the exact physical address;
-- prefer authoritative or reliable address evidence such as Canada Post/address data, City of Ottawa or other government/public records, official public documents, and reliable property/address sources;
+- prefer authoritative or reliable address evidence such as Canada Post/address data, the applicable municipality, county, or other government/public records, official public documents, and reliable property/address sources;
 - accept a postal code ONLY when the source clearly corresponds to the same exact civic address;
 - record the external postal-code source in Supporting Evidence and clearly label it as secondary evidence;
 - never guess a postal code from the neighbourhood, a nearby building, the first three characters/FSA, or a similar street address; and
@@ -3333,25 +3384,25 @@ When the exact physical street address is already verified from the company's of
 
 #### Exception B — Number of Storeys / Building Classification
 When the company website does not provide reliable storey evidence, you MAY:
-- use Google or another search engine to locate evidence using the exact verified Ottawa street address;
-- consult official City of Ottawa planning/development records and documents;
+- use Google or another search engine to locate evidence using the exact verified street address and municipality;
+- consult official planning/development records and documents for the applicable municipality or county;
 - consult official public PDFs, planning documents, brochures, or property records;
 - consult reliable third-party property/building sources when necessary.
 
 Search-result snippets are discovery aids, not evidence by themselves. Open and assess the underlying source. Do not use social-media posts, forums, user-generated comments, or obviously scraped/unverified directories as evidence.
 
-External sources found under either exception must NEVER add a new property to scope, change Current Inventory Status, or override the company's official website about whether a property belongs to its current Ottawa portfolio. Clearly label all external postal-code and classification/storey evidence in Supporting Evidence.
+External sources found under either exception must NEVER add a new property to scope, change Current Inventory Status, or override the company's official website about whether a property belongs to its current in-scope regional portfolio. Clearly label all external postal-code and classification/storey evidence in Supporting Evidence.
 
 ### Phase 4 — Quality-check the website research before delivery
 Before producing the final CSV:
 1. Recheck every identifiable property against current company inventory evidence.
 2. Confirm that legitimate current properties visible through current official navigation/index sources have not been missed.
 3. Keep identifiable Excluded/legacy properties only when they are meaningful property records and their website-inventory exclusion is supported; omit non-record orphan/empty pages.
-4. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields. If Postal Code is still missing for a confirmed Current Ottawa property with a verified exact street address, perform the controlled exact-address postal-code recovery lookup before marking it missing.
+4. Recheck official property pages for postal codes, amenities, unit counts, contact information, and other requested fields. If Postal Code is still missing for a confirmed Current in-scope Ontario property with a verified exact street address, perform the controlled exact-address postal-code recovery lookup before marking it missing.
 5. Verify every field before listing it under Missing Information.
 6. Remove duplicate rows created by the WEBSITE RESEARCH ITSELF, primarily using normalized street address and postal code, then property URL and building name plus city.
 7. Use the company's leasing/property record as the row boundary. When multiple civic addresses are presented under the same property/complex name and share the same official property or leasing page, leasing contact information, management, and leasing/availability process, keep them together as ONE property row and preserve a combined address such as 1161-1171 Wellington Street. Do not split them merely because more than one civic number is visible. Split only when reliable official evidence shows the addresses are independently marketed or leased as separate properties.
-8. Check that every returned property is within the City of Ottawa municipal boundary; remove out-of-Ottawa rows from the deliverable.
+8. Check that every returned property is within the supported Greater Ottawa Area / surrounding Eastern Ontario scope and in Ontario; remove unrelated-market or Quebec rows from the deliverable.
 9. Check that City, Province, and Postal Code agree.
 10. Recheck Number of Storeys and Building Classification using the exact project rules below.
 11. Ensure every populated value is traceable to public evidence.
@@ -3363,7 +3414,7 @@ Do NOT compare any row with Datablix Starting Data during this quality check. Da
 ## Source policy
 {source_policy}
 
-For property discovery, current-inventory status, identity, leasing information, amenities, contact details, rates, suite types, policies, and all other ordinary fields, use the selected company's official website only. The only controlled external-source exceptions for an already-confirmed Current Ottawa property are: (1) Postal Code recovery from the verified exact street address when the official page omits it, and (2) Number of Storeys / Building Classification research when reliable storey evidence is absent. Google/search engines may be used to locate evidence for these two exceptions, but search-result snippets alone are not evidence. Do not use social media, forums, user-generated comments, or obviously scraped/unverified directories.
+For property discovery, current-inventory status, identity, leasing information, amenities, contact details, rates, suite types, policies, and all other ordinary fields, use the selected company's official website only. The only controlled external-source exceptions for an already-confirmed Current in-scope Ontario property are: (1) Postal Code recovery from the verified exact street address when the official page omits it, and (2) Number of Storeys / Building Classification research when reliable storey evidence is absent. Google/search engines may be used to locate evidence for these two exceptions, but search-result snippets alone are not evidence. Do not use social media, forums, user-generated comments, or obviously scraped/unverified directories.
 
 ## Fields to collect for each property
 Return one row per unique company-leased property record discovered through this website-research process, including Current, Review, and meaningful Excluded/legacy website records when supported. A company-leased property record may contain more than one civic address when the company presents and leases those addresses together as one complex/property.
@@ -3378,13 +3429,13 @@ Field guidance:
 - Property Website: the official property-specific homepage.
 - Company Website: the official corporate or management-company homepage.
 - Source URL: the strongest exact official page supporting the property's identity/current website status.
-- Postal Code: use the official company/property page when available. If it is missing for a confirmed Current Ottawa property, use the VERIFIED EXACT STREET ADDRESS to perform an exact-address postal-code lookup, for example "[full street address], Ottawa, ON postal code". Accept only an exact address match from reliable public evidence; never infer from a neighbouring property, neighbourhood/FSA, or similar address. Record the secondary postal source in Supporting Evidence. If one combined property row contains multiple civic addresses with different/conflicting postal codes, leave Postal Code blank and document the conflict rather than forcing one code.
-- Number of Storeys: actively research the building's storey/floor count. The VERIFIED FULL STREET ADDRESS is the primary research key whenever the official property page does not state the count. Do not leave this blank after checking only the property landing page. Using a web-enabled research tool, search the exact verified address with queries such as "[full street address, Ottawa ON] number of storeys", "[full street address, Ottawa ON] number of floors", "[full street address, Ottawa ON] apartment building storeys", and the building name plus address when a reliable building name is known. Check the official property site first, then official City of Ottawa planning/development records and documents, official PDFs/brochures, and reliable secondary property sources. A missing building name is NOT a reason to stop: the verified address alone should be used to continue the storey search. Do not mark Number of Storeys as missing until reasonable exact-address research has been attempted and documented. Record conflicting counts rather than choosing a number without evidence.
+- Postal Code: use the official company/property page when available. If it is missing for a confirmed Current in-scope Ontario property, use the VERIFIED EXACT STREET ADDRESS to perform an exact-address postal-code lookup, for example "[full street address], [city], ON postal code". Accept only an exact address match from reliable public evidence; never infer from a neighbouring property, neighbourhood/FSA, or similar address. Record the secondary postal source in Supporting Evidence. If one combined property row contains multiple civic addresses with different/conflicting postal codes, leave Postal Code blank and document the conflict rather than forcing one code.
+- Number of Storeys: actively research the building's storey/floor count. The VERIFIED FULL STREET ADDRESS is the primary research key whenever the official property page does not state the count. Do not leave this blank after checking only the property landing page. Using a web-enabled research tool, search the exact verified address with queries such as "[full street address, city, ON] number of storeys", "[full street address, city, ON] number of floors", "[full street address, city, ON] apartment building storeys", and the building name plus address when a reliable building name is known. Check the official property site first, then official planning/development records for the applicable municipality or county, official PDFs/brochures, and reliable secondary property sources. A missing building name is NOT a reason to stop: the verified address alone should be used to continue the storey search. Do not mark Number of Storeys as missing until reasonable exact-address research has been attempted and documented. Record conflicting counts rather than choosing a number without evidence.
 - Building Classification: use ONLY the project's height-based labels below and base the result on reliable storey evidence:
   - Low-rise = 1–4 storeys
   - Mid-rise = 5–11 storeys
   - High-rise = 12+ storeys
-  Ottawa planning/zoning practice generally treats buildings of 12 storeys and higher as high-rise developments. Do not use marketing labels, unit count, elevator presence, words such as tower, luxury, low rental, garden home, or visual appearance as substitutes for storey evidence.
+  For consistency across this project, buildings of 12 storeys and higher are classified as High-rise. Do not use marketing labels, unit count, elevator presence, words such as tower, luxury, low rental, garden home, or visual appearance as substitutes for storey evidence.
   If reliable sources disagree on the exact storey count but every supported count falls in the SAME classification band (for example 14 vs 15), Building Classification may still use that shared band while Number of Storeys remains blank and the conflict is documented. If the supported counts cross a classification boundary (for example 11 vs 12), leave Building Classification blank and document the conflict.
 - Current Inventory Status: Current, Review, or Excluded — not in current website inventory.
 - Inventory Evidence: explain the official website inventory source(s) supporting the status.
@@ -3402,17 +3453,17 @@ Field guidance:
 2. When information is not publicly confirmed after a reasonable check, leave the field blank and record it under Missing Information.
 3. Absence of an amenity or feature does not mean No. Use No only when a source explicitly states that the feature is unavailable, not offered, or prohibited.
 4. A dedicated property page existing on the company's domain does not by itself establish that the property is current.
-5. Do not use Google, a third-party listing, City records, or any external source to bring a property into current scope. After a property is already confirmed as a Current Ottawa listing on the company's official website, external lookup is permitted only for (a) exact-address Postal Code recovery when the official page omits it, and (b) Number of Storeys / Building Classification research when reliable storey evidence is absent.
+5. Do not use Google, a third-party listing, City records, or any external source to bring a property into current scope. After a property is already confirmed as a Current in-scope Ontario listing on the company's official website, external lookup is permitted only for (a) exact-address Postal Code recovery when the official page omits it, and (b) Number of Storeys / Building Classification research when reliable storey evidence is absent.
 6. Do not use generic labels such as Contact Us, Home, Properties, Apartments, Communities, Amenities, Floor Plans, Availability, Learn More, or Welcome as a building name.
 7. Distinguish a company contact page from a property page. A corporate office address is not automatically a rental-property address.
 8. Keep Property Website, Company Website, and Source URL separate.
 9. Preserve conflicting values and explain the conflict instead of choosing one without evidence.
 10. Deduplicate only within this website-research result. Do not compare against Datablix/project source records.
 11. Do not merge unrelated properties merely because they share the same management company. However, when multiple civic addresses share the same official property/complex name AND the same property/leasing page or leasing contact/process, treat the company's leasing record as one property row and preserve the combined civic address. Do not split such a property merely because it contains separate towers or civic numbers. Split only when official evidence shows independent marketing/leasing records.
-12. Ottawa scope is mandatory. Return only properties within the City of Ottawa municipal boundary. Omit out-of-Ottawa properties entirely; do not label geographic out-of-scope properties as Excluded/legacy.
+12. Regional scope is mandatory. Return only Ontario properties supported within the Greater Ottawa Area / surrounding Eastern Ontario study area. Omit unrelated-market and Quebec properties entirely; do not label geographic out-of-scope properties as Excluded/legacy.
 13. Research Number of Storeys before finalizing Building Classification. Use Low-rise for 1–4 storeys, Mid-rise for 5–11 storeys, and High-rise for 12+ storeys. Never guess classification from appearance, unit count, building name, elevator presence, or marketing terminology.
 14. If no reliable storey evidence can support a classification after a reasonable search, leave Building Classification blank and list it under Missing Information. If storey sources conflict across classification bands, also leave Building Classification blank and explain the conflict in Reviewer Notes/Supporting Evidence.
-15. Postal Code recovery rule: when Postal Code is absent from the official page for a confirmed Current Ottawa property, search the verified exact street address and accept a code only when reliable public evidence clearly matches that same civic address. Never guess from a nearby property, neighbourhood, FSA, or partial postal code. If reliable sources conflict, leave Postal Code blank and document the conflict.
+15. Postal Code recovery rule: when Postal Code is absent from the official page for a confirmed Current in-scope Ontario property, search the verified exact street address and accept a code only when reliable public evidence clearly matches that same civic address. Never guess from a nearby property, neighbourhood, FSA, or partial postal code. If reliable sources conflict, leave Postal Code blank and document the conflict.
 16. Treat AI-produced findings as preliminary research subject to Datablix validation and human approval.
 17. Prefer transparency over apparent completeness. Every populated value must be traceable to public evidence.
 18. Apply the property-row eligibility rule before creating any row. An orphan/legacy/isolated page with no meaningful property-specific evidence is a non-record page: ignore it.
@@ -3420,7 +3471,7 @@ Field guidance:
 20. Do not classify a property as Existing Source Record, Newly Discovered, or Possible Duplicate relative to the project. Datablix assigns project-comparison status after import.
 
 ## Priority or company-specific instructions
-The Ottawa-only geographic boundary, exact-address Postal Code recovery rule, and height-based building-classification rules above are project-wide requirements. Company-specific notes may refine research priorities, but they must NEVER broaden the scope beyond the City of Ottawa, disable the postal-code recovery rule, or override the 1–4 / 5–11 / 12+ classification rules. Ignore any older saved note that conflicts with those project-wide requirements.
+The Greater Ottawa Area / surrounding Eastern Ontario boundary, exact-address Postal Code recovery rule, and height-based building-classification rules above are project-wide requirements. Company-specific notes may refine research priorities, but they must NEVER narrow the scope back to City-of-Ottawa-only or broaden it into unrelated company markets, disable the postal-code recovery rule, or override the 1–4 / 5–11 / 12+ classification rules. Ignore any older saved note that conflicts with those project-wide requirements.
 
 {priority_notes or 'No additional priorities were provided.'}
 
@@ -3756,15 +3807,20 @@ def qa_checks(df):
     pc = out["Postal Code"].astype("string").fillna("").str.upper().str.strip()
     flag(~unresolved_mask(out["Postal Code"]) & ~pc.str.match(r"^[A-Z]\d[A-Z][ -]?\d[A-Z]\d$", na=False), "Warning", "Invalid Canadian postal code format")
 
-    # Ottawa-only project scope checks. Locality labels such as Kanata or Orléans
-    # can still be within Ottawa, so unfamiliar locality wording is flagged for
-    # review instead of being automatically deleted.
+    # Greater Ottawa Area project checks. Ottawa neighbourhood labels and known
+    # nearby Eastern Ontario municipalities reduce false warnings, while an
+    # unfamiliar Ontario city is still flagged for human scope review—not deleted.
     province_text = out["Province"].astype("string").fillna("").str.strip().str.lower()
     country_text = out["Country"].astype("string").fillna("").str.strip().str.lower()
     city_text = out["City"].astype("string").fillna("").str.strip().str.lower()
-    flag(~unresolved_mask(out["Province"]) & ~province_text.isin({"ontario", "on"}), "Critical", "Outside Ottawa project province")
-    flag(~unresolved_mask(out["Country"]) & ~country_text.isin({"canada", "ca"}), "Critical", "Outside Ottawa project country")
-    flag(~unresolved_mask(out["City"]) & ~city_text.isin(OTTAWA_LOCALITY_LABELS), "Warning", "Verify City of Ottawa municipal scope")
+    flag(~unresolved_mask(out["Province"]) & ~province_text.isin({"ontario", "on"}), "Critical", "Outside Greater Ottawa project province")
+    flag(~unresolved_mask(out["Country"]) & ~country_text.isin({"canada", "ca"}), "Critical", "Outside Greater Ottawa project country")
+    flag(
+        ~unresolved_mask(out["City"])
+        & ~city_text.isin(GREATER_OTTAWA_LOCALITY_LABELS),
+        "Warning",
+        "Verify Greater Ottawa Area / Eastern Ontario scope",
+    )
 
     # Classification consistency: a reliable storey count determines the height
     # band. Conflicting or non-standard classifications must be reviewed.
@@ -10701,19 +10757,19 @@ elif section == "Website scanner":
 
     default_scope = PROJECT_GEOGRAPHIC_SCOPE
     default_source_policy = (
-        "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use only the selected company's official website and its Ottawa city/location, portfolio/search, property, leasing, HTML sitemap, and related official pages. "
-        "Do not use Google, third-party sites, City records, or other external sources to discover properties, decide current inventory, or fill ordinary property fields. "
-        "POSTAL CODE EXCEPTION: after an Ottawa property is already confirmed as Current and its exact street address is verified from the company website, external exact-address research may be used to recover a missing Postal Code. Search the full address (for example: exact address + Ottawa ON + postal code), accept only a reliable exact civic-address match, record the secondary source, and never guess from a nearby property, neighbourhood, FSA, or partial code. "
-        "BUILDING CLASSIFICATION EXCEPTION: after an Ottawa property is already confirmed as Current from the company website, external research may be used to find Number of Storeys when official company pages do not provide it. "
-        "For the storey/classification lookup, Google/search engines may be used to locate evidence, and reliable sources may include City of Ottawa planning/development records, official public documents/PDFs, and reliable third-party property/building sources. "
+        "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use only the selected company's official website and its current Ottawa-region, Greater Ottawa Area, surrounding Eastern Ontario, city/location, portfolio/search, property, leasing, HTML sitemap, and related official pages. "
+        "Do not use Google, third-party sites, municipal records, or other external sources to discover properties, decide current inventory, or fill ordinary property fields. "
+        "POSTAL CODE EXCEPTION: after an in-scope Ontario property is already confirmed as Current and its exact street address is verified from the company website, external exact-address research may be used to recover a missing Postal Code. Search the full address with its actual municipality (for example: exact address + city + ON + postal code), accept only a reliable exact civic-address match, record the secondary source, and never guess from a nearby property, neighbourhood, FSA, or partial code. "
+        "BUILDING CLASSIFICATION EXCEPTION: after an in-scope Ontario property is already confirmed as Current from the company website, external research may be used to find Number of Storeys when official company pages do not provide it. "
+        "For the storey/classification lookup, Google/search engines may be used to locate evidence, and reliable sources may include the applicable municipality or county's planning/development records, official public documents/PDFs, and reliable third-party property/building sources. "
         "Search snippets alone are not evidence; open the underlying source. External postal/storey evidence must never add a property to scope or override official company inventory status. "
         "Derive Building Classification only from reliable storey evidence: Low-rise 1–4, Mid-rise 5–11, High-rise 12+. Never infer classification from visual appearance, unit count, elevator presence, building name, or marketing terminology."
     )
     default_priority_notes = (
-        "Scan the selected company's official website for CURRENT CITY OF OTTAWA apartment listings only and omit every property outside Ottawa. "
-        "Do not branch into general web research for property discovery or ordinary fields. Keep legitimate current Ottawa properties even when their dedicated page is sparse; leave ordinary unavailable fields blank and list them as missing. "
-        "POSTAL CODE EXCEPTION: when a confirmed Current Ottawa property has a verified exact street address but no Postal Code on the company website, search that exact address (for example: exact address + Ottawa ON + postal code). Google/search engines and reliable public address sources may be used only to verify the code for that exact civic address. Never guess or borrow a code from a nearby building. Preserve the external postal source in Supporting Evidence. "
-        "BUILDING CLASSIFICATION EXCEPTION: when Number of Storeys is not stated on the company website, use the verified full Ottawa address as a web-search key (for example: exact address + number of storeys/floors). Google/search engines and reliable external public sources are permitted for this storey/classification lookup only. "
+        "Scan the selected company's official website for CURRENT GREATER OTTAWA AREA AND SURROUNDING EASTERN ONTARIO apartment listings. Include City of Ottawa properties plus nearby Ontario communities supported by the company's current Ottawa-region portfolio, such as Carleton Place, Smiths Falls, and Renfrew. Omit unrelated company markets and all Quebec properties. "
+        "Do not branch into general web research for property discovery or ordinary fields. Keep legitimate current in-scope properties even when their dedicated page is sparse; leave ordinary unavailable fields blank and list them as missing. "
+        "POSTAL CODE EXCEPTION: when a confirmed Current in-scope Ontario property has a verified exact street address but no Postal Code on the company website, search that exact address with its actual city (for example: exact address + city + ON + postal code). Google/search engines and reliable public address sources may be used only to verify the code for that exact civic address. Never guess or borrow a code from a nearby building. Preserve the external postal source in Supporting Evidence. "
+        "BUILDING CLASSIFICATION EXCEPTION: when Number of Storeys is not stated on the company website, use the verified full address and actual municipality as a web-search key (for example: exact address + city + ON + number of storeys/floors). Google/search engines and reliable external public sources are permitted for this storey/classification lookup only. "
         "Use reliable storey evidence to derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Do not infer classification from visual appearance, unit count, elevator presence, building name, or marketing terminology. Preserve the external classification source in Supporting Evidence."
     )
     default_output_notes = (
@@ -10723,10 +10779,15 @@ elif section == "Website scanner":
         "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The CSV must be ready for direct Datablix import."
     )
 
-    # Geographic scope is project-wide and fixed. Do not restore older saved values such as "Ontario, Canada".
+    # Geographic scope is project-wide and fixed. Do not restore older City-of-Ottawa-only values.
     saved_scope = PROJECT_GEOGRAPHIC_SCOPE
     saved_source_policy = default_source_policy
-    saved_priority_notes = str(active_company.get("Prompt Priority Notes", "") or "").strip() or default_priority_notes
+    stored_priority_notes = str(active_company.get("Prompt Priority Notes", "") or "").strip()
+    saved_priority_notes = (
+        default_priority_notes
+        if _contains_legacy_ottawa_only_scope(stored_priority_notes)
+        else (stored_priority_notes or default_priority_notes)
+    )
     saved_output_notes = str(active_company.get("Prompt Output Notes", "") or "").strip() or default_output_notes
 
     prompt_updated = str(active_company.get("Prompt Updated", "") or "").strip()
@@ -10743,9 +10804,11 @@ elif section == "Website scanner":
             value=PROJECT_GEOGRAPHIC_SCOPE,
             key=f"db_prompt_scope_{company_id}",
             disabled=True,
-            help="Fixed project scope: only properties within the City of Ottawa municipal boundary belong in this project.",
+            help="Fixed project scope: Ottawa plus supported nearby Eastern Ontario communities in the company's current Ottawa-region portfolio; Ontario only.",
         )
-        prompt_left.caption("Project-wide rule: company properties outside Ottawa must be omitted from the research CSV.")
+        prompt_left.caption(
+            "Project-wide rule: include supported Greater Ottawa Area / surrounding Eastern Ontario properties; omit unrelated markets and Quebec properties."
+        )
 
         prompt_right.caption("Starting Data comparison is handled inside Datablix after you import the completed CSV.")
 
@@ -10755,7 +10818,7 @@ elif section == "Website scanner":
             height=180,
             key=f"db_prompt_sources_{company_id}",
             disabled=True,
-            help="Project-wide guardrail: Ottawa company-website scanning only, with controlled external exceptions for exact-address Postal Code recovery and Number of Storeys / Building Classification.",
+            help="Project-wide guardrail: Greater Ottawa Area / surrounding Eastern Ontario company-website scanning, with controlled external exceptions for exact-address Postal Code recovery and Number of Storeys / Building Classification.",
         )
         priority_notes = prompt_right.text_area(
             "Company-specific priorities or exclusions",
@@ -10887,7 +10950,7 @@ elif section == "Website scanner":
     st.divider()
     st.subheader("2. Import the single completed CSV research deliverable")
     st.caption(
-        "Exactly one consolidated CSV is the required research-deliverable format. The AI file contains website research only. When imported, Datablix first consolidates clearly shared leasing-property rows, then compares normalized civic addresses, compound addresses, Ottawa locality labels, postal codes, names and property URLs against the current Starting Data baseline before any row can be called newly discovered."
+        "Exactly one consolidated CSV is the required research-deliverable format. The AI file contains website research only. When imported, Datablix first consolidates clearly shared leasing-property rows, then compares normalized civic addresses, compound addresses, municipality and Ottawa-locality labels, postal codes, names and property URLs against the current Starting Data baseline before any row can be called newly discovered."
     )
     import_tabs = st.tabs(["Upload CSV or Excel", "Connect Google Sheet"])
     with import_tabs[0]:
