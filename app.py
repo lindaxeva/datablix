@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "City of Ottawa + Official Microsites & Root-Domain Grouping 2026.07.28-v64"
+DATABLIX_BUILD = "City of Ottawa + Company Official Entry Points 2026.07.28-v65"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -304,7 +304,8 @@ COMPANY_STATUSES = [
 ]
 COMPANY_SCOPE_TYPES = ["Initial assignment", "Added later", "Imported"]
 COMPANY_COLUMNS = [
-    "Company ID", "Management/Owner", "Main Website", "Scope Type",
+    "Company ID", "Management/Owner", "Main Website",
+    "Related Official Links", "Special Website Notes", "Scope Type",
     "Date Assigned", "Company Status", "Notes",
     "Prompt Scope", "Prompt Source Policy", "Prompt Priority Notes",
     "Prompt Output Notes", "Research Prompt", "Prompt Updated", "AI Tool Used",
@@ -2293,6 +2294,81 @@ def empty_company_registry():
     return pd.DataFrame(columns=COMPANY_COLUMNS)
 
 
+def _normalize_official_url(value: str) -> str:
+    """Return a clean HTTP(S) URL for company-level official entry points."""
+    raw = safe_text(value)
+    if not raw:
+        return ""
+    candidate = raw.strip().strip("<>")
+    if not re.match(r"^[a-z][a-z0-9+.-]*://", candidate, flags=re.I):
+        candidate = f"https://{candidate}"
+    parsed = urlparse(candidate)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    host = parsed.netloc.strip().lower()
+    path = re.sub(r"/{2,}", "/", parsed.path or "/")
+    if path != "/":
+        path = path.rstrip("/") + "/"
+    return urlunparse((parsed.scheme.lower(), host, path, "", parsed.query, ""))
+
+
+def _official_url_identity(value: str) -> str:
+    normalized = _normalize_official_url(value)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    path = (parsed.path or "/").rstrip("/") or "/"
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.netloc.lower()}{path.lower()}{query}"
+
+
+def _parse_related_official_links(value, main_website: str = "") -> tuple[list[str], list[str]]:
+    """Parse one official URL per line, deduplicate, and report invalid entries."""
+    raw = safe_text(value)
+    if not raw:
+        return [], []
+    candidates = [
+        item.strip()
+        for item in re.split(r"[\r\n]+", raw)
+        if item.strip()
+    ]
+    main_identity = _official_url_identity(main_website)
+    links: list[str] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_official_url(candidate)
+        identity = _official_url_identity(normalized)
+        if not normalized or not identity:
+            invalid.append(candidate)
+            continue
+        if identity == main_identity or identity in seen:
+            continue
+        seen.add(identity)
+        links.append(normalized)
+    return links, invalid
+
+
+def _normalize_related_official_links(value, main_website: str = "") -> str:
+    links, _ = _parse_related_official_links(value, main_website)
+    return "\n".join(links)
+
+
+def _merge_related_official_links(*values, main_website: str = "") -> str:
+    links: list[str] = []
+    seen: set[str] = set()
+    main_identity = _official_url_identity(main_website)
+    for value in values:
+        parsed_links, _ = _parse_related_official_links(value, main_website)
+        for link in parsed_links:
+            identity = _official_url_identity(link)
+            if not identity or identity == main_identity or identity in seen:
+                continue
+            seen.add(identity)
+            links.append(link)
+    return "\n".join(links)
+
+
 def _contains_legacy_regional_scope(value) -> bool:
     """Identify saved prompt text that would wrongly restore regional scope."""
     text = safe_text(value).lower()
@@ -2320,6 +2396,16 @@ def normalize_company_registry(registry):
     out["Management/Owner"] = out["Management/Owner"].fillna("").astype(str).str.strip()
     out["Company ID"] = out["Company ID"].fillna("").astype(str).str.strip()
     out["Main Website"] = out["Main Website"].fillna("").astype(str).str.strip()
+    out["Related Official Links"] = out.apply(
+        lambda row: _normalize_related_official_links(
+            row.get("Related Official Links", ""),
+            row.get("Main Website", ""),
+        ),
+        axis=1,
+    )
+    out["Special Website Notes"] = (
+        out["Special Website Notes"].fillna("").astype(str).str.strip()
+    )
     out["Scope Type"] = normalize_choice(
         out["Scope Type"], COMPANY_SCOPE_TYPES, "Imported"
     )
@@ -2636,6 +2722,18 @@ def _merge_company_registry_duplicates(registry: pd.DataFrame) -> tuple[pd.DataF
             if not safe_text(canonical.get(column)) and safe_text(row.get(column)):
                 canonical[column] = safe_text(row.get(column))
 
+        canonical["Related Official Links"] = _merge_related_official_links(
+            canonical.get("Related Official Links", ""),
+            row.get("Related Official Links", ""),
+            main_website=canonical.get("Main Website", "") or row.get("Main Website", ""),
+        )
+        incoming_special_note = safe_text(row.get("Special Website Notes"))
+        existing_special_note = safe_text(canonical.get("Special Website Notes"))
+        if incoming_special_note and incoming_special_note not in existing_special_note:
+            canonical["Special Website Notes"] = (
+                f"{existing_special_note} | {incoming_special_note}".strip(" |")
+            )
+
         incoming_status = safe_text(row.get("Company Status"))
         canonical_status = safe_text(canonical.get("Company Status"))
         # Do not transfer a legacy duplicate's manual Complete flag blindly.
@@ -2949,7 +3047,14 @@ def assign_active_company(records, row_mask):
     return out
 
 
-def add_company_to_project(name, website="", scope_type="Added later", notes=""):
+def add_company_to_project(
+    name,
+    website="",
+    scope_type="Added later",
+    notes="",
+    related_official_links="",
+    special_website_notes="",
+):
     clean_name = re.sub(r"\s+", " ", str(name or "")).strip()
     if not clean_name:
         raise ValueError("Enter the management company or owner name.")
@@ -2968,6 +3073,11 @@ def add_company_to_project(name, website="", scope_type="Added later", notes="")
         "Company ID": company_id,
         "Management/Owner": clean_name,
         "Main Website": str(website or "").strip(),
+        "Related Official Links": _normalize_related_official_links(
+            related_official_links,
+            website,
+        ),
+        "Special Website Notes": str(special_website_notes or "").strip(),
         "Scope Type": scope_type if scope_type in COMPANY_SCOPE_TYPES else "Added later",
         "Date Assigned": date.today().isoformat(),
         "Company Status": "Not started",
@@ -3676,12 +3786,49 @@ def build_company_website_research_prompt(
     *,
     company_name: str,
     company_website: str,
+    related_official_links: str,
+    special_website_notes: str,
     geographic_scope: str,
     priority_notes: str,
     source_policy: str,
     output_notes: str,
 ) -> str:
     """Create a City-of-Ottawa website-research prompt for Datablix import."""
+    related_links, _ = _parse_related_official_links(
+        related_official_links,
+        company_website,
+    )
+    if related_links:
+        related_links_block = "\n".join(f"- {link}" for link in related_links)
+        official_entry_points_section = f"""## Reviewer-supplied official website entry points
+Main company website:
+- {company_website or '[enter official website]'}
+
+Additional official links that must be inspected:
+{related_links_block}
+
+Special multi-link handling:
+- Treat every supplied URL as an official research entry point for the selected company, subject to verification of branding, management statements, navigation, or cross-links.
+- Do not create separate company records for subdomains, microsites, or property paths.
+- Research every supplied link even when it is not discoverable from the main navigation or sitemap.
+- Use the main website as Company Website.
+- Use the most specific property page or microsite as Property Website and Source URL.
+- Consolidate duplicate references to the same property using normalized physical address and municipality.
+- Retain out-of-Ottawa findings only as research/audit evidence; do not include them in the final Ottawa CSV.
+"""
+    else:
+        official_entry_points_section = """## Official website entry points
+Only the main company website was supplied. Follow its current official navigation, portfolio pages, sitemaps, and confirmed related property pages or subdomains. Do not assume that additional official links exist.
+"""
+
+    special_notes_section = ""
+    if safe_text(special_website_notes):
+        special_notes_section = f"""## Reviewer notes about this website structure
+{safe_text(special_website_notes)}
+
+Use these notes as research context only. They cannot broaden the City of Ottawa geographic scope, weaken source requirements, or override evidence.
+"""
+
     return f"""# Datablix City of Ottawa Company Research Prompt
 
 You are acting as a careful public-source rental-property research analyst. Research the selected company and produce exactly ONE downloadable consolidated CSV file for import into Datablix.
@@ -3696,6 +3843,8 @@ IMPORTANT WORKFLOW BOUNDARY:
 - Official company website: {company_website or '[enter official website]'}
 - Geographic scope: {geographic_scope or PROJECT_GEOGRAPHIC_SCOPE}
 
+{official_entry_points_section}
+{special_notes_section}
 ## Non-negotiable City of Ottawa municipal boundary
 Return only apartment properties whose PHYSICAL LOCATION is within the municipal boundaries of the City of Ottawa, Ontario, Canada.
 
@@ -10709,8 +10858,35 @@ if section == "Research projects & companies":
                     index=selected_status_index,
                     help="Datablix presents a simplified status in progress views while preserving this detailed status in the project data.",
                 )
+                selected_related_links = st.text_area(
+                    "Related official links (optional)",
+                    value=str(
+                        selected_company_row.get("Related Official Links", "")
+                    ),
+                    height=105,
+                    placeholder=(
+                        "One official URL per line, for example:\n"
+                        "https://property.example.ca/\n"
+                        "https://example.ca/property-name/"
+                    ),
+                    help=(
+                        "Use for official property microsites, subdomains, or property paths "
+                        "that belong to this company. Leave blank for ordinary one-site companies."
+                    ),
+                )
+                selected_special_website_notes = st.text_area(
+                    "Special website notes (optional)",
+                    value=str(
+                        selected_company_row.get("Special Website Notes", "")
+                    ),
+                    height=90,
+                    placeholder=(
+                        "Example: Property communities use separate official subdomains "
+                        "but belong to the same management company."
+                    ),
+                )
                 selected_company_notes = st.text_area(
-                    "Company notes",
+                    "General company notes",
                     value=str(selected_company_row.get("Notes", "")),
                     height=90,
                 )
@@ -10720,11 +10896,28 @@ if section == "Research projects & companies":
                     width="stretch",
                 )
             if save_company_details:
+                normalized_related_links, invalid_related_links = (
+                    _parse_related_official_links(
+                        selected_related_links,
+                        selected_website,
+                    )
+                )
+                if invalid_related_links:
+                    st.error(
+                        "Fix these related official links before saving: "
+                        + ", ".join(invalid_related_links)
+                    )
+                    st.stop()
                 registry_main.loc[
                     registry_main["Company ID"].eq(selected_main_id),
-                    ["Main Website", "Company Status", "Notes"],
+                    [
+                        "Main Website", "Related Official Links",
+                        "Special Website Notes", "Company Status", "Notes",
+                    ],
                 ] = [
                     selected_website.strip(),
+                    "\n".join(normalized_related_links),
+                    selected_special_website_notes.strip(),
                     selected_company_status,
                     selected_company_notes.strip(),
                 ]
@@ -10832,8 +11025,21 @@ if section == "Research projects & companies":
                 "How was it added?",
                 ["Initial assignment", "Added later"],
             )
+            main_new_related_links = company_form_right.text_area(
+                "Related official links (optional)",
+                height=90,
+                placeholder="One official URL per line",
+                help=(
+                    "Add official property microsites, subdomains, or property paths only "
+                    "when they are already known. Leave blank for one-site companies."
+                ),
+            )
+            main_new_special_notes = company_form_left.text_area(
+                "Special website notes (optional)",
+                height=75,
+            )
             main_new_notes = company_form_right.text_area(
-                "Notes (optional)",
+                "General notes (optional)",
                 height=75,
             )
             main_add_company = st.form_submit_button(
@@ -10843,11 +11049,24 @@ if section == "Research projects & companies":
             )
         if main_add_company:
             try:
+                normalized_new_links, invalid_new_links = (
+                    _parse_related_official_links(
+                        main_new_related_links,
+                        main_new_website,
+                    )
+                )
+                if invalid_new_links:
+                    raise ValueError(
+                        "Fix these related official links: "
+                        + ", ".join(invalid_new_links)
+                    )
                 new_company_id, company_created = add_company_to_project(
                     main_new_company,
                     main_new_website,
                     main_new_scope,
                     main_new_notes,
+                    related_official_links="\n".join(normalized_new_links),
+                    special_website_notes=main_new_special_notes,
                 )
                 st.session_state[S_FLASH] = (
                     f"Added {main_new_company.strip()} as {new_company_id}."
@@ -11113,6 +11332,12 @@ elif section == "Website scanner":
     company_id = str(active_company["Company ID"]).strip()
     company_name = str(active_company["Management/Owner"]).strip()
     company_website = str(active_company.get("Main Website", "")).strip()
+    company_related_links = str(
+        active_company.get("Related Official Links", "") or ""
+    ).strip()
+    company_special_website_notes = str(
+        active_company.get("Special Website Notes", "") or ""
+    ).strip()
 
     render_page_heading(
         "RESEARCH",
@@ -11128,6 +11353,16 @@ elif section == "Website scanner":
             st.caption("ACTIVE COMPANY")
             st.markdown(f"**{company_name}** · {company_id}")
             st.caption(f"Official website: {company_website or 'Not recorded yet'}")
+            related_link_count = len(
+                _parse_related_official_links(
+                    company_related_links,
+                    company_website,
+                )[0]
+            )
+            if related_link_count:
+                st.caption(
+                    f"Additional official entry points: {related_link_count} saved"
+                )
         with context_right:
             if st.button(
                 "Edit company details",
@@ -11260,6 +11495,8 @@ elif section == "Website scanner":
     generated_prompt = build_company_website_research_prompt(
         company_name=company_name,
         company_website=company_website,
+        related_official_links=company_related_links,
+        special_website_notes=company_special_website_notes,
         geographic_scope=geographic_scope,
         priority_notes=priority_notes,
         source_policy=source_policy,
@@ -11453,6 +11690,22 @@ elif section == "Website scanner":
         st.caption(
             "The scanner is no longer the primary research method. Use it when you need a second source of page coverage, want to compare AI findings against the live site, or need to investigate possible omissions. Scanner findings still require human review."
         )
+        saved_scanner_entry_points = [company_website] if company_website else []
+        saved_scanner_entry_points.extend(
+            _parse_related_official_links(
+                company_related_links,
+                company_website,
+            )[0]
+        )
+        if saved_scanner_entry_points:
+            st.caption("Saved official scan entry points:")
+            st.code("\n".join(saved_scanner_entry_points), language="text")
+            if len(saved_scanner_entry_points) > 1:
+                st.info(
+                    "Start with the main website. If a known microsite is not reached, "
+                    "run a follow-up scan with that saved official link while keeping "
+                    "this same company selected."
+                )
         scan_result = render_website_scanner_panel(
             working_data_key=S_WORKING,
             active_company_id=company_id,
