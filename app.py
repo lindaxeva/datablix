@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Single-Line Analytics KPIs + Decision-Focused Charts 2026.07.28-v56"
+DATABLIX_BUILD = "Ottawa Website Scan + Chart-Free Project and Company Health Analytics 2026.07.28-v57"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -7930,293 +7930,293 @@ def _project_priority_message(project: dict, reconciliation: dict) -> tuple[str,
     )
 
 
-def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFrame) -> None:
-    """Render a responsive, decision-oriented project analytics workspace."""
-    registry = normalize_company_registry(registry)
-    records = _normalize_analytics_records(records)
-    source_details = _current_source_display_details()
-    reconciliation = source_reconciliation_snapshot(
-        registry,
-        records,
-        source_details["records"],
-    )
-    comparison_records = reconciliation["records"]
-    project = project_progress_snapshot(registry, comparison_records)
+def _health_status(percent: int, exceptions: int = 0, *, empty: bool = False) -> str:
+    """Translate a percentage and exception count into a calm health label."""
+    if empty:
+        return "Not started"
+    if exceptions > 0:
+        return "Needs attention"
+    if percent >= 90:
+        return "Healthy"
+    if percent >= 70:
+        return "In progress"
+    return "At risk"
 
-    _render_analytics_header(source_details, reconciliation)
 
-    overview_tab, source_tab, company_tab = st.tabs(
-        ["Overview", "Source comparison", "Company detail"]
-    )
-
-    # ------------------------------------------------------------------
-    # OVERVIEW
-    # One screen answers: How far are we, and what should we work on next?
-    # ------------------------------------------------------------------
-    with overview_tab:
-        verification_rate = _analytics_percent(project["verified_records"], project["buildings"])
-        source_coverage = _analytics_percent(
-            reconciliation["matched_source"], reconciliation["source_records"]
-        )
-        _render_analytics_kpis([
-            {
-                "label": "Companies",
-                "value": f"{project['companies']:,}",
-                "helper": f"{project['completed']:,} complete",
-                "tone": "accent",
-            },
-            {
-                "label": "Current research",
-                "value": f"{reconciliation['research_records']:,}",
-                "helper": "Active building records",
-                "tone": "neutral",
-            },
-            {
-                "label": "Verification rate",
-                "value": f"{verification_rate}%",
-                "helper": f"{project['verified_records']:,} of {project['buildings']:,} verified",
-                "tone": "positive" if verification_rate >= 80 else "accent",
-            },
-            {
-                "label": "Source coverage",
-                "value": f"{source_coverage}%" if reconciliation["available"] else "—",
-                "helper": (
-                    f"{reconciliation['matched_source']:,} of {reconciliation['source_records']:,} matched"
-                    if reconciliation["available"]
-                    else "No active baseline"
-                ),
-                "tone": "positive" if source_coverage >= 90 else "neutral",
-            },
-            {
-                "label": "Needs attention",
-                "value": f"{project['attention_records']:,}",
-                "helper": "Verification or QA follow-up",
-                "tone": "warning" if project["attention_records"] else "positive",
-            },
-        ])
-
-        priority_title, priority_copy, priority_chips, priority_tone = _project_priority_message(
-            project, reconciliation
-        )
-        _render_analytics_callout(
-            priority_title,
-            priority_copy,
-            priority_chips,
-            priority_tone,
-        )
-
-        if project["companies"]:
-            project_chart = company_progress_table(registry, comparison_records, project)
-            with smart_expander(
-                "Research readiness by company",
-                count=project["companies"],
-                status="companies",
-                expanded=True,
-            ):
-                _render_analytics_section(
-                    "Research readiness",
-                    "See which companies are closest to completion and where review effort is still concentrated.",
-                    "PROGRESS",
-                )
-                progress_left, progress_right = st.columns([1.5, 1], gap="large")
-                with progress_left:
-                    _render_verification_progress_chart(project_chart)
-                with progress_right:
-                    attention_chart = project_chart[["Company", "Needs attention"]].copy()
-                    _render_horizontal_bar_chart(
-                        attention_chart,
-                        "Company",
-                        "Needs attention",
-                        "Records requiring attention",
-                        color="#C27C0E",
-                        description="Only companies with unresolved review or quality issues are shown.",
-                    )
-
-            with smart_expander(
-                "Most frequently missing information",
-                count=project["attention_records"],
-                status="records need attention",
-                expanded=False,
-            ):
-                _render_analytics_section(
-                    "Missing-information priorities",
-                    "Focus the next research pass on fields missing across the largest number of active records.",
-                    "QUALITY",
-                )
-                missing_summary = _missing_information_summary(
-                    reconciliation["active_research"]
-                )
-                _render_horizontal_bar_chart(
-                    missing_summary,
-                    "Missing field",
-                    "Records",
-                    "Most frequently missing information",
-                    color="#64748B",
-                    description="This action chart replaces the less useful company-status distribution.",
-                )
-
-            with smart_expander(
-                "Detailed company progress",
-                count=len(project_chart),
-                status="companies",
-                expanded=False,
-            ):
-                st.caption(
-                    "Use the table for exact counts after reviewing the dashboard summary."
-                )
-                st.dataframe(
-                    project_chart[[
-                        "Company", "Buildings", "Reviewed", "Verified",
-                        "Needs attention", "Progress", "Status", "Next action",
-                    ]],
-                    width="stretch",
-                    hide_index=True,
-                )
-        else:
-            st.info("Add companies to the project to activate project-level analytics.")
-
-    # ------------------------------------------------------------------
-    # SOURCE COMPARISON
-    # This tab keeps source reconciliation separate from research QA.
-    # ------------------------------------------------------------------
-    with source_tab:
-        _render_analytics_section(
-            "Current source reconciliation",
-            "Compare the active Starting Data with current research in both directions: research-to-source and source-to-research.",
-            "BASELINE COMPARISON",
-        )
-        if reconciliation["available"]:
+def _render_health_checklist(title: str, items: list[dict], description: str = "") -> None:
+    """Render a plain-language checklist instead of another chart."""
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
+        if description:
+            st.caption(description)
+        for item in items:
+            state = str(item.get("state", "pending")).lower()
+            symbol = {"pass": "✓", "warning": "!", "pending": "○"}.get(state, "○")
+            label = escape(str(item.get("label", "")))
+            detail = escape(str(item.get("detail", "")))
+            css_state = state if state in {"pass", "warning", "pending"} else "pending"
             st.markdown(
                 f"""
-                <div class="db-analytics-source-strip">
-                    <div><span>SOURCE FILE</span><strong>{escape(str(source_details['label']))}</strong></div>
-                    <div><span>STRUCTURED RECORDS</span><strong>{int(source_details['row_count']):,}</strong></div>
-                    <div><span>COMPARISON STATUS</span><strong>Active</strong></div>
+                <div class="db-health-check {css_state}">
+                    <span class="db-health-check-icon">{symbol}</span>
+                    <div><strong>{label}</strong>{f'<small>{detail}</small>' if detail else ''}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            unresolved_total = (
-                reconciliation["source_only"]
-                + reconciliation["needs_classification"]
-                + reconciliation["possible_duplicates"]
-            )
-            source_coverage = _analytics_percent(
-                reconciliation["matched_source"], reconciliation["source_records"]
-            )
-            _render_analytics_kpis([
-                {
-                    "label": "Source records",
-                    "value": f"{reconciliation['source_records']:,}",
-                    "helper": "Active Starting Data",
-                    "tone": "neutral",
-                },
-                {
-                    "label": "Matched source",
-                    "value": f"{reconciliation['matched_source']:,}",
-                    "helper": f"{source_coverage}% source coverage",
-                    "tone": "positive" if source_coverage >= 90 else "accent",
-                },
-                {
-                    "label": "Newly discovered",
-                    "value": f"{reconciliation['newly_discovered']:,}",
-                    "helper": "Current research not in source",
-                    "tone": "accent",
-                },
-                {
-                    "label": "Source-only",
-                    "value": f"{reconciliation['source_only']:,}",
-                    "helper": "Not matched to current research",
-                    "tone": "warning" if reconciliation["source_only"] else "positive",
-                },
-                {
-                    "label": "Unresolved exceptions",
-                    "value": f"{unresolved_total:,}",
-                    "helper": "Source-only, ambiguous or duplicate",
-                    "tone": "warning" if unresolved_total else "positive",
-                },
-            ])
 
-            _render_analytics_callout(
-                "Source comparison at a glance",
-                (
-                    f"{source_coverage}% of source records are matched to current research. "
-                    f"Review {reconciliation['source_only']:,} source-only record(s) and "
-                    f"{reconciliation['needs_classification']:,} ambiguous classification(s) before finalizing the portfolio."
-                ),
-                [
-                    f"{reconciliation['newly_discovered']:,} newly discovered",
-                    f"{reconciliation['excluded']:,} excluded or not current",
-                ],
-                "warning" if unresolved_total else "positive",
+def _project_health_matrix(
+    registry: pd.DataFrame,
+    records: pd.DataFrame,
+    project: dict,
+    reconciliation: dict,
+) -> pd.DataFrame:
+    """Combine research, verification, QA and source health into one company matrix."""
+    progress = company_progress_table(registry, records, project)
+    source_table = reconciliation.get("company_table", pd.DataFrame()).copy()
+    source_lookup = {}
+    if not source_table.empty:
+        source_lookup = {
+            str(row.get("Company ID", "")): row
+            for _, row in source_table.iterrows()
+        }
+
+    rows = []
+    for snapshot in project.get("company_rows", []):
+        company_id = str(snapshot.get("company_id", ""))
+        source = source_lookup.get(company_id)
+        collected = int(snapshot.get("collected", 0))
+        reviewed = int(snapshot.get("reviewed", 0))
+        verified = int(snapshot.get("verified", 0))
+        attention = int(snapshot.get("attention", 0))
+        research_pct = _analytics_percent(reviewed, collected)
+        verification_pct = _analytics_percent(verified, collected)
+
+        source_records = int(source["Source records"]) if source is not None else 0
+        matched = int(source["Matched"]) if source is not None else 0
+        source_only = int(source["Source-only"]) if source is not None else 0
+        needs_classification = int(source["Needs classification"]) if source is not None else 0
+        duplicates = int(source["Possible duplicates"]) if source is not None else 0
+        source_exceptions = source_only + needs_classification + duplicates
+        source_pct = _analytics_percent(matched, source_records) if reconciliation.get("available") else 0
+
+        quality = "Good" if attention == 0 and collected else (
+            f"{attention} issue{'s' if attention != 1 else ''}" if attention else "Not started"
+        )
+        source_result = (
+            "No baseline"
+            if not reconciliation.get("available")
+            else "Reconciled" if source_exceptions == 0
+            else f"{source_exceptions} exception{'s' if source_exceptions != 1 else ''}"
+        )
+        rows.append({
+            "Company": snapshot.get("company_name", "Unnamed company"),
+            "Research": f"{research_pct}%" if collected else "Not started",
+            "Source match": f"{source_pct}%" if reconciliation.get("available") and source_records else "—",
+            "Verification": f"{verification_pct}%" if collected else "Not started",
+            "Quality": quality,
+            "Source result": source_result,
+            "Status": snapshot.get("status", "Not started"),
+            "Next action": snapshot.get("next_title", "Continue research"),
+        })
+    return pd.DataFrame(rows)
+
+
+def _render_source_comparison_summary(reconciliation: dict, *, company_name: str = "") -> None:
+    """Show source comparison as a compact flow and exact reconciliation table."""
+    scope = f" for {company_name}" if company_name else ""
+    st.markdown(f"#### Source comparison{scope}")
+    st.caption("Current source → current research → confirmed results and exceptions.")
+
+    source_count = int(reconciliation.get("source_records", 0))
+    research_count = int(reconciliation.get("research_records", 0))
+    matched = int(reconciliation.get("matched_source", 0))
+    new = int(reconciliation.get("newly_discovered", 0))
+    source_only = int(reconciliation.get("source_only", 0))
+    review = int(reconciliation.get("needs_classification", 0))
+
+    _render_analytics_kpis([
+        {"label": "Current source", "value": f"{source_count:,}", "helper": "Baseline records", "tone": "neutral"},
+        {"label": "Current research", "value": f"{research_count:,}", "helper": "Active researched records", "tone": "accent"},
+        {"label": "Matched", "value": f"{matched:,}", "helper": "Confirmed source matches", "tone": "positive"},
+        {"label": "New", "value": f"{new:,}", "helper": "Newly discovered", "tone": "accent"},
+        {"label": "Source-only", "value": f"{source_only:,}", "helper": "Unmatched source records", "tone": "warning" if source_only else "positive"},
+        {"label": "Needs review", "value": f"{review:,}", "helper": "Ambiguous classifications", "tone": "warning" if review else "positive"},
+    ])
+
+
+def _company_checklist(
+    selected_row: pd.Series,
+    snapshot: dict,
+    company_qa: pd.DataFrame,
+    company_source,
+    reconciliation_available: bool,
+) -> list[dict]:
+    """Return the most important company checks in plain English."""
+    website = safe_text(selected_row.get("Main Website", ""))
+    total = len(company_qa)
+    critical = int(company_qa["QA Status"].eq("Critical").sum()) if total else 0
+    source_links = int(company_qa["Source URL"].fillna("").astype(str).str.strip().ne("").sum()) if total else 0
+    postal_missing = int(unresolved_mask(company_qa["Postal Code"]).sum()) if total and "Postal Code" in company_qa else 0
+    classification_missing = int(unresolved_mask(company_qa["Building Classification"]).sum()) if total and "Building Classification" in company_qa else 0
+    source_only = int(company_source["Source-only"]) if company_source is not None else 0
+    needs_classification = int(company_source["Needs classification"]) if company_source is not None else 0
+
+    return [
+        {
+            "state": "pass" if website else "warning",
+            "label": "Official company website is registered" if website else "Official company website is missing",
+            "detail": website or "Add the official website before continuing research.",
+        },
+        {
+            "state": "pass" if snapshot["collected"] else "pending",
+            "label": f"{snapshot['collected']:,} active building record(s) collected",
+            "detail": "Website research has produced active records." if snapshot["collected"] else "Start website research or add a building manually.",
+        },
+        {
+            "state": "pass" if total and source_links == total else ("warning" if total else "pending"),
+            "label": "Every record has source evidence" if total and source_links == total else f"{max(total - source_links, 0):,} record(s) lack a source URL",
+            "detail": f"{source_links:,} of {total:,} records are source-linked.",
+        },
+        {
+            "state": "pass" if postal_missing == 0 and total else ("warning" if postal_missing else "pending"),
+            "label": "All active records have postal codes" if postal_missing == 0 and total else f"{postal_missing:,} postal code(s) are missing",
+            "detail": "Postal codes support matching and directory entry.",
+        },
+        {
+            "state": "pass" if classification_missing == 0 and total else ("warning" if classification_missing else "pending"),
+            "label": "All building classifications are complete" if classification_missing == 0 and total else f"{classification_missing:,} classification(s) are unresolved",
+            "detail": "Use reliable storey-count evidence before classifying.",
+        },
+        {
+            "state": "pass" if critical == 0 and total else ("warning" if critical else "pending"),
+            "label": "No critical QA issues" if critical == 0 and total else f"{critical:,} critical QA record(s)",
+            "detail": "Critical records should be resolved before export.",
+        },
+        {
+            "state": "pass" if reconciliation_available and source_only == 0 and needs_classification == 0 else ("warning" if reconciliation_available else "pending"),
+            "label": "Source reconciliation is complete" if reconciliation_available and source_only == 0 and needs_classification == 0 else (
+                f"{source_only + needs_classification:,} source comparison exception(s)" if reconciliation_available else "Source comparison is not active"
+            ),
+            "detail": "Resolve source-only and ambiguous records before marking the company complete.",
+        },
+    ]
+
+
+def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFrame) -> None:
+    """Render chart-free project and company health analytics."""
+    registry = normalize_company_registry(registry)
+    records = _normalize_analytics_records(records)
+    source_details = _current_source_display_details()
+    reconciliation = source_reconciliation_snapshot(registry, records, source_details["records"])
+    comparison_records = reconciliation["records"]
+    project = project_progress_snapshot(registry, comparison_records)
+
+    _render_analytics_header(source_details, reconciliation)
+    project_tab, company_tab = st.tabs(["Project health", "Company health"])
+
+    # ================================================================
+    # PROJECT HEALTH
+    # One matrix, one checklist and one exact source comparison replace
+    # every project-level chart.
+    # ================================================================
+    with project_tab:
+        verification_rate = _analytics_percent(project["verified_records"], project["buildings"])
+        source_coverage = _analytics_percent(reconciliation["matched_source"], reconciliation["source_records"])
+        _render_analytics_kpis([
+            {"label": "Companies", "value": f"{project['companies']:,}", "helper": f"{project['completed']:,} complete", "tone": "accent"},
+            {"label": "Source records", "value": f"{reconciliation['source_records']:,}" if reconciliation["available"] else "—", "helper": "Active baseline", "tone": "neutral"},
+            {"label": "Research records", "value": f"{reconciliation['research_records']:,}", "helper": "Active building records", "tone": "accent"},
+            {"label": "Verified", "value": f"{project['verified_records']:,}", "helper": f"{verification_rate}% verification", "tone": "positive" if verification_rate >= 80 else "accent"},
+            {"label": "Needs attention", "value": f"{project['attention_records']:,}", "helper": "QA or review follow-up", "tone": "warning" if project["attention_records"] else "positive"},
+            {"label": "Project readiness", "value": f"{project['progress_percent']:,}%", "helper": f"{project['completed']:,} of {project['companies']:,} companies complete", "tone": "positive" if project["progress_percent"] >= 80 else "accent"},
+        ])
+
+        priority_title, priority_copy, priority_chips, priority_tone = _project_priority_message(project, reconciliation)
+        _render_analytics_callout(priority_title, priority_copy, priority_chips, priority_tone)
+
+        _render_analytics_section(
+            "Project health matrix",
+            "A single row per company combines research progress, source matching, verification, quality and the next action.",
+            "PROJECT READINESS",
+        )
+        health_matrix = _project_health_matrix(registry, comparison_records, project, reconciliation)
+        if health_matrix.empty:
+            st.info("Add companies to activate the project health matrix.")
+        else:
+            st.dataframe(health_matrix, width="stretch", hide_index=True)
+
+        checklist_left, checklist_right = st.columns([1, 1.35], gap="large")
+        with checklist_left:
+            companies_missing_websites = int(registry["Main Website"].fillna("").astype(str).str.strip().eq("").sum()) if not registry.empty else 0
+            project_checks = [
+                {
+                    "state": "pass" if reconciliation["available"] else "pending",
+                    "label": "Current source baseline is active" if reconciliation["available"] else "Current source baseline is not active",
+                    "detail": source_details["label"] if reconciliation["available"] else "Add Starting Data to activate source comparison.",
+                },
+                {
+                    "state": "pass" if companies_missing_websites == 0 and project["companies"] else ("warning" if companies_missing_websites else "pending"),
+                    "label": "Every company has an official website" if companies_missing_websites == 0 and project["companies"] else f"{companies_missing_websites:,} company website(s) missing",
+                    "detail": "Official websites anchor the research workflow.",
+                },
+                {
+                    "state": "pass" if reconciliation["source_only"] == 0 and reconciliation["available"] else ("warning" if reconciliation["available"] else "pending"),
+                    "label": "All source records are reconciled" if reconciliation["available"] and reconciliation["source_only"] == 0 else f"{reconciliation['source_only']:,} source-only record(s)",
+                    "detail": "Unmatched source records require review before completion.",
+                },
+                {
+                    "state": "pass" if reconciliation["needs_classification"] == 0 else "warning",
+                    "label": "No discovery classifications are pending" if reconciliation["needs_classification"] == 0 else f"{reconciliation['needs_classification']:,} record(s) need classification",
+                    "detail": "Ambiguous records should be manually reviewed.",
+                },
+                {
+                    "state": "pass" if project["attention_records"] == 0 and project["buildings"] else ("warning" if project["attention_records"] else "pending"),
+                    "label": "No active QA or verification exceptions" if project["attention_records"] == 0 and project["buildings"] else f"{project['attention_records']:,} record(s) need attention",
+                    "detail": "Resolve these records before final export.",
+                },
+                {
+                    "state": "pass" if project["completed"] == project["companies"] and project["companies"] else "pending",
+                    "label": "All companies are complete" if project["completed"] == project["companies"] and project["companies"] else f"{project['completed']:,} of {project['companies']:,} companies complete",
+                    "detail": "Completion requires verified records and no unresolved attention.",
+                },
+            ]
+            _render_health_checklist(
+                "Important project checklist",
+                project_checks,
+                "Only checks that affect project readiness are shown.",
             )
 
+        with checklist_right:
+            if reconciliation["available"]:
+                _render_source_comparison_summary(reconciliation)
+            else:
+                with st.container(border=True):
+                    st.markdown("#### Source comparison")
+                    st.info("Add the current Starting Data baseline to compare source records with current research.")
+
+        if reconciliation["available"]:
             with smart_expander(
-                "Explore source comparison charts",
-                count=unresolved_total,
-                status="unresolved exceptions",
-                expanded=True,
-            ):
-                compare_left, compare_right = st.columns([1.55, 1], gap="large")
-                with compare_left:
-                    _render_grouped_company_chart(
-                        reconciliation["company_table"],
-                        "Source records versus current research",
-                        "A larger research count may indicate new findings; a smaller count may indicate incomplete reconciliation or verification.",
-                    )
-                with compare_right:
-                    _render_reconciliation_status_chart(
-                        reconciliation["status_table"],
-                        "Portfolio reconciliation status",
-                        "Matched, new and exception records are separated with stable semantic colours.",
-                    )
-
-            with smart_expander(
-                "Detailed source reconciliation",
+                "Detailed source comparison by company",
                 count=len(reconciliation["company_table"]),
                 status="companies",
                 expanded=False,
             ):
-                st.caption(
-                    "This table supports record-level follow-up after reviewing the visual summary."
-                )
                 st.dataframe(
                     reconciliation["company_table"].drop(columns=["Company ID"]),
                     width="stretch",
                     hide_index=True,
                 )
 
-            with smart_expander(
-                "How Datablix compares research with the source file",
-                expanded=False,
-            ):
-                st.markdown(
-                    """
-                    **Matched source:** A current research record was linked to a record in the active Starting Data.
-
-                    **Newly discovered:** Current research found a property that did not receive a credible source-file match.
-
-                    **Source-only:** A source-file record did not receive a credible match from current research.
-
-                    **Needs classification:** Available evidence is not strong enough for Datablix to classify the record automatically.
-
-                    **Net verified change:** Verified current properties minus source records associated with the company.
-                    """
-                )
-        else:
-            st.info(
-                "Add the current Starting Data baseline to activate source-file comparison, "
-                "source-only detection and net portfolio change analytics."
-            )
-
-    # ------------------------------------------------------------------
-    # COMPANY DETAIL
-    # One selected company receives a focused scorecard and next action.
-    # ------------------------------------------------------------------
+    # ================================================================
+    # COMPANY HEALTH
+    # The selected company gets important metrics, a health matrix,
+    # a checklist and an exact source comparison. No charts are used.
+    # ================================================================
     with company_tab:
         if registry.empty:
-            st.info("Add a company to see company-level analytics.")
+            st.info("Add a company to see company health analytics.")
             return
 
         company_ids = registry["Company ID"].astype(str).tolist()
@@ -8249,218 +8249,113 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                     unsafe_allow_html=True,
                 )
 
-        _render_analytics_kpis([
-            {
-                "label": "Buildings researched",
-                "value": f"{snapshot['collected']:,}",
-                "helper": "Current company records",
-                "tone": "accent",
-            },
-            {
-                "label": "Reviewed",
-                "value": f"{snapshot['reviewed']:,}",
-                "helper": "Human review completed",
-                "tone": "neutral",
-            },
-            {
-                "label": "Verified",
-                "value": f"{snapshot['verified']:,}",
-                "helper": f"{snapshot['progress_percent']:,}% verification progress",
-                "tone": "positive" if snapshot["progress_percent"] >= 80 else "accent",
-            },
-            {
-                "label": "Needs attention",
-                "value": f"{snapshot['attention']:,}",
-                "helper": "Review or quality follow-up",
-                "tone": "warning" if snapshot["attention"] else "positive",
-            },
-            {
-                "label": "Company status",
-                "value": snapshot["status"],
-                "helper": snapshot["next_title"],
-                "tone": "positive" if snapshot["status"] == "Complete" else "neutral",
-            },
-        ])
+        company_records = comparison_records.loc[
+            comparison_records["Company ID"].astype(str).eq(selected_id)
+        ].copy()
+        company_qa = qa_checks(company_records) if not company_records.empty else pd.DataFrame()
+        active_company_qa = (
+            company_qa.loc[~company_qa["Record Readiness"].eq("Excluded from Listings")].copy()
+            if not company_qa.empty else pd.DataFrame()
+        )
+        source_links = int(company_qa["Source URL"].fillna("").astype(str).str.strip().ne("").sum()) if not company_qa.empty else 0
+        source_rate = _analytics_percent(source_links, len(company_qa)) if len(company_qa) else 0
+        passing = int(company_qa["QA Status"].eq("Pass").sum()) if not company_qa.empty else 0
+        critical = int(company_qa["QA Status"].eq("Critical").sum()) if not company_qa.empty else 0
 
         company_reconciliation = (
             reconciliation["company_table"].loc[
                 reconciliation["company_table"]["Company ID"].astype(str).eq(selected_id)
-            ]
-            if not reconciliation["company_table"].empty
-            else pd.DataFrame()
+            ] if not reconciliation["company_table"].empty else pd.DataFrame()
         )
+        company_source = company_reconciliation.iloc[0] if not company_reconciliation.empty else None
+        company_source_records = int(company_source["Source records"]) if company_source is not None else 0
+        company_matched = int(company_source["Matched"]) if company_source is not None else 0
+        company_source_pct = _analytics_percent(company_matched, company_source_records)
 
-        if reconciliation["available"]:
-            company_source = (
-                company_reconciliation.iloc[0]
-                if not company_reconciliation.empty
-                else None
+        _render_analytics_kpis([
+            {"label": "Buildings", "value": f"{snapshot['collected']:,}", "helper": "Active research records", "tone": "accent"},
+            {"label": "Reviewed", "value": f"{snapshot['reviewed']:,}", "helper": "Human review completed", "tone": "neutral"},
+            {"label": "Verified", "value": f"{snapshot['verified']:,}", "helper": f"{snapshot['progress_percent']:,}% verified", "tone": "positive" if snapshot["progress_percent"] >= 80 else "accent"},
+            {"label": "Source coverage", "value": f"{source_rate}%" if len(company_qa) else "—", "helper": f"{source_links:,} source-linked", "tone": "positive" if source_rate >= 90 else "accent"},
+            {"label": "Passing QA", "value": f"{passing:,}", "helper": f"{critical:,} critical", "tone": "warning" if critical else "positive"},
+            {"label": "Needs attention", "value": f"{snapshot['attention']:,}", "helper": snapshot["next_title"], "tone": "warning" if snapshot["attention"] else "positive"},
+        ])
+
+        _render_analytics_section(
+            "Company health matrix",
+            "The selected company is assessed across research, source reconciliation, verification, quality and directory readiness.",
+            "COMPANY READINESS",
+        )
+        directory_entered = int(active_company_qa["Directory Entry Status"].eq("Entered").sum()) if not active_company_qa.empty else 0
+        active_total = len(active_company_qa)
+        company_source_exceptions = (
+            int(company_source["Source-only"]) + int(company_source["Needs classification"]) + int(company_source["Possible duplicates"])
+            if company_source is not None else 0
+        )
+        health_rows = pd.DataFrame([
+            {
+                "Health area": "Research review",
+                "Result": f"{snapshot['reviewed']:,} of {snapshot['collected']:,}",
+                "Completion": f"{_analytics_percent(snapshot['reviewed'], snapshot['collected'])}%" if snapshot['collected'] else "Not started",
+                "Status": _health_status(_analytics_percent(snapshot['reviewed'], snapshot['collected']), empty=snapshot['collected'] == 0),
+                "Action": "Complete remaining record review" if snapshot['reviewed'] < snapshot['collected'] else "No action required",
+            },
+            {
+                "Health area": "Source reconciliation",
+                "Result": f"{company_matched:,} of {company_source_records:,}",
+                "Completion": f"{company_source_pct}%" if reconciliation['available'] and company_source_records else "—",
+                "Status": _health_status(company_source_pct, company_source_exceptions, empty=not reconciliation['available']),
+                "Action": "Resolve source comparison exceptions" if company_source_exceptions else "No action required",
+            },
+            {
+                "Health area": "Verification",
+                "Result": f"{snapshot['verified']:,} of {snapshot['collected']:,}",
+                "Completion": f"{snapshot['progress_percent']}%" if snapshot['collected'] else "Not started",
+                "Status": _health_status(snapshot['progress_percent'], snapshot['attention'], empty=snapshot['collected'] == 0),
+                "Action": "Verify remaining records" if snapshot['verified'] < snapshot['collected'] else "No action required",
+            },
+            {
+                "Health area": "Data quality",
+                "Result": f"{passing:,} pass · {critical:,} critical",
+                "Completion": f"{_analytics_percent(passing, len(company_qa))}% pass" if len(company_qa) else "Not started",
+                "Status": "Healthy" if len(company_qa) and critical == 0 and snapshot['attention'] == 0 else ("Needs attention" if len(company_qa) else "Not started"),
+                "Action": "Resolve QA exceptions" if critical or snapshot['attention'] else "No action required",
+            },
+            {
+                "Health area": "Directory entry",
+                "Result": f"{directory_entered:,} of {active_total:,}",
+                "Completion": f"{_analytics_percent(directory_entered, active_total)}%" if active_total else "Not started",
+                "Status": _health_status(_analytics_percent(directory_entered, active_total), empty=active_total == 0),
+                "Action": "Enter approved records" if directory_entered < active_total else "Complete",
+            },
+        ])
+        st.dataframe(health_rows, width="stretch", hide_index=True)
+
+        company_left, company_right = st.columns([1, 1.35], gap="large")
+        with company_left:
+            _render_health_checklist(
+                "Important company checklist",
+                _company_checklist(selected_row, snapshot, company_qa, company_source, reconciliation["available"]),
+                "The checklist focuses only on conditions that block completion or export.",
             )
-            company_source_exceptions = 0
-            if company_source is not None:
-                company_source_exceptions = (
-                    int(company_source["Source-only"])
-                    + int(company_source["Needs classification"])
-                    + int(company_source["Possible duplicates"])
+        with company_right:
+            if reconciliation["available"]:
+                company_reconciliation_snapshot = {
+                    "source_records": company_source_records,
+                    "research_records": int(company_source["Research records"]) if company_source is not None else snapshot["collected"],
+                    "matched_source": company_matched,
+                    "newly_discovered": int(company_source["New"]) if company_source is not None else 0,
+                    "source_only": int(company_source["Source-only"]) if company_source is not None else 0,
+                    "needs_classification": int(company_source["Needs classification"]) if company_source is not None else 0,
+                }
+                _render_source_comparison_summary(
+                    company_reconciliation_snapshot,
+                    company_name=snapshot["company_name"],
                 )
-
-            with smart_expander(
-                "Company source comparison",
-                count=company_source_exceptions,
-                status="exceptions",
-                expanded=company_source_exceptions > 0,
-            ):
-                _render_analytics_section(
-                    "Company source comparison",
-                    "Confirm how this company aligns with the active project source before interpreting new discoveries.",
-                    "RECONCILIATION",
-                )
-                if company_source is None:
-                    st.info("No source or research rows are currently linked to this company.")
-                else:
-                    _render_analytics_kpis([
-                        {
-                            "label": "Source records",
-                            "value": f"{int(company_source['Source records']):,}",
-                            "helper": "Records linked from baseline",
-                            "tone": "neutral",
-                        },
-                        {
-                            "label": "Matched",
-                            "value": f"{int(company_source['Matched']):,}",
-                            "helper": "Confirmed source matches",
-                            "tone": "positive",
-                        },
-                        {
-                            "label": "New",
-                            "value": f"{int(company_source['New']):,}",
-                            "helper": "Newly discovered records",
-                            "tone": "accent",
-                        },
-                        {
-                            "label": "Source-only",
-                            "value": f"{int(company_source['Source-only']):,}",
-                            "helper": "Not matched to current research",
-                            "tone": "warning" if int(company_source["Source-only"]) else "positive",
-                        },
-                        {
-                            "label": "Exceptions",
-                            "value": f"{company_source_exceptions:,}",
-                            "helper": "Unmatched, ambiguous or duplicate",
-                            "tone": "warning" if company_source_exceptions else "positive",
-                        },
-                    ])
-                    company_status_data = pd.DataFrame({
-                        "Reconciliation status": [
-                            "Matched source",
-                            "Newly discovered",
-                            "Source-only / unmatched",
-                            "Needs classification",
-                            "Possible duplicates",
-                            "Excluded / not current",
-                        ],
-                        "Records": [
-                            int(company_source["Matched"]),
-                            int(company_source["New"]),
-                            int(company_source["Source-only"]),
-                            int(company_source["Needs classification"]),
-                            int(company_source["Possible duplicates"]),
-                            int(company_source["Excluded"]),
-                        ],
-                    })
-                    _render_reconciliation_status_chart(
-                        company_status_data,
-                        "Company reconciliation profile",
-                        "Confirmed matches, new discoveries and exceptions are shown without mixing workflow stages.",
-                    )
-
-        company_records = comparison_records.loc[
-            comparison_records["Company ID"].astype(str).eq(selected_id)
-        ].copy()
-        company_qa = pd.DataFrame()
-        with smart_expander(
-            "Research quality and missing information",
-            count=snapshot["attention"],
-            status="need attention",
-            expanded=snapshot["attention"] > 0,
-        ):
-            _render_analytics_section(
-                "Research quality",
-                "Review verification, source evidence and missing information for the selected company.",
-                "QUALITY CONTROL",
-            )
-            if company_records.empty:
-                st.info("No building records have been added for this company yet.")
             else:
-                company_qa = qa_checks(company_records)
-                active_company_qa = company_qa.loc[
-                    ~company_qa["Record Readiness"].eq("Excluded from Listings")
-                ].copy()
-
-                verified = int(active_company_qa["Verification Status"].eq("Verified").sum())
-                reviewed = min(snapshot["reviewed"], snapshot["collected"])
-                progress_data = pd.DataFrame({
-                    "Stage": ["Verified", "Reviewed, not verified", "Not reviewed"],
-                    "Records": [
-                        verified,
-                        max(reviewed - verified, 0),
-                        max(snapshot["collected"] - reviewed, 0),
-                    ],
-                })
-
-                source_links = int(company_qa["Source URL"].fillna("").astype(str).str.strip().ne("").sum())
-                source_rate = _analytics_percent(source_links, len(company_qa))
-                passing = int(company_qa["QA Status"].eq("Pass").sum())
-                critical = int(company_qa["QA Status"].eq("Critical").sum())
-
-                _render_analytics_kpis([
-                    {
-                        "label": "Source-linked records",
-                        "value": f"{source_links:,}",
-                        "helper": f"{source_rate}% source coverage",
-                        "tone": "positive" if source_rate >= 90 else "accent",
-                    },
-                    {
-                        "label": "Passing QA",
-                        "value": f"{passing:,}",
-                        "helper": "No current critical QA issue",
-                        "tone": "positive",
-                    },
-                    {
-                        "label": "Critical records",
-                        "value": f"{critical:,}",
-                        "helper": "Immediate review priority",
-                        "tone": "warning" if critical else "positive",
-                    },
-                    {
-                        "label": "Active records",
-                        "value": f"{len(active_company_qa):,}",
-                        "helper": "Excludes listing removals",
-                        "tone": "neutral",
-                    },
-                ])
-
-                progress_left, progress_right = st.columns([1, 1.15], gap="large")
-                with progress_left:
-                    _render_stage_composition_chart(
-                        progress_data,
-                        "Research progress",
-                        "One 100% stacked bar shows mutually exclusive verification stages without double-counting.",
-                    )
-                with progress_right:
-                    missing_summary = _missing_information_summary(active_company_qa)
-                    _render_horizontal_bar_chart(
-                        missing_summary,
-                        "Missing field",
-                        "Records",
-                        "Most frequently missing information",
-                        color="#64748B",
-                        description="Use this ranking to guide the next targeted research pass.",
-                    )
-
-                # The previous QA-status and verification-status charts repeated
-                # information already visible in the KPI row and progress bar.
-                # They are intentionally removed to reduce chart clutter.
+                with st.container(border=True):
+                    st.markdown("#### Company source comparison")
+                    st.info("Add the active Starting Data baseline to compare this company with the source file.")
 
         if not company_qa.empty:
             with smart_expander(
@@ -8474,14 +8369,9 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                         "Building Name", "Street Address", "Postal Code",
                         "Directory Discovery Status", "Verification Status",
                         "QA Status", "Missing Information", "Source URL",
-                    ]
-                    if column in company_qa.columns
+                    ] if column in company_qa.columns
                 ]
-                st.dataframe(
-                    company_qa[detail_columns],
-                    width="stretch",
-                    hide_index=True,
-                )
+                st.dataframe(company_qa[detail_columns], width="stretch", hide_index=True)
 
         _render_analytics_callout(
             snapshot["next_title"],
@@ -9339,6 +9229,16 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 @media (max-width:760px){
     .db-workspace-strip{gap:.4rem .8rem}
 }
+
+/* v57 chart-free health dashboard */
+.db-health-check { display:flex; gap:.7rem; align-items:flex-start; padding:.65rem 0; border-bottom:1px solid rgba(148,163,184,.22); }
+.db-health-check:last-child { border-bottom:0; }
+.db-health-check-icon { display:inline-flex; align-items:center; justify-content:center; width:1.35rem; height:1.35rem; border-radius:999px; font-weight:800; flex:0 0 auto; }
+.db-health-check.pass .db-health-check-icon { color:#166534; background:#dcfce7; }
+.db-health-check.warning .db-health-check-icon { color:#92400e; background:#fef3c7; }
+.db-health-check.pending .db-health-check-icon { color:#475569; background:#e2e8f0; }
+.db-health-check strong { display:block; font-size:.92rem; }
+.db-health-check small { display:block; margin-top:.12rem; color:#64748b; line-height:1.35; }
 </style>
 """)
 render_public_entry_gate()
