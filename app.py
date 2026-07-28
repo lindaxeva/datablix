@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "City of Ottawa + PO Box & Geographic Validation 2026.07.28-v63"
+DATABLIX_BUILD = "City of Ottawa + Official Microsites & Root-Domain Grouping 2026.07.28-v64"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -1769,6 +1769,114 @@ def _canonical_url(value) -> str:
         return f"{host}{path}"
     except Exception:
         return norm_header(raw)
+
+
+def _url_hostname(value) -> str:
+    """Return a normalized hostname without treating a subdomain as a company."""
+    raw = safe_text(value)
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        return (parsed.hostname or "").lower().strip(".").removeprefix("www.")
+    except Exception:
+        return ""
+
+
+def _is_official_property_subdomain(value, company_website) -> bool:
+    """Return True when a URL is an official subdomain of the selected company.
+
+    Example: ``wildwood.milyservice.com`` is a property microsite belonging to
+    the company rooted at ``milyservice.com``. It is a property source, not a
+    second company.
+    """
+    candidate_host = _url_hostname(value)
+    company_host = _url_hostname(company_website)
+    candidate_root = _company_domain_key(value)
+    company_root = _company_domain_key(company_website)
+    return bool(
+        candidate_host
+        and company_host
+        and candidate_root
+        and company_root
+        and candidate_root == company_root
+        and candidate_host != company_host
+    )
+
+
+def normalize_official_website_roles(
+    df: pd.DataFrame,
+    company_website: str,
+) -> pd.DataFrame:
+    """Keep corporate and property URLs in their correct Datablix fields.
+
+    The selected company's registered website remains ``Company Website``. An
+    official subdomain under the same registrable root domain is retained as
+    ``Property Website`` and never creates a separate company identity. The
+    exact page used as evidence remains available in ``Source URL``.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    out = df.copy()
+    for column in [
+        "Company Website", "Property Website", "Website", "Source URL",
+        "Reviewer Notes",
+    ]:
+        if column not in out.columns:
+            out[column] = pd.NA
+
+    canonical_company_website = safe_text(company_website)
+    company_root = _company_domain_key(canonical_company_website)
+
+    for index, row in out.iterrows():
+        property_website = safe_text(row.get("Property Website", ""))
+        detected_microsite = ""
+
+        # AI tools sometimes put a property microsite in Company Website. Move
+        # that URL to the property field before restoring the selected company's
+        # canonical corporate website.
+        current_company_url = safe_text(row.get("Company Website", ""))
+        if (
+            not property_website
+            and _is_official_property_subdomain(
+                current_company_url, canonical_company_website
+            )
+        ):
+            property_website = current_company_url
+            detected_microsite = current_company_url
+
+        if not property_website:
+            for column in ["Website", "Source URL"]:
+                candidate = safe_text(row.get(column, ""))
+                if _is_official_property_subdomain(
+                    candidate, canonical_company_website
+                ):
+                    property_website = candidate
+                    detected_microsite = candidate
+                    break
+
+        if canonical_company_website:
+            out.at[index, "Company Website"] = canonical_company_website
+        if property_website:
+            out.at[index, "Property Website"] = property_website
+
+        if is_unresolved(out.at[index, "Website"]):
+            out.at[index, "Website"] = (
+                property_website or canonical_company_website or pd.NA
+            )
+
+        if detected_microsite:
+            note = (
+                "Official property microsite grouped under the parent company "
+                f"root domain {company_root or 'the selected company domain'}; "
+                "retained as Property Website rather than creating a separate company."
+            )
+            out.at[index, "Reviewer Notes"] = _append_note(
+                out.at[index, "Reviewer Notes"], note
+            )
+
+    return out
 
 
 def _address_signature(value) -> dict:
@@ -3601,13 +3709,26 @@ Return only apartment properties whose PHYSICAL LOCATION is within the municipal
 ## Core inventory principle
 Do not begin by collecting every URL that exists. First establish the company's CURRENT City of Ottawa inventory from its strongest official inventory/navigation evidence. A dedicated property URL that loads is not, by itself, proof that the property is current.
 
+## Official company, subdomain, and property-page hierarchy
+Treat the organization and its official property pages as a hierarchy, not as separate companies.
+
+- The main/root website is the corporate or management-company source.
+- A property page on the main domain and an official property microsite on a subdomain can both belong to that same company.
+- URLs sharing the same registrable root domain—such as `milyservice.com`, `wildwood.milyservice.com`, and `hillpark.milyservice.com`—must remain under one company when branding, management statements, navigation, or cross-links confirm the relationship.
+- Do not create a new company merely because the hostname or subdomain is different.
+- Do not create one property row per URL. When a portfolio page, property page, and microsite describe the same physical property or leasing community, consolidate them into one property record.
+- Store the selected root/corporate site in Company Website, the exact property page or microsite in Property Website, and the strongest exact supporting page in Source URL. Preserve additional official URLs in Supporting Evidence.
+- A separate branded subdomain is not sufficient by itself: confirm that it is owned, managed, linked, or explicitly identified by the selected company.
+- Community names and physical buildings are not automatically equivalent. Keep one row for a single named complex with one leasing identity; split into multiple building rows only when official evidence confirms distinct physical buildings or separately leased addresses.
+
 ### Phase 1 — Establish current official inventory
 Prioritize:
 1. current city/location pages;
 2. current property-search or portfolio pages;
 3. current human-readable HTML sitemaps;
-4. current building/community index pages; and
-5. official property pages linked from those sources.
+4. current building/community index pages;
+5. official property pages linked from those sources; and
+6. confirmed official property subdomains or microsites under the same registrable company domain.
 
 Use XML sitemaps only as discovery evidence. They may contain stale, orphaned, archived, or legacy URLs.
 
@@ -3691,6 +3812,9 @@ Use these headings in this exact order:
 {', '.join(AI_RESEARCH_DELIVERABLE_COLUMNS)}
 
 Field requirements:
+- Company Website: the selected company's root or canonical corporate/management website, not a property subdomain.
+- Property Website: the exact official building/community page or official property microsite.
+- Source URL: the strongest exact page supporting the row; place additional official URLs in Supporting Evidence.
 - Current Inventory Status: Current, Review, or Excluded — not in current website inventory.
 - Inventory Evidence: official website evidence supporting that status.
 - PO Box Search Status: Not Checked, Found, Not Found after Search, Not Applicable, or Needs Review.
@@ -3710,10 +3834,12 @@ Field requirements:
 6. Search snippets are navigation aids, not evidence; open and cite the underlying page/document.
 7. Preserve conflicting values rather than silently choosing one.
 8. Deduplicate only within this company-research result.
-9. Keep multiple civic addresses in one row only when official evidence shows one named property/complex with one leasing identity.
-10. Omit geographically out-of-scope properties from the final CSV.
-11. Treat AI findings as preliminary and subject to Datablix validation and human approval.
-12. Prefer transparent blanks over unsupported completeness.
+9. Treat the main domain and confirmed official property subdomains as one company; never create a company per hostname.
+10. Consolidate multiple official URLs for the same property into one row and preserve the property microsite in Property Website.
+11. Keep multiple civic addresses in one row only when official evidence shows one named property/complex with one leasing identity.
+12. Omit geographically out-of-scope properties from the final CSV.
+13. Treat AI findings as preliminary and subject to Datablix validation and human approval.
+14. Prefer transparent blanks over unsupported completeness.
 
 ## Priority or company-specific instructions
 The City of Ottawa municipal boundary, physical-vs-mailing address separation, exhaustive PO Box search, exact-address geographic verification, postal-code recovery, and storey-classification rules are project-wide. Company notes may refine priorities but must not broaden the project to nearby municipalities or weaken these rules.
@@ -3952,6 +4078,12 @@ def append_external_research_results(
     website_blank = unresolved_mask(mapped["Website"])
     if "Property Website" in mapped.columns:
         mapped.loc[website_blank, "Website"] = mapped.loc[website_blank, "Property Website"]
+
+    # Enforce the company -> property website hierarchy before matching or
+    # consolidation. Official subdomains remain property sources under the
+    # selected company instead of becoming separate company identities.
+    mapped = normalize_official_website_roles(mapped, company_website)
+
     mapped["Research Status"] = "Imported - Needs Review"
     mapped["Verification Status"] = "Needs Review"
     mapped["Record Decision"] = "Undecided"
@@ -11042,7 +11174,7 @@ elif section == "Website scanner":
 
     default_scope = PROJECT_GEOGRAPHIC_SCOPE
     default_source_policy = (
-        "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use the selected company's official website first. "
+        "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use the selected company's official website first, including confirmed official property pages, subdomains, and microsites under the same registrable root domain. Treat them as one company and do not create a company per hostname. "
         "The project includes only physical apartment properties inside the City of Ottawa municipal boundary. Company labels such as Ottawa Region or National Capital Region are not geographic proof. "
         "PO BOX / MAILING ADDRESS: search official Contact, Corporate, Legal, Privacy, Accessibility, footer, tenant-document, payment, PDF, and form pages. If still missing, Google/search engines may locate reliable underlying evidence. Keep mailing and PO Box information separate from the physical property address and record the source, evidence, and confidence. "
         "GEOGRAPHIC POSITION: after an official-site candidate is identified, Google Maps/geocoding and a City of Ottawa boundary check may verify latitude, longitude, municipality, and scope. Never geocode a PO Box to establish property location. "
@@ -11051,13 +11183,13 @@ elif section == "Website scanner":
         "Search snippets alone are not evidence; open the underlying source. External evidence must not discover extra properties or override official current-inventory evidence."
     )
     default_priority_notes = (
-        "Scan the selected company's official website for CURRENT apartment listings physically located within the City of Ottawa only. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
+        "Scan the selected company's official website for CURRENT apartment listings physically located within the City of Ottawa only. Follow confirmed official property subdomains and microsites that share the company's registrable root domain; keep them under the selected company and store them as Property Website sources. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
         "For every candidate, verify the exact physical address and geographic position. Record Latitude, Longitude, Geocoded Municipality, Geographic Scope Status, evidence, and confidence. "
         "Conduct an exhaustive PO Box/mailing-address search across official contact, corporate, legal, privacy, accessibility, footer, PDF, form, rent-payment, and tenant-document pages. If official sources remain incomplete, use Google to locate reliable underlying evidence. Never place a PO Box or corporate mailing address in Street Address. "
         "Recover missing Postal Code only from an exact civic-address match. Research Number of Storeys by exact address and derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
     )
     default_output_notes = (
-        "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record and keep the exact requested headings in the exact requested order. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
+        "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record—not one row per URL—and keep the exact requested headings in the exact requested order. Keep the root/corporate URL in Company Website, the exact property page or official subdomain in Property Website, and the strongest evidence page in Source URL. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
         "Preserve blanks for genuinely unknown values. Keep Current, Review, and meaningful identifiable Excluded website records in the same CSV when applicable. "
         "Do not create any CSV row for orphan/empty/generic pages that lack meaningful property-specific evidence. "
         "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The CSV must be ready for direct Datablix import."
