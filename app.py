@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Postal + Classification Manual Override + Pandas NA Fix 2026.07.25-v50"
+DATABLIX_BUILD = "Ottawa Website Scan + Company Link Repair + Postal + Classification Manual Override + Pandas NA Fix 2026.07.28-v51"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -1914,62 +1914,388 @@ def next_company_id(registry):
 
 
 def company_name_key(value):
-    return norm_header(value)
+    """Return a conservative company-name key for matching aliases.
+
+    Legal suffixes are ignored, but meaningful words such as ``properties`` or
+    ``management`` are retained. URL-like values are handled through the
+    company-domain matcher instead of being treated as company names.
+    """
+    raw = safe_text(value)
+    if not raw or _looks_like_company_url_label(raw):
+        return ""
+    tokens = re.findall(r"[a-z0-9]+", raw.lower())
+    if tokens and tokens[0] == "the":
+        tokens = tokens[1:]
+    legal_suffixes = {
+        "inc", "incorporated", "ltd", "limited", "corp", "corporation",
+        "co", "company", "llc", "lp", "llp", "ulc",
+    }
+    while tokens and tokens[-1] in legal_suffixes:
+        tokens.pop()
+    return "".join(tokens)
+
+
+_GENERIC_COMPANY_DOMAINS = {
+    "rentcafe.com", "propertyvista.com", "buildingstack.com", "appfolio.com",
+    "entrata.com", "realpage.com", "rentmanager.com", "yardi.com",
+    "google.com", "facebook.com", "instagram.com", "linkedin.com",
+}
+
+
+def _looks_like_company_url_label(value) -> bool:
+    raw = safe_text(value).strip().lower()
+    if not raw:
+        return False
+    return bool(
+        "://" in raw
+        or raw.startswith("www.")
+        or re.search(r"\b[a-z0-9-]+\.(?:ca|com|org|net|io|co)(?:/|$)", raw)
+    )
+
+
+def _company_domain_key(value) -> str:
+    """Return a registrable-looking website domain for company reconciliation."""
+    raw = safe_text(value).strip()
+    if not raw:
+        return ""
+
+    # Email fields occasionally appear in imported website columns.
+    if "@" in raw and "://" not in raw and "/" not in raw:
+        raw = raw.rsplit("@", 1)[-1]
+
+    if "://" not in raw:
+        if not re.search(r"[a-z0-9-]+\.[a-z]{2,}", raw, flags=re.I):
+            return ""
+        raw = f"https://{raw}"
+
+    try:
+        host = (urlparse(raw).hostname or "").lower().strip(".")
+    except Exception:
+        return ""
+    if not host:
+        return ""
+
+    for prefix in ("www.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+
+    labels = [label for label in host.split(".") if label]
+    if len(labels) < 2:
+        return ""
+
+    country_second_levels = {
+        "co.uk", "org.uk", "com.au", "net.au", "co.nz", "co.za",
+    }
+    tail_two = ".".join(labels[-2:])
+    domain = ".".join(labels[-3:]) if tail_two in country_second_levels and len(labels) >= 3 else tail_two
+    return "" if domain in _GENERIC_COMPANY_DOMAINS else domain
+
+
+def _company_scope_rank(value) -> int:
+    return {
+        "Initial assignment": 0,
+        "Added later": 1,
+        "Imported": 2,
+    }.get(safe_text(value), 3)
+
+
+def _company_status_rank(value) -> int:
+    return {
+        "Not started": 0,
+        "Researching": 1,
+        "Needs follow-up": 2,
+        "Ready for QA": 3,
+        "Complete with limitations": 4,
+        "Complete": 5,
+    }.get(safe_text(value), 0)
+
+
+def _company_row_domain(row) -> str:
+    return (
+        _company_domain_key(row.get("Main Website", ""))
+        or _company_domain_key(row.get("Management/Owner", ""))
+    )
+
+
+def _merge_company_registry_duplicates(registry: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Merge legacy duplicate company rows and return old-to-canonical ID mapping.
+
+    Exact normalized company names are always considered aliases. A shared
+    official domain is considered an alias only when at least one row was
+    auto-imported or has a URL-like company label. This keeps assigned companies
+    distinct while repairing the legacy rows that caused completed Hazelview
+    records to appear under separate website-name companies.
+    """
+    source = normalize_company_registry(registry)
+    if source.empty:
+        return source, {}
+
+    source = source.copy()
+    source["__position"] = range(len(source))
+    source["__scope_rank"] = source["Scope Type"].map(_company_scope_rank)
+    source["__label_penalty"] = source["Management/Owner"].map(
+        lambda value: 1 if (not safe_text(value) or _looks_like_company_url_label(value)) else 0
+    )
+    source = source.sort_values(
+        ["__scope_rank", "__label_penalty", "__position"],
+        kind="stable",
+    )
+
+    canonical_rows: list[dict] = []
+    id_remap: dict[str, str] = {}
+
+    for _, series in source.iterrows():
+        row = {column: series.get(column, "") for column in COMPANY_COLUMNS}
+        row_id = safe_text(row.get("Company ID"))
+        name_key = company_name_key(row.get("Management/Owner"))
+        domain_key = _company_row_domain(row)
+        row_is_imported = safe_text(row.get("Scope Type")) == "Imported"
+        row_is_suspicious = _looks_like_company_url_label(row.get("Management/Owner")) or not safe_text(row.get("Management/Owner"))
+
+        match_index = None
+        for position, candidate in enumerate(canonical_rows):
+            candidate_name = company_name_key(candidate.get("Management/Owner"))
+            candidate_domain = _company_row_domain(candidate)
+            exact_name_match = bool(name_key and candidate_name and name_key == candidate_name)
+            domain_match = bool(domain_key and candidate_domain and domain_key == candidate_domain)
+            candidate_is_imported = safe_text(candidate.get("Scope Type")) == "Imported"
+            candidate_is_suspicious = _looks_like_company_url_label(candidate.get("Management/Owner")) or not safe_text(candidate.get("Management/Owner"))
+
+            if exact_name_match or (
+                domain_match
+                and (row_is_imported or candidate_is_imported or row_is_suspicious or candidate_is_suspicious)
+            ):
+                match_index = position
+                break
+
+        if match_index is None:
+            canonical_rows.append(row)
+            id_remap[row_id] = row_id
+            continue
+
+        canonical = canonical_rows[match_index]
+        canonical_id = safe_text(canonical.get("Company ID"))
+        id_remap[row_id] = canonical_id
+
+        # Keep the human-readable assigned name and scope, while preserving any
+        # useful prompt, website, notes, or status stored on the duplicate row.
+        if (
+            (not safe_text(canonical.get("Management/Owner")) or _looks_like_company_url_label(canonical.get("Management/Owner")))
+            and safe_text(row.get("Management/Owner"))
+            and not _looks_like_company_url_label(row.get("Management/Owner"))
+        ):
+            canonical["Management/Owner"] = safe_text(row.get("Management/Owner"))
+
+        fill_if_blank = [
+            "Main Website", "Date Assigned", "Prompt Scope", "Prompt Source Policy",
+            "Prompt Priority Notes", "Prompt Output Notes", "Research Prompt",
+            "Prompt Updated", "AI Tool Used",
+        ]
+        for column in fill_if_blank:
+            if not safe_text(canonical.get(column)) and safe_text(row.get(column)):
+                canonical[column] = safe_text(row.get(column))
+
+        incoming_status = safe_text(row.get("Company Status"))
+        canonical_status = safe_text(canonical.get("Company Status"))
+        # Do not transfer a legacy duplicate's manual Complete flag blindly.
+        # Once its records are relinked, the normal QA calculation decides
+        # whether the canonical company is truly complete.
+        if (
+            incoming_status in {"Researching", "Needs follow-up", "Ready for QA"}
+            and _company_status_rank(incoming_status) > _company_status_rank(canonical_status)
+        ):
+            canonical["Company Status"] = incoming_status
+
+        incoming_note = safe_text(row.get("Notes"))
+        existing_note = safe_text(canonical.get("Notes"))
+        if incoming_note and incoming_note not in existing_note:
+            canonical["Notes"] = f"{existing_note} | {incoming_note}".strip(" |")
+
+    merged = pd.DataFrame(canonical_rows, columns=COMPANY_COLUMNS)
+    return normalize_company_registry(merged), id_remap
+
+
+def _unique_company_alias_map(registry: pd.DataFrame, key_function) -> dict[str, str]:
+    grouped: dict[str, set[str]] = {}
+    for _, row in registry.iterrows():
+        key = key_function(row)
+        company_id = safe_text(row.get("Company ID"))
+        if key and company_id:
+            grouped.setdefault(key, set()).add(company_id)
+    return {
+        key: next(iter(company_ids))
+        for key, company_ids in grouped.items()
+        if len(company_ids) == 1
+    }
+
+
+def _record_company_domains(row) -> list[str]:
+    domains = []
+    for column in [
+        "Company Website", "Website", "Property Website", "Source URL",
+        "Management/Owner",
+    ]:
+        domain = _company_domain_key(row.get(column, ""))
+        if domain and domain not in domains:
+            domains.append(domain)
+    return domains
 
 
 def synchronize_company_registry(records, registry=None):
+    """Keep building records linked to one canonical company registry row.
+
+    This includes a migration for projects saved by older Datablix builds where
+    research rows could remain under imported URL/company aliases. The selected
+    assigned company now wins, legacy duplicate IDs are remapped, and every
+    linked record receives the canonical company name.
+    """
     data = normalize_workflow(prepare_data(records.copy()))
-    registry = normalize_company_registry(registry)
+    registry, id_remap = _merge_company_registry_duplicates(registry)
 
-    by_name = {
-        company_name_key(row["Management/Owner"]): row["Company ID"]
-        for _, row in registry.iterrows()
-        if row["Management/Owner"] and row["Company ID"]
-    }
+    # Apply duplicate-ID migration before any progress calculation.
+    if not data.empty:
+        data["Company ID"] = data["Company ID"].apply(
+            lambda value: id_remap.get(safe_text(value), safe_text(value) or pd.NA)
+        )
+
+    active_id = safe_text(st.session_state.get(S_ACTIVE_COMPANY, ""))
+    if active_id and active_id in id_remap:
+        st.session_state[S_ACTIVE_COMPANY] = id_remap[active_id]
+
+    def rebuild_maps():
+        name_map = _unique_company_alias_map(
+            registry,
+            lambda row: company_name_key(row.get("Management/Owner", "")),
+        )
+        domain_map = _unique_company_alias_map(registry, _company_row_domain)
+        rows_by_id = {
+            safe_text(row.get("Company ID")): row
+            for _, row in registry.iterrows()
+            if safe_text(row.get("Company ID"))
+        }
+        return name_map, domain_map, rows_by_id
+
+    name_to_id, domain_to_id, registry_by_id = rebuild_maps()
+
+    # Repair rows whose old Company ID points to an imported alias, or whose ID
+    # is missing/unknown but the canonical assigned name or official domain is clear.
+    for index, row in data.iterrows():
+        current_id = safe_text(row.get("Company ID"))
+        current_company = registry_by_id.get(current_id)
+        owner_candidate = name_to_id.get(company_name_key(row.get("Management/Owner", "")))
+        domain_candidates = [
+            domain_to_id[domain]
+            for domain in _record_company_domains(row)
+            if domain in domain_to_id
+        ]
+        domain_candidate = domain_candidates[0] if len(set(domain_candidates)) == 1 and domain_candidates else ""
+        candidate_id = owner_candidate or domain_candidate
+
+        if current_company is None:
+            chosen_id = candidate_id
+        elif candidate_id and candidate_id != current_id:
+            current_is_imported = safe_text(current_company.get("Scope Type")) == "Imported"
+            candidate_company = registry_by_id.get(candidate_id)
+            candidate_is_stronger = (
+                candidate_company is not None
+                and _company_scope_rank(candidate_company.get("Scope Type"))
+                < _company_scope_rank(current_company.get("Scope Type"))
+            )
+            chosen_id = candidate_id if current_is_imported and candidate_is_stronger else current_id
+        else:
+            chosen_id = current_id
+
+        if chosen_id:
+            data.at[index, "Company ID"] = chosen_id
+
+    # Register genuinely new owners only after existing aliases have had a chance
+    # to resolve to an assigned company.
     used_ids = set(registry["Company ID"].astype(str))
-
-    for owner in resolved(data["Management/Owner"]).dropna().astype(str).str.strip().unique():
-        key = company_name_key(owner)
-        if not key or key in by_name:
+    for index, row in data.iterrows():
+        current_id = safe_text(row.get("Company ID"))
+        if current_id in used_ids:
             continue
-        candidate_id = next_company_id(registry)
+
+        owner = safe_text(row.get("Management/Owner"))
+        owner_key = company_name_key(owner)
+        domains = _record_company_domains(row)
+        existing_id = name_to_id.get(owner_key, "") if owner_key else ""
+        if not existing_id:
+            matching_domains = {domain_to_id[d] for d in domains if d in domain_to_id}
+            if len(matching_domains) == 1:
+                existing_id = next(iter(matching_domains))
+
+        if existing_id:
+            data.at[index, "Company ID"] = existing_id
+            continue
+
+        domain = domains[0] if domains else ""
+        if not owner and not domain:
+            continue
+
+        candidate_id = current_id if current_id and current_id not in used_ids else next_company_id(registry)
         while candidate_id in used_ids:
-            suffix = len(used_ids) + 1
-            candidate_id = f"CMP-{suffix:03d}"
-        owner_rows = data.loc[data["Management/Owner"].astype(str).str.strip().eq(owner)]
+            candidate_id = next_company_id(registry)
+
+        if owner and not _looks_like_company_url_label(owner):
+            company_name = owner
+        elif domain:
+            company_name = domain.split(".", 1)[0].replace("-", " ").title()
+        else:
+            company_name = f"Imported company {candidate_id}"
+
         website = ""
-        if not owner_rows.empty:
-            available_websites = resolved(owner_rows["Website"]).dropna().astype(str).str.strip()
-            if not available_websites.empty:
-                website = available_websites.iloc[0]
+        for column in ["Company Website", "Website", "Property Website", "Source URL"]:
+            value = safe_text(row.get(column, ""))
+            if _company_domain_key(value):
+                website = value
+                break
+
         registry = pd.concat([
             registry,
             pd.DataFrame([{
                 "Company ID": candidate_id,
-                "Management/Owner": owner,
+                "Management/Owner": company_name,
                 "Main Website": website,
                 "Scope Type": "Imported",
                 "Date Assigned": "",
-                "Company Status": "Researching" if len(owner_rows) else "Not started",
+                "Company Status": "Researching",
                 "Notes": "",
             }]),
         ], ignore_index=True)
-        by_name[key] = candidate_id
+        registry = normalize_company_registry(registry)
         used_ids.add(candidate_id)
+        data.at[index, "Company ID"] = candidate_id
+        name_to_id, domain_to_id, registry_by_id = rebuild_maps()
 
     registry = normalize_company_registry(registry)
-    by_name = {
-        company_name_key(row["Management/Owner"]): row["Company ID"]
+    registry_by_id = {
+        safe_text(row.get("Company ID")): row
         for _, row in registry.iterrows()
-        if row["Management/Owner"] and row["Company ID"]
+        if safe_text(row.get("Company ID"))
     }
-    missing_company_id = unresolved_mask(data["Company ID"])
-    mapped_ids = data["Management/Owner"].apply(
-        lambda value: by_name.get(company_name_key(value), pd.NA)
-    )
-    data.loc[missing_company_id, "Company ID"] = mapped_ids.loc[missing_company_id]
-    return data, registry
 
+    # The registry is the source of truth for the displayed owner name. This
+    # prevents a URL or AI alias in one imported row from creating another
+    # company on the next Streamlit rerun.
+    for index, company_id in data["Company ID"].items():
+        canonical = registry_by_id.get(safe_text(company_id))
+        if canonical is not None and safe_text(canonical.get("Management/Owner")):
+            data.at[index, "Management/Owner"] = safe_text(canonical.get("Management/Owner"))
+
+    # Remove orphaned URL/blank imported rows left behind after the migration.
+    linked_ids = set(data["Company ID"].fillna("").astype(str).str.strip())
+    orphan_mask = (
+        registry["Scope Type"].eq("Imported")
+        & ~registry["Company ID"].isin(linked_ids)
+        & registry["Management/Owner"].map(
+            lambda value: not safe_text(value) or _looks_like_company_url_label(value)
+        )
+        & registry["Research Prompt"].fillna("").astype(str).str.strip().eq("")
+    )
+    registry = normalize_company_registry(registry.loc[~orphan_mask].copy())
+
+    return data, registry
 
 def active_company_row():
     registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
@@ -6538,7 +6864,7 @@ def company_progress_table(
             "Research prompt": (
                 "Saved"
                 if not registry.loc[registry["Company ID"].astype(str).eq(item["company_id"]), "Research Prompt"].fillna("").astype(str).str.strip().eq("").all()
-                else "Not saved"
+                else "Not saved (optional)"
             ),
             "Next action": item["next_title"],
             "Company ID": item["company_id"],
