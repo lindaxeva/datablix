@@ -10,6 +10,7 @@ import unicodedata
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
@@ -22,7 +23,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Ottawa Scope + Storey Classification 2026.07.24-r3"
+SCANNER_BUILD = "Official Microsite Grouping + Ottawa Scope 2026.07.28-r4"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -92,6 +93,250 @@ def _switch_company_scan_state(company_id: str, default_website: str = "") -> No
 
 def _normalized_scan_url(value: str) -> str:
     return str(value or "").strip().lower().rstrip("/")
+
+
+_MULTIPART_PUBLIC_SUFFIXES = {
+    "co.uk", "org.uk", "gov.uk", "ac.uk",
+    "com.au", "net.au", "org.au",
+    "co.nz", "org.nz",
+    "co.jp", "co.in", "com.br", "com.mx",
+}
+
+
+def _parsed_public_url(value: str):
+    """Parse a public URL safely, adding https:// when the scheme is omitted."""
+    raw = str(value or "").strip()
+    if not raw:
+        return urlparse("")
+    if "://" not in raw:
+        raw = "https://" + raw.lstrip("/")
+    try:
+        return urlparse(raw)
+    except ValueError:
+        return urlparse("")
+
+
+def _url_hostname(value: str) -> str:
+    host = (_parsed_public_url(value).hostname or "").lower().strip(".")
+    return host[4:] if host.startswith("www.") else host
+
+
+def _registered_domain(value: str) -> str:
+    """Return a stable organization-domain key for ordinary public websites.
+
+    This intentionally groups company subdomains such as
+    ``wildwood.milyservice.com`` and ``hillpark.milyservice.com`` under
+    ``milyservice.com``. No third-party dependency is required.
+    """
+    host = _url_hostname(value)
+    if not host:
+        return ""
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", host) or host == "localhost":
+        return host
+    labels = [label for label in host.split(".") if label]
+    if len(labels) <= 2:
+        return host
+    last_two = ".".join(labels[-2:])
+    if last_two in _MULTIPART_PUBLIC_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return last_two
+
+
+def _same_organization_domain(first_url: str, second_url: str) -> bool:
+    first = _registered_domain(first_url)
+    second = _registered_domain(second_url)
+    return bool(first and second and first == second)
+
+
+def _is_property_specific_url(candidate_url: str, company_url: str) -> bool:
+    """Identify an official property page or microsite under the company domain."""
+    if not candidate_url or not _same_organization_domain(candidate_url, company_url):
+        return False
+    candidate = _parsed_public_url(candidate_url)
+    company = _parsed_public_url(company_url)
+    candidate_host = _url_hostname(candidate_url)
+    company_host = _url_hostname(company_url)
+    if candidate_host and company_host and candidate_host != company_host:
+        return True
+    path = re.sub(r"/+", "/", candidate.path or "").strip("/").lower()
+    company_path = re.sub(r"/+", "/", company.path or "").strip("/").lower()
+    return bool(path and path != company_path and path not in {"home", "index", "index.html"})
+
+
+def _url_specificity_score(candidate_url: str, company_url: str) -> tuple[int, int, int]:
+    """Prefer a property subdomain/path over a general company homepage."""
+    if not candidate_url:
+        return (-1, -1, -1)
+    parsed = _parsed_public_url(candidate_url)
+    host = _url_hostname(candidate_url)
+    company_host = _url_hostname(company_url)
+    is_related = int(_same_organization_domain(candidate_url, company_url))
+    is_subdomain = int(bool(host and company_host and host != company_host and is_related))
+    path_depth = len([part for part in (parsed.path or "").split("/") if part])
+    return (is_related * 10 + is_subdomain * 20 + path_depth, path_depth, len(candidate_url))
+
+
+def _best_property_url(row: pd.Series, company_url: str) -> str:
+    candidates = []
+    for field in ["website", "source_url"]:
+        value = _clean_value(row.get(field))
+        if value and value not in candidates and _is_property_specific_url(value, company_url):
+            candidates.append(value)
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda value: _url_specificity_score(value, company_url))
+
+
+def _identity_token(value) -> str:
+    text = unicodedata.normalize("NFKD", _clean_value(value))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+_ADDRESS_IDENTITY_ALIASES = {
+    "street": "st", "st": "st",
+    "avenue": "ave", "ave": "ave",
+    "road": "rd", "rd": "rd",
+    "boulevard": "blvd", "blvd": "blvd",
+    "drive": "dr", "dr": "dr",
+    "court": "ct", "ct": "ct",
+    "crescent": "cres", "cres": "cres",
+    "place": "pl", "pl": "pl",
+    "lane": "ln", "ln": "ln",
+    "terrace": "terr", "terr": "terr",
+    "parkway": "pkwy", "pkwy": "pkwy",
+}
+
+
+def _address_identity_token(value) -> str:
+    text = unicodedata.normalize("NFKD", _clean_value(value))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    tokens = [_ADDRESS_IDENTITY_ALIASES.get(token, token) for token in tokens]
+    return "".join(tokens)
+
+
+def _first_resolved(*values):
+    for value in values:
+        if not _is_blank_value(value):
+            return value
+    return ""
+
+
+def _building_identity_from_row(row: pd.Series, company_id: str = "") -> str:
+    """Match physical buildings independently of the page that described them."""
+    company_value = _first_resolved(
+        company_id,
+        row.get("Company ID"),
+        row.get("company_id"),
+        row.get("Management/Owner"),
+        row.get("management_owner"),
+        row.get("assigned_company"),
+    )
+    address_value = _first_resolved(row.get("Street Address"), row.get("street_address"))
+    city_value = _first_resolved(row.get("City"), row.get("city"))
+    name_value = _first_resolved(row.get("Building Name"), row.get("building_name"))
+    source_value = _first_resolved(row.get("Source URL"), row.get("source_url"))
+
+    company = _identity_token(company_value)
+    address = _address_identity_token(address_value)
+    city = _identity_token(city_value)
+    name = _identity_token(name_value)
+    if address:
+        # Scanner approvals are Ottawa-only, so company + normalized civic
+        # address is the stable physical-building identity. Source URL is
+        # deliberately excluded because one building can have several pages.
+        return f"{company}|address|{address}"
+    if name:
+        return f"{company}|name|{name}|{city}"
+    source = _identity_token(source_value)
+    return f"{company}|source|{source}"
+
+
+def _is_blank_value(value) -> bool:
+    if value is None or value is pd.NA:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return not str(value).strip()
+
+
+def _append_unique_text(existing, addition, separator: str = " | ") -> str:
+    current = _clean_value(existing)
+    new_value = _clean_value(addition)
+    if not new_value:
+        return current
+    parts = [part.strip() for part in current.split(separator) if part.strip()] if current else []
+    if new_value not in parts:
+        parts.append(new_value)
+    return separator.join(parts)
+
+
+def _consolidate_approved_candidates(
+    approved: pd.DataFrame,
+    *,
+    company_id: str,
+    company_name: str,
+    company_website: str,
+) -> pd.DataFrame:
+    """Collapse portfolio-page and microsite findings for the same building."""
+    if approved is None or approved.empty:
+        return approved.copy()
+
+    groups: dict[str, list[pd.Series]] = {}
+    for _, row in approved.iterrows():
+        key = _building_identity_from_row(row, company_id)
+        groups.setdefault(key, []).append(row.copy())
+
+    consolidated_rows = []
+    for rows in groups.values():
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                float(pd.to_numeric(row.get("confidence", 0), errors="coerce") or 0),
+                sum(not _is_blank_value(value) for value in row.values),
+            ),
+            reverse=True,
+        )
+        merged = rows[0].copy()
+        all_official_urls: list[str] = []
+        for row in rows:
+            for field in ["website", "source_url"]:
+                value = _clean_value(row.get(field))
+                if value and value not in all_official_urls:
+                    all_official_urls.append(value)
+            for column, value in row.items():
+                if _is_blank_value(merged.get(column)) and not _is_blank_value(value):
+                    merged[column] = value
+
+        property_url = ""
+        for row in rows:
+            candidate = _best_property_url(row, company_website)
+            if candidate and (
+                not property_url
+                or _url_specificity_score(candidate, company_website)
+                > _url_specificity_score(property_url, company_website)
+            ):
+                property_url = candidate
+
+        if property_url:
+            merged["website"] = property_url
+            merged["source_url"] = property_url
+        elif company_website and _is_blank_value(merged.get("website")):
+            merged["website"] = company_website
+
+        evidence = _clean_value(merged.get("evidence"))
+        if len(all_official_urls) > 1:
+            source_note = "Official pages consolidated for one building: " + "; ".join(all_official_urls)
+            merged["evidence"] = _append_unique_text(evidence, source_note)
+        if _is_blank_value(merged.get("management_owner")):
+            merged["management_owner"] = company_name
+        consolidated_rows.append(merged)
+
+    return pd.DataFrame(consolidated_rows).reset_index(drop=True)
 
 
 def _checkpoint_path(website_url: str) -> Path | None:
@@ -899,7 +1144,16 @@ def _merge_into_working_data(
     working_data_key: str,
     company_id: str,
     company_name: str,
+    company_website: str = "",
 ) -> tuple[int, int]:
+    canonical_company_website = _clean_value(company_website)
+    approved = _consolidate_approved_candidates(
+        approved,
+        company_id=company_id,
+        company_name=company_name,
+        company_website=canonical_company_website,
+    )
+
     mapped = approved.rename(columns=DIRECTORY_FIELD_MAP)
     available_mapped_columns = [
         destination
@@ -908,16 +1162,31 @@ def _merge_into_working_data(
     ]
     mapped = mapped[available_mapped_columns].copy()
 
-    # The active company is the authoritative parent of every approved record.
-    # Do not infer it later from whichever company happens to be selected.
+    # The selected company remains the single authoritative parent even when
+    # listings are hosted on official property subdomains or microsites.
     mapped["Company ID"] = str(company_id or "").strip()
+    mapped["Company Website"] = canonical_company_website
     if "Management/Owner" not in mapped.columns:
         mapped["Management/Owner"] = str(company_name or "").strip()
     else:
         blank_owner = mapped["Management/Owner"].apply(_clean_value).eq("")
-        mapped.loc[blank_owner, "Management/Owner"] = str(
-            company_name or ""
-        ).strip()
+        mapped.loc[blank_owner, "Management/Owner"] = str(company_name or "").strip()
+
+    def property_url_for_mapped_row(row: pd.Series) -> str:
+        for field in ["Website", "Source URL"]:
+            candidate = _clean_value(row.get(field))
+            if candidate and _is_property_specific_url(candidate, canonical_company_website):
+                return candidate
+        return ""
+
+    mapped["Property Website"] = mapped.apply(property_url_for_mapped_row, axis=1)
+    property_present = mapped["Property Website"].apply(_clean_value).ne("")
+    mapped.loc[property_present, "Website"] = mapped.loc[property_present, "Property Website"]
+    if canonical_company_website:
+        website_blank = mapped.get(
+            "Website", pd.Series("", index=mapped.index)
+        ).apply(_clean_value).eq("")
+        mapped.loc[website_blank, "Website"] = canonical_company_website
 
     mapped["Date Researched"] = date.today().isoformat()
     mapped["Research Status"] = "Ready for Review"
@@ -943,49 +1212,76 @@ def _merge_into_working_data(
             mapped[column] = ""
     mapped = mapped[existing.columns]
 
-    def key_frame(frame: pd.DataFrame) -> pd.Series:
-        company = frame.get(
-            "Company ID",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        address = frame.get(
-            "Street Address",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        name = frame.get(
-            "Building Name",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        source = frame.get(
-            "Source URL",
-            pd.Series("", index=frame.index),
-        ).fillna("")
-        return (
-            company.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
-            + "|"
-            + name.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
-            + "|"
-            + address.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
-            + "|"
-            + source.astype(str).str.lower().str.replace(
-                r"[^a-z0-9]", "", regex=True
-            )
-        )
+    existing_key_to_index: dict[str, object] = {}
+    for index, row in existing.iterrows():
+        key = _building_identity_from_row(row)
+        if key not in existing_key_to_index:
+            existing_key_to_index[key] = index
 
-    existing_keys = set(key_frame(existing))
-    mapped_keys = key_frame(mapped)
-    new_rows = mapped.loc[~mapped_keys.isin(existing_keys)].copy()
-    duplicates = len(mapped) - len(new_rows)
-    st.session_state[working_data_key] = pd.concat(
-        [existing, new_rows],
-        ignore_index=True,
-    )
+    new_rows = []
+    duplicates = 0
+    fill_if_blank_columns = [
+        "Building Name", "Street Address", "Address Line 2", "City",
+        "Province", "Postal Code", "Country", "Phone", "Primary Email",
+        "Number of Apartments", "Number of Storeys", "Amenities",
+        "Building Classification", "Property Website", "Company Website",
+    ]
+
+    for _, incoming in mapped.iterrows():
+        key = _building_identity_from_row(incoming, company_id)
+        existing_index = existing_key_to_index.get(key)
+        if existing_index is None:
+            new_rows.append(incoming)
+            continue
+
+        duplicates += 1
+        for column in fill_if_blank_columns:
+            if column not in existing.columns:
+                continue
+            if _is_blank_value(existing.at[existing_index, column]) and not _is_blank_value(incoming.get(column)):
+                existing.at[existing_index, column] = incoming.get(column)
+
+        incoming_property = _clean_value(incoming.get("Property Website"))
+        current_property = _clean_value(existing.at[existing_index, "Property Website"]) if "Property Website" in existing.columns else ""
+        if incoming_property and (
+            not current_property
+            or _url_specificity_score(incoming_property, canonical_company_website)
+            > _url_specificity_score(current_property, canonical_company_website)
+        ):
+            existing.at[existing_index, "Property Website"] = incoming_property
+            if "Website" in existing.columns:
+                existing.at[existing_index, "Website"] = incoming_property
+
+        if "Source URL" in existing.columns:
+            incoming_source = _clean_value(incoming.get("Source URL"))
+            current_source = _clean_value(existing.at[existing_index, "Source URL"])
+            if incoming_source and (
+                not current_source
+                or _url_specificity_score(incoming_source, canonical_company_website)
+                > _url_specificity_score(current_source, canonical_company_website)
+            ):
+                existing.at[existing_index, "Source URL"] = incoming_source
+
+        if "Supporting Evidence" in existing.columns:
+            existing.at[existing_index, "Supporting Evidence"] = _append_unique_text(
+                existing.at[existing_index, "Supporting Evidence"],
+                incoming.get("Supporting Evidence"),
+            )
+        if "Reviewer Notes" in existing.columns:
+            note = (
+                "Scanner matched this result to an existing physical building and "
+                "merged additional official portfolio or microsite evidence instead "
+                "of creating a duplicate record."
+            )
+            existing.at[existing_index, "Reviewer Notes"] = _append_unique_text(
+                existing.at[existing_index, "Reviewer Notes"],
+                note,
+            )
+
+    if new_rows:
+        new_frame = pd.DataFrame(new_rows).reindex(columns=existing.columns)
+        existing = pd.concat([existing, new_frame], ignore_index=True)
+    st.session_state[working_data_key] = existing.reset_index(drop=True)
     return len(new_rows), duplicates
 
 
@@ -1960,6 +2256,10 @@ def render_website_scanner_panel(
             working_data_key=working_data_key,
             company_id=scan_company_id,
             company_name=scan_company_name,
+            company_website=(
+                st.session_state.get("website_scan_company_website", "")
+                or scan_start_url
+            ),
         )
         _persist_scan_evidence(
             report=report,
@@ -1987,7 +2287,7 @@ def render_website_scanner_panel(
         st.success(
             f"Added {added} record(s) to the master project for "
             f"{scan_company_name}. Skipped {duplicates} record(s) already "
-            "saved for the same company, source, building name, and address."
+            "matched to the same company and physical building identity; additional official sources were merged."
         )
 
     with st.expander("Evidence, scan log, and downloads"):
