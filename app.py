@@ -2405,7 +2405,41 @@ def synchronize_company_registry(records, registry=None):
         & registry["Research Prompt"].fillna("").astype(str).str.strip().eq("")
     )
     registry = normalize_company_registry(registry.loc[~orphan_mask].copy())
-    st.session_state[S_COMPANY_LINK_REPAIR_VERSION] = "v52"
+    # Keep the registry status synchronized with actual linked work. Explicit
+    # Complete statuses are preserved. A company with linked records can never
+    # remain Not started, even in projects created by older builds.
+    for reg_index, company in registry.iterrows():
+        cid = safe_text(company.get("Company ID"))
+        cname = safe_text(company.get("Management/Owner"))
+        csite = safe_text(company.get("Main Website"))
+        linked = _company_records_for_progress(
+            data, company_id=cid, company_name=cname, company_website=csite
+        )
+        if linked.empty:
+            continue
+        current_status = safe_text(company.get("Company Status"), "Not started")
+        if current_status == "Not started":
+            registry.at[reg_index, "Company Status"] = "Researching"
+
+        active = linked.loc[
+            ~linked["Record Decision"].fillna("").astype(str).eq("Remove")
+        ].copy()
+        if not active.empty:
+            all_verified = active["Verification Status"].fillna("").astype(str).eq("Verified").all()
+            all_reviewed = (
+                active["Research Status"].fillna("").astype(str).eq("Completed")
+                | active["Record Decision"].fillna("").astype(str).isin(
+                    ["Keep", "Update", "Possible Duplicate"]
+                )
+            ).all()
+            unresolved_discovery = active["Directory Discovery Status"].fillna("").astype(str).isin(
+                ["Needs Classification", "Possible Duplicate"]
+            ).any()
+            if all_verified and all_reviewed and not unresolved_discovery:
+                registry.at[reg_index, "Company Status"] = "Complete"
+
+    registry = normalize_company_registry(registry)
+    st.session_state[S_COMPANY_LINK_REPAIR_VERSION] = "v60"
 
     return data, registry
 
@@ -3640,6 +3674,16 @@ def append_external_research_results(
     )
 
     st.session_state[S_WORKING] = combined
+
+    # Importing research is an explicit start signal. Persist it in the company
+    # registry so every page agrees that the company is no longer Not started.
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    company_mask = registry["Company ID"].astype(str).str.strip().eq(str(company_id).strip())
+    registry.loc[company_mask, "Company Status"] = registry.loc[
+        company_mask, "Company Status"
+    ].replace("Not started", "Researching")
+    st.session_state[S_COMPANIES] = normalize_company_registry(registry)
+    autosave_current_project()
     return len(mapped)
 
 
@@ -6795,6 +6839,57 @@ def recommended_next_action(qa_frame: pd.DataFrame | None) -> tuple[str, str, st
 
 
 
+def _company_records_for_progress(
+    records: pd.DataFrame,
+    *,
+    company_id: str,
+    company_name: str,
+    company_website: str = "",
+) -> pd.DataFrame:
+    """Return records linked to a company, repairing legacy linkage gaps defensively.
+
+    Company ID remains the primary key. Older saved projects can contain valid
+    Hazelview research rows under a blank, obsolete, or URL-derived Company ID.
+    When the exact ID produces no rows, Datablix safely falls back to the canonical
+    owner name and official company domain so completed work is not displayed as
+    Not started.
+    """
+    if not isinstance(records, pd.DataFrame) or records.empty:
+        return pd.DataFrame(columns=INTERNAL_COLUMNS)
+
+    frame = records.copy()
+    for column in ["Company ID", "Management/Owner", "Company Website", "Website", "Source URL"]:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+
+    clean_id = safe_text(company_id)
+    if clean_id:
+        exact = frame.loc[
+            frame["Company ID"].fillna("").astype(str).str.strip().eq(clean_id)
+        ].copy()
+        if not exact.empty:
+            return exact
+
+    target_name = company_name_key(company_name)
+    if target_name:
+        by_name = frame.loc[
+            frame["Management/Owner"].apply(company_name_key).eq(target_name)
+        ].copy()
+        if not by_name.empty:
+            return by_name
+
+    target_domain = _company_domain_key(company_website)
+    if target_domain:
+        domain_mask = pd.Series(False, index=frame.index, dtype="bool")
+        for column in ["Company Website", "Website", "Source URL"]:
+            domain_mask |= frame[column].apply(_company_domain_key).eq(target_domain)
+        by_domain = frame.loc[domain_mask].copy()
+        if not by_domain.empty:
+            return by_domain
+
+    return frame.iloc[0:0].copy()
+
+
 def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> dict:
     """Return a small, user-facing progress model for one company."""
     company_id = str(company_row.get("Company ID", "")).strip()
@@ -6802,17 +6897,20 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
     website = str(company_row.get("Main Website", "")).strip()
     stored_status = str(company_row.get("Company Status", "Not started")).strip()
 
-    if not isinstance(records, pd.DataFrame) or records.empty:
-        group = pd.DataFrame(columns=INTERNAL_COLUMNS)
-    else:
-        group = records.loc[
-            records["Company ID"].fillna("").astype(str).str.strip().eq(company_id)
-        ].copy()
+    group = _company_records_for_progress(
+        records,
+        company_id=company_id,
+        company_name=company_name,
+        company_website=website,
+    )
 
     if group.empty:
         collected = reviewed = verified = ready = attention = critical = follow_up = 0
         progress = 0.0
-        display_status = "Not started"
+        # Never erase an explicitly saved workflow status merely because a legacy
+        # Company ID linkage is temporarily unavailable. This was the reason a
+        # completed Hazelview company could repeatedly appear as Not started.
+        display_status = stored_status if stored_status in COMPANY_STATUSES else "Not started"
     else:
         qa_columns = {"Record Readiness", "QA Status", "Warning Count"}
         company_qa = (
