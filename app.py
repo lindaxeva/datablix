@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + App-Wide Progressive Disclosure + UX Analytics Workspace 2026.07.28-v55"
+DATABLIX_BUILD = "Ottawa Website Scan + Single-Line Analytics KPIs + Decision-Focused Charts 2026.07.28-v56"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -7404,9 +7404,18 @@ def _render_analytics_header(source_details: dict, reconciliation: dict) -> None
 
 
 def _render_analytics_kpis(items: list[dict]) -> None:
-    """Render responsive KPI cards with short, decision-oriented supporting text."""
+    """Render every analytics KPI in one compact horizontal line.
+
+    UX decision:
+    - KPI cards never wrap into a second row inside Analytics.
+    - On narrow screens the row scrolls horizontally instead of changing the
+      information hierarchy or making one metric appear less important.
+    - The number of equal-width columns is passed to CSS so every KPI line is
+      balanced whether it contains four or five cards.
+    """
     if not items:
         return
+
     cards = []
     for item in items:
         label = escape(str(item.get("label", "Metric")))
@@ -7420,8 +7429,13 @@ def _render_analytics_kpis(items: list[dict]) -> None:
             f'<div class="db-analytics-kpi-helper">{helper}</div>'
             f'</article>'
         )
+
+    count = max(len(cards), 1)
     st.markdown(
-        '<div class="db-analytics-kpi-grid">' + "".join(cards) + "</div>",
+        f'<div class="db-analytics-kpi-scroll" role="region" aria-label="Analytics key performance indicators">'
+        f'<div class="db-analytics-kpi-grid" style="--db-kpi-count:{count}">'
+        + "".join(cards)
+        + "</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -7541,26 +7555,30 @@ def _render_horizontal_bar_chart(
 
 
 def _render_grouped_company_chart(data: pd.DataFrame, title: str, description: str = "") -> None:
-    """Compare source-file and current-research counts by company without hiding long names."""
+    """Compare source and research counts with a compact dumbbell chart.
+
+    A dumbbell chart makes the direction and size of each company-level gap
+    easier to read than two adjacent bars while using less visual ink.
+    Grey represents the current source baseline and blue represents current
+    research throughout the dashboard.
+    """
     if not isinstance(data, pd.DataFrame) or data.empty:
         _render_chart_empty_state(title, "No source or research records are available yet.")
         return
 
-    chart_rows = data.loc[
-        pd.to_numeric(data["Source records"], errors="coerce").fillna(0)
-        .add(pd.to_numeric(data["Research records"], errors="coerce").fillna(0))
-        .gt(0)
-    ].copy()
-    if chart_rows.empty:
+    frame = data[["Company", "Source records", "Research records"]].copy()
+    frame["Source records"] = pd.to_numeric(frame["Source records"], errors="coerce").fillna(0)
+    frame["Research records"] = pd.to_numeric(frame["Research records"], errors="coerce").fillna(0)
+    frame = frame.loc[frame[["Source records", "Research records"]].sum(axis=1).gt(0)]
+    if frame.empty:
         _render_chart_empty_state(title, "No source or research records are available yet.")
         return
 
-    frame = chart_rows[["Company", "Source records", "Research records"]].melt(
-        id_vars="Company",
-        var_name="Dataset",
-        value_name="Records",
-    )
-    height = max(210, min(580, 52 * chart_rows["Company"].nunique() + 58))
+    frame["Gap"] = frame["Research records"] - frame["Source records"]
+    frame["Minimum"] = frame[["Source records", "Research records"]].min(axis=1)
+    frame["Maximum"] = frame[["Source records", "Research records"]].max(axis=1)
+    height = max(220, min(590, 42 * frame["Company"].nunique() + 74))
+
     with st.container(border=True):
         st.markdown(f"#### {title}")
         if description:
@@ -7569,106 +7587,55 @@ def _render_grouped_company_chart(data: pd.DataFrame, title: str, description: s
             frame,
             {
                 "height": height,
-                "mark": {"type": "bar", "cornerRadiusEnd": 4},
-                "encoding": {
-                    "y": {
-                        "field": "Company",
-                        "type": "nominal",
-                        "sort": {"field": "Records", "op": "sum", "order": "descending"},
-                        "axis": {"title": None, "labelLimit": 270, "labelPadding": 8},
-                    },
-                    "x": {
-                        "field": "Records",
-                        "type": "quantitative",
-                        "axis": {"title": "Records", "tickMinStep": 1, "gridOpacity": 0.18},
-                    },
-                    "yOffset": {"field": "Dataset"},
-                    "color": {
-                        "field": "Dataset",
-                        "type": "nominal",
-                        "scale": {
-                            "domain": ["Source records", "Research records"],
-                            "range": ["#94A3B8", "#1287CE"],
-                        },
-                        "legend": {"title": None, "orient": "top", "direction": "horizontal"},
-                    },
-                    "tooltip": [
-                        {"field": "Company", "type": "nominal"},
-                        {"field": "Dataset", "type": "nominal"},
-                        {"field": "Records", "type": "quantitative", "format": ",.0f"},
-                    ],
-                },
-                "config": {
-                    "view": {"stroke": None},
-                    "axis": {"labelFontSize": 12, "titleFontSize": 12},
-                    "legend": {"labelFontSize": 11},
-                },
-            },
-            use_container_width=True,
-        )
-
-
-def _render_net_change_chart(data: pd.DataFrame) -> None:
-    """Show verified change relative to the current source with a visible zero baseline."""
-    title = "Net verified change by company"
-    if not isinstance(data, pd.DataFrame) or data.empty:
-        _render_chart_empty_state(title, "No source comparison is available yet.")
-        return
-
-    frame = data[["Company", "Source records", "Research records", "Net verified change"]].copy()
-    frame = frame.loc[
-        pd.to_numeric(frame["Source records"], errors="coerce").fillna(0)
-        .add(pd.to_numeric(frame["Research records"], errors="coerce").fillna(0))
-        .gt(0)
-    ]
-    if frame.empty:
-        _render_chart_empty_state(title, "No company has source or research records yet.")
-        return
-
-    frame["Direction"] = frame["Net verified change"].apply(
-        lambda value: "Above source" if value > 0 else ("Below source" if value < 0 else "No change")
-    )
-    height = max(200, min(560, 34 * len(frame) + 64))
-    with st.container(border=True):
-        st.markdown(f"#### {title}")
-        st.caption("Verified current research minus the number of records in the active source file.")
-        st.vega_lite_chart(
-            frame,
-            {
-                "height": height,
                 "layer": [
                     {
-                        "mark": {"type": "rule", "color": "#94A3B8", "strokeDash": [3, 3]},
-                        "encoding": {"x": {"datum": 0}},
-                    },
-                    {
-                        "mark": {"type": "bar", "cornerRadiusEnd": 5},
+                        "mark": {"type": "rule", "strokeWidth": 3, "color": "#CBD5E1"},
                         "encoding": {
                             "y": {
                                 "field": "Company",
                                 "type": "nominal",
-                                "sort": {"field": "Net verified change", "order": "descending"},
+                                "sort": {"field": "Gap", "order": "ascending"},
                                 "axis": {"title": None, "labelLimit": 270, "labelPadding": 8},
                             },
                             "x": {
-                                "field": "Net verified change",
+                                "field": "Minimum",
                                 "type": "quantitative",
-                                "axis": {"title": "Verified research minus source records", "tickMinStep": 1, "gridOpacity": 0.18},
+                                "axis": {"title": "Records", "tickMinStep": 1, "gridOpacity": 0.16},
                             },
-                            "color": {
-                                "field": "Direction",
+                            "x2": {"field": "Maximum"},
+                        },
+                    },
+                    {
+                        "mark": {"type": "point", "filled": True, "size": 115, "color": "#94A3B8"},
+                        "encoding": {
+                            "y": {
+                                "field": "Company",
                                 "type": "nominal",
-                                "scale": {
-                                    "domain": ["Above source", "No change", "Below source"],
-                                    "range": ["#16835F", "#94A3B8", "#C27C0E"],
-                                },
-                                "legend": {"title": None, "orient": "top"},
+                                "sort": {"field": "Gap", "order": "ascending"},
                             },
+                            "x": {"field": "Source records", "type": "quantitative"},
                             "tooltip": [
                                 {"field": "Company", "type": "nominal"},
                                 {"field": "Source records", "type": "quantitative", "format": ",.0f"},
                                 {"field": "Research records", "type": "quantitative", "format": ",.0f"},
-                                {"field": "Net verified change", "type": "quantitative", "format": "+,.0f"},
+                                {"field": "Gap", "type": "quantitative", "format": "+,.0f"},
+                            ],
+                        },
+                    },
+                    {
+                        "mark": {"type": "point", "filled": True, "size": 125, "color": "#1287CE"},
+                        "encoding": {
+                            "y": {
+                                "field": "Company",
+                                "type": "nominal",
+                                "sort": {"field": "Gap", "order": "ascending"},
+                            },
+                            "x": {"field": "Research records", "type": "quantitative"},
+                            "tooltip": [
+                                {"field": "Company", "type": "nominal"},
+                                {"field": "Source records", "type": "quantitative", "format": ",.0f"},
+                                {"field": "Research records", "type": "quantitative", "format": ",.0f"},
+                                {"field": "Gap", "type": "quantitative", "format": "+,.0f"},
                             ],
                         },
                     },
@@ -7676,15 +7643,102 @@ def _render_net_change_chart(data: pd.DataFrame) -> None:
                 "config": {
                     "view": {"stroke": None},
                     "axis": {"labelFontSize": 12, "titleFontSize": 12},
-                    "legend": {"labelFontSize": 11},
                 },
             },
             use_container_width=True,
         )
-        st.caption(
-            "A negative value may mean verification is incomplete; it does not automatically mean a source property should be removed."
+        st.markdown(
+            '<div class="db-chart-legend">'
+            '<span><i class="source"></i>Current source</span>'
+            '<span><i class="research"></i>Current research</span>'
+            '</div>',
+            unsafe_allow_html=True,
         )
 
+
+
+def _render_reconciliation_status_chart(
+    data: pd.DataFrame,
+    title: str,
+    description: str = "",
+) -> None:
+    """Show reconciliation outcomes with stable semantic colours and direct labels."""
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        _render_chart_empty_state(title, "No reconciliation results are available yet.")
+        return
+
+    category = "Reconciliation status"
+    value = "Records"
+    frame = data[[category, value]].copy()
+    frame[category] = frame[category].fillna("Unspecified").astype(str)
+    frame[value] = pd.to_numeric(frame[value], errors="coerce").fillna(0)
+    frame = frame.loc[frame[value].gt(0)]
+    if frame.empty:
+        _render_chart_empty_state(title, "All reconciliation values are currently zero.")
+        return
+
+    order = [
+        "Matched source",
+        "Newly discovered",
+        "Source-only / unmatched",
+        "Needs classification",
+        "Possible duplicates",
+        "Excluded / not current",
+    ]
+    colours = ["#1287CE", "#16835F", "#C27C0E", "#C27C0E", "#94A3B8", "#64748B"]
+    height = max(220, min(430, 38 * len(frame) + 66))
+
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
+        if description:
+            st.caption(description)
+        st.vega_lite_chart(
+            frame,
+            {
+                "height": height,
+                "layer": [
+                    {
+                        "mark": {"type": "bar", "cornerRadiusEnd": 5},
+                        "encoding": {
+                            "y": {
+                                "field": category,
+                                "type": "nominal",
+                                "sort": order,
+                                "axis": {"title": None, "labelLimit": 235, "labelPadding": 8},
+                            },
+                            "x": {
+                                "field": value,
+                                "type": "quantitative",
+                                "axis": {"title": "Records", "tickMinStep": 1, "gridOpacity": 0.16},
+                            },
+                            "color": {
+                                "field": category,
+                                "type": "nominal",
+                                "scale": {"domain": order, "range": colours},
+                                "legend": None,
+                            },
+                            "tooltip": [
+                                {"field": category, "type": "nominal", "title": "Status"},
+                                {"field": value, "type": "quantitative", "format": ",.0f"},
+                            ],
+                        },
+                    },
+                    {
+                        "mark": {"type": "text", "align": "left", "baseline": "middle", "dx": 6, "fontSize": 11},
+                        "encoding": {
+                            "y": {"field": category, "type": "nominal", "sort": order},
+                            "x": {"field": value, "type": "quantitative"},
+                            "text": {"field": value, "type": "quantitative", "format": ",.0f"},
+                        },
+                    },
+                ],
+                "config": {
+                    "view": {"stroke": None},
+                    "axis": {"labelFontSize": 12, "titleFontSize": 12},
+                },
+            },
+            use_container_width=True,
+        )
 
 def _render_verification_progress_chart(project_chart: pd.DataFrame) -> None:
     """Show mutually exclusive verification stages as a 100% stacked company view."""
@@ -7761,6 +7815,68 @@ def _render_verification_progress_chart(project_chart: pd.DataFrame) -> None:
             use_container_width=True,
         )
 
+
+
+def _render_stage_composition_chart(
+    data: pd.DataFrame,
+    title: str = "Research progress",
+    description: str = "",
+) -> None:
+    """Render one mutually exclusive 100% stacked bar instead of three separate bars."""
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        _render_chart_empty_state(title, "No research stages are available yet.")
+        return
+
+    frame = data[["Stage", "Records"]].copy()
+    frame["Records"] = pd.to_numeric(frame["Records"], errors="coerce").fillna(0)
+    if frame["Records"].sum() <= 0:
+        _render_chart_empty_state(title, "No active records are available yet.")
+        return
+    frame["Portfolio"] = "Current company"
+
+    order = ["Verified", "Reviewed, not verified", "Not reviewed"]
+    colours = ["#16835F", "#C27C0E", "#CBD5E1"]
+    frame["Stage order"] = frame["Stage"].map({stage: position for position, stage in enumerate(order)})
+    total = int(frame["Records"].sum())
+
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
+        if description:
+            st.caption(description)
+        st.vega_lite_chart(
+            frame,
+            {
+                "height": 92,
+                "mark": {"type": "bar", "cornerRadius": 5, "height": 30},
+                "encoding": {
+                    "y": {"field": "Portfolio", "type": "nominal", "axis": None},
+                    "x": {
+                        "field": "Records",
+                        "type": "quantitative",
+                        "stack": "normalize",
+                        "axis": {"title": None, "format": ".0%", "gridOpacity": 0.12},
+                    },
+                    "color": {
+                        "field": "Stage",
+                        "type": "nominal",
+                        "scale": {"domain": order, "range": colours},
+                        "legend": {"title": None, "orient": "top", "direction": "horizontal"},
+                    },
+                    "order": {"field": "Stage order", "type": "quantitative", "sort": "ascending"},
+                    "tooltip": [
+                        {"field": "Stage", "type": "nominal"},
+                        {"field": "Records", "type": "quantitative", "format": ",.0f"},
+                    ],
+                },
+                "config": {
+                    "view": {"stroke": None},
+                    "axis": {"labelFontSize": 11},
+                    "legend": {"labelFontSize": 11},
+                },
+            },
+            use_container_width=True,
+        )
+        st.caption(f"{total:,} active research record(s) represented; stages do not overlap.")
 
 def _missing_information_summary(records: pd.DataFrame, limit: int = 8) -> pd.DataFrame:
     """Count the most frequent unresolved fields in the current research records."""
@@ -7917,45 +8033,27 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                     )
 
             with smart_expander(
-                "Data quality signals and missing information",
+                "Most frequently missing information",
                 count=project["attention_records"],
                 status="records need attention",
                 expanded=False,
             ):
                 _render_analytics_section(
-                    "Data quality signals",
-                    "Use these views to identify workflow bottlenecks and the information researchers should seek next.",
+                    "Missing-information priorities",
+                    "Focus the next research pass on fields missing across the largest number of active records.",
                     "QUALITY",
                 )
-                lower_left, lower_right = st.columns(2, gap="large")
-                with lower_left:
-                    status_counts = (
-                        project_chart["Status"]
-                        .value_counts()
-                        .rename_axis("Company status")
-                        .reset_index(name="Companies")
-                    )
-                    _render_horizontal_bar_chart(
-                        status_counts,
-                        "Company status",
-                        "Companies",
-                        "Companies by workflow status",
-                        value_title="Companies",
-                        color="#1287CE",
-                        description="A compact view of how companies are distributed across the research workflow.",
-                    )
-                with lower_right:
-                    missing_summary = _missing_information_summary(
-                        reconciliation["active_research"]
-                    )
-                    _render_horizontal_bar_chart(
-                        missing_summary,
-                        "Missing field",
-                        "Records",
-                        "Most frequently missing information",
-                        color="#64748B",
-                        description="Prioritize fields that are missing across the largest number of active records.",
-                    )
+                missing_summary = _missing_information_summary(
+                    reconciliation["active_research"]
+                )
+                _render_horizontal_bar_chart(
+                    missing_summary,
+                    "Missing field",
+                    "Records",
+                    "Most frequently missing information",
+                    color="#64748B",
+                    description="This action chart replaces the less useful company-status distribution.",
+                )
 
             with smart_expander(
                 "Detailed company progress",
@@ -8068,16 +8166,11 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                         "A larger research count may indicate new findings; a smaller count may indicate incomplete reconciliation or verification.",
                     )
                 with compare_right:
-                    _render_horizontal_bar_chart(
+                    _render_reconciliation_status_chart(
                         reconciliation["status_table"],
-                        "Reconciliation status",
-                        "Records",
                         "Portfolio reconciliation status",
-                        color="#1287CE",
-                        description="Counts are mutually interpreted as reconciliation outcomes, not workflow stages.",
+                        "Matched, new and exception records are separated with stable semantic colours.",
                     )
-
-                _render_net_change_chart(reconciliation["company_table"])
 
             with smart_expander(
                 "Detailed source reconciliation",
@@ -8275,13 +8368,10 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                             int(company_source["Excluded"]),
                         ],
                     })
-                    _render_horizontal_bar_chart(
+                    _render_reconciliation_status_chart(
                         company_status_data,
-                        "Reconciliation status",
-                        "Records",
                         "Company reconciliation profile",
-                        color="#1287CE",
-                        description="Use this chart to distinguish confirmed matches from exceptions that still require a decision.",
+                        "Confirmed matches, new discoveries and exceptions are shown without mixing workflow stages.",
                     )
 
         company_records = comparison_records.loc[
@@ -8350,16 +8440,12 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                     },
                 ])
 
-                progress_left, progress_right = st.columns([1, 1], gap="large")
+                progress_left, progress_right = st.columns([1, 1.15], gap="large")
                 with progress_left:
-                    _render_horizontal_bar_chart(
+                    _render_stage_composition_chart(
                         progress_data,
-                        "Stage",
-                        "Records",
                         "Research progress",
-                        color="#16835F",
-                        description="Verification stages are mutually exclusive so the chart does not double-count records.",
-                        include_zero=True,
+                        "One 100% stacked bar shows mutually exclusive verification stages without double-counting.",
                     )
                 with progress_right:
                     missing_summary = _missing_information_summary(active_company_qa)
@@ -8372,37 +8458,9 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                         description="Use this ranking to guide the next targeted research pass.",
                     )
 
-                quality_summary = (
-                    company_qa["QA Status"]
-                    .value_counts()
-                    .rename_axis("QA status")
-                    .reset_index(name="Records")
-                )
-                verification_summary = (
-                    company_qa["Verification Status"]
-                    .value_counts()
-                    .rename_axis("Verification status")
-                    .reset_index(name="Records")
-                )
-                q_left, q_right = st.columns(2, gap="large")
-                with q_left:
-                    _render_horizontal_bar_chart(
-                        quality_summary,
-                        "QA status",
-                        "Records",
-                        "Quality status",
-                        color="#C27C0E",
-                        description="QA status summarizes completeness and record-readiness checks.",
-                    )
-                with q_right:
-                    _render_horizontal_bar_chart(
-                        verification_summary,
-                        "Verification status",
-                        "Records",
-                        "Verification status",
-                        color="#16835F",
-                        description="Verification status reflects the human review state of each record.",
-                    )
+                # The previous QA-status and verification-status charts repeated
+                # information already visible in the KPI row and progress bar.
+                # They are intentionally removed to reduce chart clutter.
 
         if not company_qa.empty:
             with smart_expander(
@@ -8959,19 +9017,27 @@ button[data-testid="stSidebarCollapseButton"]::after{
     opacity:.66;
 }
 
+.db-analytics-kpi-scroll{
+    width:100%;
+    overflow-x:auto;
+    overflow-y:hidden;
+    margin:.82rem 0 1rem;
+    padding-bottom:.12rem;
+    scrollbar-width:thin;
+}
 .db-analytics-kpi-grid{
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(155px,1fr));
-    gap:.72rem;
-    margin:.85rem 0 1rem;
+    grid-template-columns:repeat(var(--db-kpi-count),minmax(138px,1fr));
+    gap:.58rem;
+    min-width:max-content;
 }
 .db-analytics-kpi{
     position:relative;
-    min-height:112px;
-    padding:.82rem .86rem;
+    min-height:96px;
+    padding:.68rem .72rem;
     border:1px solid var(--db-border);
     border-top:3px solid rgba(100,110,125,.35);
-    border-radius:11px;
+    border-radius:10px;
     background:var(--db-soft);
 }
 .db-analytics-kpi.accent{border-top-color:var(--db-accent)}
@@ -8979,8 +9045,8 @@ button[data-testid="stSidebarCollapseButton"]::after{
 .db-analytics-kpi.warning{border-top-color:#C27C0E}
 .db-analytics-kpi.neutral{border-top-color:rgba(100,110,125,.42)}
 .db-analytics-kpi-label{
-    min-height:2.1em;
-    font-size:.72rem;
+    min-height:1.75em;
+    font-size:.68rem;
     font-weight:720;
     line-height:1.3;
     opacity:.72;
@@ -8988,7 +9054,7 @@ button[data-testid="stSidebarCollapseButton"]::after{
 .db-analytics-kpi-value{
     margin:.2rem 0 .18rem;
     font-family:var(--db-display);
-    font-size:clamp(1.38rem,2vw,1.85rem);
+    font-size:clamp(1.25rem,1.8vw,1.65rem);
     font-weight:750;
     letter-spacing:-.035em;
     line-height:1.1;
@@ -8996,10 +9062,29 @@ button[data-testid="stSidebarCollapseButton"]::after{
     overflow-wrap:anywhere;
 }
 .db-analytics-kpi-helper{
-    font-size:.72rem;
-    line-height:1.35;
+    font-size:.67rem;
+    line-height:1.3;
     opacity:.62;
 }
+
+
+.db-chart-legend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:1rem;
+    margin:.15rem 0 .25rem;
+    font-size:.72rem;
+    opacity:.72;
+}
+.db-chart-legend span{display:inline-flex;align-items:center;gap:.38rem}
+.db-chart-legend i{
+    width:.58rem;
+    height:.58rem;
+    border-radius:50%;
+    display:inline-block;
+}
+.db-chart-legend i.source{background:#94A3B8}
+.db-chart-legend i.research{background:#1287CE}
 
 .db-analytics-section-head{
     display:flex;
@@ -9154,11 +9239,15 @@ div[data-testid="stTabs"] div[data-baseweb="tab-list"]{
     .db-analytics-baseline{min-width:0;flex-basis:auto}
     .db-analytics-chip-row{justify-content:flex-start}
     .db-analytics-source-strip{grid-template-columns:1fr}
-    .db-analytics-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .db-analytics-kpi-grid{
+        grid-template-columns:repeat(var(--db-kpi-count),minmax(132px,1fr));
+    }
 }
 @media(max-width:480px){
-    .db-analytics-kpi-grid{grid-template-columns:1fr}
-    .db-analytics-kpi{min-height:96px}
+    .db-analytics-kpi-grid{
+        grid-template-columns:repeat(var(--db-kpi-count),minmax(126px,1fr));
+    }
+    .db-analytics-kpi{min-height:92px}
 }
 
 
