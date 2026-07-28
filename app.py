@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Canonical Company Repair + Postal + Classification Manual Override + Pandas NA Fix 2026.07.28-v52"
+DATABLIX_BUILD = "Ottawa Website Scan + Source Reconciliation Analytics + Improved Charts 2026.07.28-v53"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -7051,51 +7051,660 @@ def _normalize_analytics_records(records) -> pd.DataFrame:
     return normalize_workflow(frame)
 
 
+def _current_source_display_details() -> dict:
+    """Return the name, version and row count for the active Starting Data baseline."""
+    records = current_starting_source_records()
+    versions = st.session_state.get(S_SOURCE_VERSIONS, [])
+    active = None
+    if isinstance(versions, list):
+        active = next(
+            (
+                item for item in reversed(versions)
+                if isinstance(item, dict) and bool(item.get("is_active"))
+            ),
+            None,
+        )
+        if active is None:
+            active = next(
+                (item for item in reversed(versions) if isinstance(item, dict)),
+                None,
+            )
+
+    meta = dict(active.get("meta", {})) if isinstance(active, dict) else {}
+    filename = safe_text(
+        active.get("raw_filename", "") if isinstance(active, dict) else ""
+    ) or safe_text(meta.get("workbook_name", ""))
+    version_label = safe_text(
+        active.get("version_label", "") if isinstance(active, dict) else ""
+    ) or safe_text(meta.get("version_label", "")) or "Current"
+
+    if not filename:
+        legacy_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
+        if isinstance(legacy_meta, dict):
+            filename = safe_text(legacy_meta.get("workbook_name", ""))
+            version_label = (
+                safe_text(legacy_meta.get("version_label", ""))
+                or version_label
+            )
+
+    return {
+        "records": records,
+        "filename": Path(filename).name if filename else "Current Starting Data",
+        "version_label": version_label,
+        "label": (
+            f"{Path(filename).name if filename else 'Current Starting Data'} · "
+            f"{version_label}"
+        ),
+        "row_count": len(records),
+    }
+
+
+def _analytics_company_reference(row, registry: pd.DataFrame) -> tuple[str, str]:
+    """Resolve one source/research row to a stable company key and display name."""
+    if not isinstance(registry, pd.DataFrame):
+        registry = empty_company_registry()
+    company_id = safe_text(row.get("Company ID", ""))
+    owner = safe_text(row.get("Management/Owner", ""))
+
+    if company_id and not registry.empty:
+        exact = registry.loc[registry["Company ID"].astype(str).eq(company_id)]
+        if not exact.empty:
+            name = safe_text(exact.iloc[0].get("Management/Owner", "")) or owner
+            return company_id, name or "Unnamed company"
+
+    if owner and not registry.empty:
+        match_index = _registry_match_index(owner, registry)
+        if match_index is not None:
+            company = registry.loc[match_index]
+            resolved_id = safe_text(company.get("Company ID", ""))
+            resolved_name = safe_text(company.get("Management/Owner", "")) or owner
+            return resolved_id or f"company:{norm_header(resolved_name)}", resolved_name
+
+    if owner:
+        return f"unregistered:{norm_header(owner)}", owner
+    return "unassigned", "Unassigned source records"
+
+
+def _active_research_for_comparison(records: pd.DataFrame) -> pd.DataFrame:
+    """Exclude records already removed from the current researched portfolio."""
+    if not isinstance(records, pd.DataFrame) or records.empty:
+        return pd.DataFrame(columns=INTERNAL_COLUMNS)
+    frame = normalize_workflow(records)
+    excluded = (
+        frame["Record Decision"].eq("Remove")
+        | frame["Directory Discovery Status"].eq("Excluded / Not Current")
+    )
+    return frame.loc[~excluded].copy()
+
+
+def source_reconciliation_snapshot(
+    registry: pd.DataFrame,
+    records: pd.DataFrame,
+    source_records: pd.DataFrame,
+) -> dict:
+    """Compare current website research with the active Starting Data in both directions.
+
+    Research-to-source classification already identifies existing and new research rows.
+    This helper also performs the reverse comparison needed to identify source rows that
+    have not yet been matched by any current research record.
+    """
+    registry = normalize_company_registry(registry)
+    research = _normalize_analytics_records(records)
+    source = (
+        coalesce_duplicate_columns(source_records.copy())
+        if isinstance(source_records, pd.DataFrame)
+        else pd.DataFrame()
+    )
+
+    if source.empty:
+        empty_table = pd.DataFrame(columns=[
+            "Company ID", "Company", "Source records", "Research records",
+            "Matched", "New", "Source-only", "Excluded",
+            "Needs classification", "Possible duplicates", "Verified",
+            "Net verified change",
+        ])
+        return {
+            "available": False,
+            "records": research,
+            "active_research": _active_research_for_comparison(research),
+            "source_records": 0,
+            "research_records": len(_active_research_for_comparison(research)),
+            "matched_source": 0,
+            "source_only": 0,
+            "newly_discovered": 0,
+            "needs_classification": 0,
+            "possible_duplicates": 0,
+            "excluded": 0,
+            "verified": 0,
+            "company_table": empty_table,
+            "status_table": pd.DataFrame(columns=["Reconciliation status", "Records"]),
+        }
+
+    # Re-evaluate automatic discovery classifications against the currently active
+    # source baseline so the dashboard never reports results against an old file.
+    comparison_records = classify_discovery_status(research, source)
+    active_research = _active_research_for_comparison(comparison_records)
+
+    source_identities, source_indexes = _build_discovery_source_index(source)
+    matched_source_positions: set[int] = set()
+    for position, row in enumerate(active_research.to_dict(orient="records")):
+        identity = _row_identity(row)
+        candidate_positions = _candidate_source_positions(identity, source_indexes)
+        best_position = -1
+        best_score = 0
+        for source_position in candidate_positions:
+            score, _reason = _source_match_score_from_identities(
+                identity, source_identities[source_position]
+            )
+            if score > best_score:
+                best_position = source_position
+                best_score = score
+                if best_score >= 100:
+                    break
+
+        # A manual Existing Source Record decision can accept a plausible match,
+        # but an automatic match still requires the normal strong threshold.
+        status = safe_text(row.get("Directory Discovery Status", ""))
+        manual_existing = (
+            safe_text(row.get("Discovery Status Source", "")) == "Manual"
+            and status == "Existing Source Record"
+        )
+        threshold = 72 if manual_existing else 88
+        if best_position >= 0 and best_score >= threshold:
+            matched_source_positions.add(best_position)
+
+    company_rows: dict[str, dict] = {}
+
+    def ensure_company(key: str, name: str) -> dict:
+        if key not in company_rows:
+            company_rows[key] = {
+                "Company ID": key,
+                "Company": name,
+                "Source records": 0,
+                "Research records": 0,
+                "Matched": 0,
+                "New": 0,
+                "Source-only": 0,
+                "Excluded": 0,
+                "Needs classification": 0,
+                "Possible duplicates": 0,
+                "Verified": 0,
+                "Net verified change": 0,
+            }
+        return company_rows[key]
+
+    # Keep all registered companies visible, including companies with no records yet.
+    for _, company in registry.iterrows():
+        company_id = safe_text(company.get("Company ID", ""))
+        company_name = safe_text(company.get("Management/Owner", "")) or "Unnamed company"
+        ensure_company(company_id or f"company:{norm_header(company_name)}", company_name)
+
+    source_records_list = source.to_dict(orient="records")
+    for position, row in enumerate(source_records_list):
+        key, name = _analytics_company_reference(row, registry)
+        company = ensure_company(key, name)
+        company["Source records"] += 1
+        if position in matched_source_positions:
+            company["Matched"] += 1
+        else:
+            company["Source-only"] += 1
+
+    for row in active_research.to_dict(orient="records"):
+        key, name = _analytics_company_reference(row, registry)
+        company = ensure_company(key, name)
+        company["Research records"] += 1
+        status = safe_text(row.get("Directory Discovery Status", ""))
+        if status == "Newly Discovered":
+            company["New"] += 1
+        elif status == "Needs Classification":
+            company["Needs classification"] += 1
+        elif status == "Possible Duplicate":
+            company["Possible duplicates"] += 1
+        if safe_text(row.get("Verification Status", "")) == "Verified":
+            company["Verified"] += 1
+
+    excluded_research = comparison_records.loc[
+        comparison_records["Record Decision"].eq("Remove")
+        | comparison_records["Directory Discovery Status"].eq("Excluded / Not Current")
+    ]
+    for row in excluded_research.to_dict(orient="records"):
+        key, name = _analytics_company_reference(row, registry)
+        ensure_company(key, name)["Excluded"] += 1
+
+    for company in company_rows.values():
+        company["Net verified change"] = (
+            company["Verified"] - company["Source records"]
+        )
+
+    company_table = pd.DataFrame(company_rows.values())
+    if not company_table.empty:
+        company_table = company_table.sort_values(
+            ["Source-only", "Needs classification", "New", "Company"],
+            ascending=[False, False, False, True],
+        ).reset_index(drop=True)
+
+    newly_discovered = int(
+        active_research["Directory Discovery Status"].eq("Newly Discovered").sum()
+    )
+    needs_classification = int(
+        active_research["Directory Discovery Status"].eq("Needs Classification").sum()
+    )
+    possible_duplicates = int(
+        active_research["Directory Discovery Status"].eq("Possible Duplicate").sum()
+    )
+    verified = int(active_research["Verification Status"].eq("Verified").sum())
+    excluded = len(excluded_research)
+    source_only = max(len(source) - len(matched_source_positions), 0)
+
+    status_table = pd.DataFrame({
+        "Reconciliation status": [
+            "Matched source records",
+            "Newly discovered",
+            "Source-only / unmatched",
+            "Needs classification",
+            "Possible duplicates",
+            "Excluded / not current",
+        ],
+        "Records": [
+            len(matched_source_positions),
+            newly_discovered,
+            source_only,
+            needs_classification,
+            possible_duplicates,
+            excluded,
+        ],
+    })
+
+    return {
+        "available": True,
+        "records": comparison_records,
+        "active_research": active_research,
+        "source_records": len(source),
+        "research_records": len(active_research),
+        "matched_source": len(matched_source_positions),
+        "source_only": source_only,
+        "newly_discovered": newly_discovered,
+        "needs_classification": needs_classification,
+        "possible_duplicates": possible_duplicates,
+        "excluded": excluded,
+        "verified": verified,
+        "company_table": company_table,
+        "status_table": status_table,
+    }
+
+
+def _render_horizontal_bar_chart(
+    data: pd.DataFrame,
+    category: str,
+    value: str,
+    title: str,
+    value_title: str = "Records",
+    color: str = "#2563EB",
+    sort_order: str = "descending",
+) -> None:
+    """Render a calm horizontal ranking chart with readable long labels."""
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        st.caption(f"{title}: no data available.")
+        return
+    frame = data[[category, value]].copy()
+    frame[value] = pd.to_numeric(frame[value], errors="coerce").fillna(0)
+    frame = frame.loc[frame[value].notna()]
+    height = max(160, min(520, 34 * len(frame) + 40))
+    st.caption(title)
+    st.vega_lite_chart(
+        frame,
+        {
+            "height": height,
+            "mark": {"type": "bar", "cornerRadiusEnd": 4},
+            "encoding": {
+                "y": {
+                    "field": category,
+                    "type": "nominal",
+                    "sort": {"field": value, "order": sort_order},
+                    "axis": {"title": None, "labelLimit": 260},
+                },
+                "x": {
+                    "field": value,
+                    "type": "quantitative",
+                    "axis": {"title": value_title, "tickMinStep": 1},
+                },
+                "color": {"value": color},
+                "tooltip": [
+                    {"field": category, "type": "nominal"},
+                    {"field": value, "type": "quantitative", "format": ",.0f"},
+                ],
+            },
+        },
+        use_container_width=True,
+    )
+
+
+def _render_grouped_company_chart(data: pd.DataFrame, title: str) -> None:
+    """Compare source-file and current-research counts by company."""
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        st.caption(f"{title}: no data available.")
+        return
+    chart_rows = data.loc[
+        pd.to_numeric(data["Source records"], errors="coerce").fillna(0)
+        .add(pd.to_numeric(data["Research records"], errors="coerce").fillna(0))
+        .gt(0)
+    ].copy()
+    if chart_rows.empty:
+        st.caption(f"{title}: no source or research records are available.")
+        return
+    frame = chart_rows[["Company", "Source records", "Research records"]].melt(
+        id_vars="Company",
+        var_name="Dataset",
+        value_name="Records",
+    )
+    height = max(190, min(560, 54 * chart_rows["Company"].nunique() + 40))
+    st.caption(title)
+    st.vega_lite_chart(
+        frame,
+        {
+            "height": height,
+            "mark": {"type": "bar", "cornerRadiusEnd": 3},
+            "encoding": {
+                "y": {
+                    "field": "Company",
+                    "type": "nominal",
+                    "sort": {"field": "Records", "op": "sum", "order": "descending"},
+                    "axis": {"title": None, "labelLimit": 250},
+                },
+                "x": {
+                    "field": "Records",
+                    "type": "quantitative",
+                    "axis": {"title": "Records", "tickMinStep": 1},
+                },
+                "yOffset": {"field": "Dataset"},
+                "color": {
+                    "field": "Dataset",
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["Source records", "Research records"],
+                        "range": ["#94A3B8", "#2563EB"],
+                    },
+                    "legend": {"title": None, "orient": "top"},
+                },
+                "tooltip": [
+                    {"field": "Company", "type": "nominal"},
+                    {"field": "Dataset", "type": "nominal"},
+                    {"field": "Records", "type": "quantitative", "format": ",.0f"},
+                ],
+            },
+        },
+        use_container_width=True,
+    )
+
+
+def _render_net_change_chart(data: pd.DataFrame) -> None:
+    """Show positive and negative verified changes without implying all negatives are removals."""
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        st.caption("Net verified change from the current source: no data available.")
+        return
+    frame = data[["Company", "Source records", "Research records", "Net verified change"]].copy()
+    frame = frame.loc[
+        pd.to_numeric(frame["Source records"], errors="coerce").fillna(0)
+        .add(pd.to_numeric(frame["Research records"], errors="coerce").fillna(0))
+        .gt(0)
+    ]
+    if frame.empty:
+        st.caption("Net verified change from the current source: no data available.")
+        return
+    frame["Direction"] = frame["Net verified change"].apply(
+        lambda value: "Above source" if value > 0 else ("Below source" if value < 0 else "No change")
+    )
+    height = max(180, min(540, 36 * len(frame) + 40))
+    st.caption("Net verified change from the current source")
+    st.vega_lite_chart(
+        frame,
+        {
+            "height": height,
+            "mark": {"type": "bar", "cornerRadiusEnd": 4},
+            "encoding": {
+                "y": {
+                    "field": "Company",
+                    "type": "nominal",
+                    "sort": {"field": "Net verified change", "order": "descending"},
+                    "axis": {"title": None, "labelLimit": 260},
+                },
+                "x": {
+                    "field": "Net verified change",
+                    "type": "quantitative",
+                    "axis": {"title": "Verified research minus source records", "tickMinStep": 1},
+                },
+                "color": {
+                    "field": "Direction",
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["Above source", "No change", "Below source"],
+                        "range": ["#16A34A", "#94A3B8", "#F59E0B"],
+                    },
+                    "legend": {"title": None, "orient": "top"},
+                },
+                "tooltip": [
+                    {"field": "Company", "type": "nominal"},
+                    {"field": "Source records", "type": "quantitative", "format": ",.0f"},
+                    {"field": "Research records", "type": "quantitative", "format": ",.0f"},
+                    {"field": "Net verified change", "type": "quantitative", "format": "+,.0f"},
+                ],
+            },
+        },
+        use_container_width=True,
+    )
+    st.caption(
+        "Positive values mean verified current research exceeds the source count. "
+        "Negative values can also mean research or verification is still incomplete, not necessarily that a property was removed."
+    )
+
+
+def _render_verification_progress_chart(project_chart: pd.DataFrame) -> None:
+    """Show mutually exclusive verification stages as 100% stacked company bars."""
+    if not isinstance(project_chart, pd.DataFrame) or project_chart.empty:
+        return
+    rows = []
+    for _, row in project_chart.iterrows():
+        collected = int(row.get("Buildings", 0) or 0)
+        reviewed = min(int(row.get("Reviewed", 0) or 0), collected)
+        verified = min(int(row.get("Verified", 0) or 0), collected)
+        reviewed_not_verified = max(reviewed - verified, 0)
+        not_reviewed = max(collected - reviewed, 0)
+        rate = (verified / collected) if collected else 0.0
+        for stage, count in [
+            ("Verified", verified),
+            ("Reviewed, not verified", reviewed_not_verified),
+            ("Not reviewed", not_reviewed),
+        ]:
+            rows.append({
+                "Company": row.get("Company", ""),
+                "Stage": stage,
+                "Records": count,
+                "Verification rate": rate,
+            })
+    frame = pd.DataFrame(rows)
+    height = max(190, min(560, 40 * project_chart["Company"].nunique() + 50))
+    st.caption("Verification progress by company")
+    st.vega_lite_chart(
+        frame,
+        {
+            "height": height,
+            "mark": {"type": "bar", "cornerRadiusEnd": 3},
+            "encoding": {
+                "y": {
+                    "field": "Company",
+                    "type": "nominal",
+                    "sort": {"field": "Verification rate", "order": "ascending"},
+                    "axis": {"title": None, "labelLimit": 250},
+                },
+                "x": {
+                    "field": "Records",
+                    "type": "quantitative",
+                    "stack": "normalize",
+                    "axis": {"title": "Share of researched records", "format": ".0%"},
+                },
+                "color": {
+                    "field": "Stage",
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["Verified", "Reviewed, not verified", "Not reviewed"],
+                        "range": ["#16A34A", "#F59E0B", "#CBD5E1"],
+                    },
+                    "legend": {"title": None, "orient": "top"},
+                },
+                "tooltip": [
+                    {"field": "Company", "type": "nominal"},
+                    {"field": "Stage", "type": "nominal"},
+                    {"field": "Records", "type": "quantitative", "format": ",.0f"},
+                    {"field": "Verification rate", "type": "quantitative", "format": ".0%"},
+                ],
+            },
+        },
+        use_container_width=True,
+    )
+
+
+def _missing_information_summary(records: pd.DataFrame, limit: int = 8) -> pd.DataFrame:
+    """Count the most frequent unresolved fields in the current research records."""
+    if not isinstance(records, pd.DataFrame) or records.empty:
+        return pd.DataFrame(columns=["Missing field", "Records"])
+    counts: dict[str, int] = {}
+    for value in records.get("Missing Information", pd.Series(dtype="object")):
+        for field in [part.strip() for part in safe_text(value).split(",") if part.strip()]:
+            counts[field] = counts.get(field, 0) + 1
+    rows = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    return pd.DataFrame(rows, columns=["Missing field", "Records"])
+
+
 def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFrame) -> None:
-    """Render project-wide and company-level rental-property research analytics."""
+    """Render project-wide, source-comparison and company-level analytics."""
     registry = normalize_company_registry(registry)
     records = _normalize_analytics_records(records)
-    project = project_progress_snapshot(registry, records)
+    source_details = _current_source_display_details()
+    reconciliation = source_reconciliation_snapshot(
+        registry,
+        records,
+        source_details["records"],
+    )
+    comparison_records = reconciliation["records"]
+    project = project_progress_snapshot(registry, comparison_records)
 
     st.subheader("Analytics dashboard")
     st.write(
-        "Track rental-property research coverage, verification progress, unresolved quality issues, "
-        "and company performance across the current project."
+        "Compare the current Starting Data with website research, track verification progress, "
+        "and identify the companies and records that need attention next."
     )
 
     project_tab, company_tab = st.tabs(["Project analytics", "Company analytics"])
 
     with project_tab:
+        verification_rate = (
+            round(project["verified_records"] / project["buildings"] * 100)
+            if project["buildings"]
+            else 0
+        )
         metric_cols = st.columns(5)
         metric_cols[0].metric("Companies", f"{project['companies']:,}")
-        metric_cols[1].metric("Buildings researched", f"{project['buildings']:,}")
-        metric_cols[2].metric("Verified records", f"{project['verified_records']:,}")
-        metric_cols[3].metric("Companies complete", f"{project['completed']:,}")
-        metric_cols[4].metric("Records needing attention", f"{project['attention_records']:,}")
+        metric_cols[1].metric("Source records", f"{reconciliation['source_records']:,}")
+        metric_cols[2].metric("Current research", f"{reconciliation['research_records']:,}")
+        metric_cols[3].metric("Verification rate", f"{verification_rate}%")
+        metric_cols[4].metric("Needs attention", f"{project['attention_records']:,}")
 
-        if project["companies"]:
-            project_chart = company_progress_table(registry, records, project)
-            chart_data = project_chart.set_index("Company")[["Buildings", "Reviewed", "Verified", "Needs attention"]]
-            st.caption("Research and review coverage by company")
-            st.bar_chart(chart_data, width="stretch")
-
-            status_counts = (
-                project_chart["Status"]
-                .value_counts()
-                .rename_axis("Company status")
-                .reset_index(name="Companies")
+        if reconciliation["available"]:
+            st.markdown("### Current source comparison")
+            st.caption(
+                f"Comparison baseline: {source_details['label']} · "
+                f"{source_details['row_count']:,} structured source record(s)."
             )
-            left, right = st.columns([1.5, 1])
-            with left:
-                st.caption("Company progress table")
-                st.dataframe(
-                    project_chart[["Company", "Buildings", "Verified", "Needs attention", "Progress", "Status"]],
-                    width="stretch",
-                    hide_index=True,
+            source_metrics = st.columns(5)
+            source_metrics[0].metric("Matched source", f"{reconciliation['matched_source']:,}")
+            source_metrics[1].metric("Newly discovered", f"{reconciliation['newly_discovered']:,}")
+            source_metrics[2].metric("Source-only", f"{reconciliation['source_only']:,}")
+            source_metrics[3].metric("Needs classification", f"{reconciliation['needs_classification']:,}")
+            source_metrics[4].metric("Possible duplicates", f"{reconciliation['possible_duplicates']:,}")
+
+            source_left, source_right = st.columns([1.45, 1])
+            with source_left:
+                _render_grouped_company_chart(
+                    reconciliation["company_table"],
+                    "Current source versus current research by company",
                 )
-            with right:
-                st.caption("Companies by status")
-                st.dataframe(status_counts, width="stretch", hide_index=True)
+            with source_right:
+                _render_horizontal_bar_chart(
+                    reconciliation["status_table"],
+                    "Reconciliation status",
+                    "Records",
+                    "Source reconciliation status",
+                    color="#2563EB",
+                )
+
+            _render_net_change_chart(reconciliation["company_table"])
+
+            st.caption("Detailed source reconciliation by company")
+            st.dataframe(
+                reconciliation["company_table"].drop(columns=["Company ID"]),
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "Add the current Starting Data baseline to activate source-file comparison, "
+                "source-only detection, and net portfolio change analytics."
+            )
+
+        st.markdown("### Research and quality progress")
+        if project["companies"]:
+            project_chart = company_progress_table(registry, comparison_records, project)
+            progress_left, progress_right = st.columns([1.45, 1])
+            with progress_left:
+                _render_verification_progress_chart(project_chart)
+            with progress_right:
+                attention_chart = project_chart[["Company", "Needs attention"]].copy()
+                attention_chart = attention_chart.loc[attention_chart["Needs attention"].gt(0)]
+                _render_horizontal_bar_chart(
+                    attention_chart,
+                    "Company",
+                    "Needs attention",
+                    "Records requiring attention by company",
+                    color="#F59E0B",
+                )
+
+            lower_left, lower_right = st.columns(2)
+            with lower_left:
+                status_counts = (
+                    project_chart["Status"]
+                    .value_counts()
+                    .rename_axis("Company status")
+                    .reset_index(name="Companies")
+                )
+                _render_horizontal_bar_chart(
+                    status_counts,
+                    "Company status",
+                    "Companies",
+                    "Companies by status",
+                    value_title="Companies",
+                    color="#2563EB",
+                )
+            with lower_right:
+                missing_summary = _missing_information_summary(
+                    reconciliation["active_research"]
+                )
+                _render_horizontal_bar_chart(
+                    missing_summary,
+                    "Missing field",
+                    "Records",
+                    "Most frequently missing information",
+                    color="#64748B",
+                )
+
+            st.caption("Company progress table")
+            st.dataframe(
+                project_chart[[
+                    "Company", "Buildings", "Reviewed", "Verified",
+                    "Needs attention", "Progress", "Status",
+                ]],
+                width="stretch",
+                hide_index=True,
+            )
         else:
             st.info("Add companies to the project to activate project-level analytics.")
 
@@ -7117,26 +7726,89 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
             key="db_analytics_company_selector",
         )
         selected_row = registry.loc[registry["Company ID"].eq(selected_id)].iloc[0]
-        snapshot = company_progress_snapshot(selected_row, records)
+        snapshot = company_progress_snapshot(selected_row, comparison_records)
 
         company_metrics = st.columns(5)
-        company_metrics[0].metric("Buildings collected", f"{snapshot['collected']:,}")
+        company_metrics[0].metric("Buildings researched", f"{snapshot['collected']:,}")
         company_metrics[1].metric("Reviewed", f"{snapshot['reviewed']:,}")
         company_metrics[2].metric("Verified", f"{snapshot['verified']:,}")
         company_metrics[3].metric("Need attention", f"{snapshot['attention']:,}")
         company_metrics[4].metric("Verification progress", f"{snapshot['progress_percent']:,}%")
 
-        company_records = records.loc[records["Company ID"].astype(str).eq(selected_id)].copy()
+        company_reconciliation = reconciliation["company_table"].loc[
+            reconciliation["company_table"]["Company ID"].astype(str).eq(selected_id)
+        ] if not reconciliation["company_table"].empty else pd.DataFrame()
+
+        if reconciliation["available"]:
+            st.markdown("### Source comparison")
+            st.caption(f"Current baseline: {source_details['label']}")
+            if company_reconciliation.empty:
+                st.info("No source or research rows are currently linked to this company.")
+            else:
+                company_source = company_reconciliation.iloc[0]
+                source_cols = st.columns(5)
+                source_cols[0].metric("Source records", f"{int(company_source['Source records']):,}")
+                source_cols[1].metric("Matched", f"{int(company_source['Matched']):,}")
+                source_cols[2].metric("New", f"{int(company_source['New']):,}")
+                source_cols[3].metric("Source-only", f"{int(company_source['Source-only']):,}")
+                source_cols[4].metric(
+                    "Needs classification",
+                    f"{int(company_source['Needs classification']):,}",
+                )
+                company_status_data = pd.DataFrame({
+                    "Reconciliation status": [
+                        "Matched source",
+                        "Newly discovered",
+                        "Source-only / unmatched",
+                        "Needs classification",
+                        "Possible duplicates",
+                        "Excluded / not current",
+                    ],
+                    "Records": [
+                        int(company_source["Matched"]),
+                        int(company_source["New"]),
+                        int(company_source["Source-only"]),
+                        int(company_source["Needs classification"]),
+                        int(company_source["Possible duplicates"]),
+                        int(company_source["Excluded"]),
+                    ],
+                })
+                _render_horizontal_bar_chart(
+                    company_status_data,
+                    "Reconciliation status",
+                    "Records",
+                    "Company source reconciliation",
+                    color="#2563EB",
+                )
+
+        company_records = comparison_records.loc[
+            comparison_records["Company ID"].astype(str).eq(selected_id)
+        ].copy()
         if company_records.empty:
             st.info("No building records have been added for this company yet.")
         else:
             company_qa = qa_checks(company_records)
-            coverage = pd.DataFrame({
-                "Stage": ["Collected", "Reviewed", "Verified", "Need attention"],
-                "Records": [snapshot["collected"], snapshot["reviewed"], snapshot["verified"], snapshot["attention"]],
-            }).set_index("Stage")
-            st.caption("Company research funnel")
-            st.bar_chart(coverage, width="stretch")
+            active_company_qa = company_qa.loc[
+                ~company_qa["Record Readiness"].eq("Excluded from Listings")
+            ].copy()
+
+            verified = int(active_company_qa["Verification Status"].eq("Verified").sum())
+            reviewed = min(snapshot["reviewed"], snapshot["collected"])
+            progress_data = pd.DataFrame({
+                "Stage": ["Verified", "Reviewed, not verified", "Not reviewed"],
+                "Records": [
+                    verified,
+                    max(reviewed - verified, 0),
+                    max(snapshot["collected"] - reviewed, 0),
+                ],
+            })
+            _render_horizontal_bar_chart(
+                progress_data,
+                "Stage",
+                "Records",
+                "Research progress",
+                color="#16A34A",
+            )
 
             source_links = int(company_qa["Source URL"].fillna("").astype(str).str.strip().ne("").sum())
             source_rate = round((source_links / len(company_qa)) * 100) if len(company_qa) else 0
@@ -7163,11 +7835,30 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
             )
             q_left, q_right = st.columns(2)
             with q_left:
-                st.caption("Quality status")
-                st.dataframe(quality_summary, width="stretch", hide_index=True)
+                _render_horizontal_bar_chart(
+                    quality_summary,
+                    "QA status",
+                    "Records",
+                    "Quality status",
+                    color="#F59E0B",
+                )
             with q_right:
-                st.caption("Verification status")
-                st.dataframe(verification_summary, width="stretch", hide_index=True)
+                _render_horizontal_bar_chart(
+                    verification_summary,
+                    "Verification status",
+                    "Records",
+                    "Verification status",
+                    color="#16A34A",
+                )
+
+            missing_summary = _missing_information_summary(active_company_qa)
+            _render_horizontal_bar_chart(
+                missing_summary,
+                "Missing field",
+                "Records",
+                "Most frequently missing information",
+                color="#64748B",
+            )
 
         st.markdown(
             f'<div class="db-next-action">'
@@ -7186,7 +7877,6 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
             st.session_state[S_ACTIVE_COMPANY] = selected_id
             go_to(snapshot["next_section"])
             st.rerun()
-
 
 def render_project_progress_sidebar() -> None:
     """Keep the sidebar focused on context, progress, and one next action."""
