@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Unified Overall Health Checklists 2026.07.28-v59"
+DATABLIX_BUILD = "Ottawa Website Scan + Research Activity vs Listing Eligibility Fix 2026.07.28-v61"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -2421,10 +2421,34 @@ def synchronize_company_registry(records, registry=None):
         if current_status == "Not started":
             registry.at[reg_index, "Company Status"] = "Researching"
 
-        active = linked.loc[
-            ~linked["Record Decision"].fillna("").astype(str).eq("Remove")
+        # Research activity and directory eligibility are different concepts.
+        # Every linked row proves that company research started, even when the row
+        # is intentionally excluded from the final directory. Only active rows are
+        # used for export-readiness and verification completion.
+        linked_qa = qa_checks(linked)
+        active = linked_qa.loc[
+            ~linked_qa["Record Readiness"].eq("Excluded from Listings")
         ].copy()
-        if not active.empty:
+        excluded_count = int(
+            linked_qa["Record Readiness"].eq("Excluded from Listings").sum()
+        )
+
+        linked_reviewed = (
+            linked_qa["Research Status"].fillna("").astype(str).eq("Completed")
+            | linked_qa["Record Decision"].fillna("").astype(str).isin(
+                ["Keep", "Update", "Possible Duplicate", "Remove"]
+            )
+            | linked_qa["Record Readiness"].eq("Excluded from Listings")
+        ).all()
+
+        if active.empty:
+            # A company with researched-but-excluded records is not "Not started".
+            # When all linked rows have been reviewed, the honest status is
+            # Complete with limitations because there are no eligible listings.
+            registry.at[reg_index, "Company Status"] = (
+                "Complete with limitations" if linked_reviewed and excluded_count else "Researching"
+            )
+        else:
             all_verified = active["Verification Status"].fillna("").astype(str).eq("Verified").all()
             all_reviewed = (
                 active["Research Status"].fillna("").astype(str).eq("Completed")
@@ -2439,7 +2463,7 @@ def synchronize_company_registry(records, registry=None):
                 registry.at[reg_index, "Company Status"] = "Complete"
 
     registry = normalize_company_registry(registry)
-    st.session_state[S_COMPANY_LINK_REPAIR_VERSION] = "v60"
+    st.session_state[S_COMPANY_LINK_REPAIR_VERSION] = "v61"
 
     return data, registry
 
@@ -6891,7 +6915,13 @@ def _company_records_for_progress(
 
 
 def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> dict:
-    """Return a small, user-facing progress model for one company."""
+    """Return a user-facing progress model without confusing exclusion with no work.
+
+    All linked records count as research activity. Only directory-eligible records
+    are used for verification and export-readiness calculations. This distinction
+    prevents a fully researched company whose records were excluded from appearing
+    as ``Not started``.
+    """
     company_id = str(company_row.get("Company ID", "")).strip()
     company_name = str(company_row.get("Management/Owner", "")).strip() or "Unnamed company"
     website = str(company_row.get("Main Website", "")).strip()
@@ -6905,56 +6935,61 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
     )
 
     if group.empty:
-        collected = reviewed = verified = ready = attention = critical = follow_up = 0
+        collected = active_count = excluded = reviewed = verified = ready = 0
+        attention = critical = follow_up = 0
         progress = 0.0
-        # Never erase an explicitly saved workflow status merely because a legacy
-        # Company ID linkage is temporarily unavailable. This was the reason a
-        # completed Hazelview company could repeatedly appear as Not started.
         display_status = stored_status if stored_status in COMPANY_STATUSES else "Not started"
     else:
         qa_columns = {"Record Readiness", "QA Status", "Warning Count"}
-        company_qa = (
-            group.copy()
-            if qa_columns.issubset(group.columns)
-            else qa_checks(group)
-        )
-        active_mask = ~company_qa["Record Readiness"].eq("Excluded from Listings")
-        active = company_qa.loc[active_mask].copy()
-        collected = len(active)
+        company_qa = group.copy() if qa_columns.issubset(group.columns) else qa_checks(group)
 
-        reviewed_mask = (
-            active["Research Status"].eq("Completed")
-            | active["Verification Status"].eq("Verified")
-            | active["Record Decision"].isin(
+        # Research count includes every linked record, including excluded rows.
+        collected = len(company_qa)
+        excluded_mask = company_qa["Record Readiness"].eq("Excluded from Listings")
+        excluded = int(excluded_mask.sum())
+        active = company_qa.loc[~excluded_mask].copy()
+        active_count = len(active)
+
+        # Review completion is measured across all researched rows. An explicitly
+        # excluded row has already received a human/workflow decision.
+        reviewed_mask_all = (
+            company_qa["Research Status"].eq("Completed")
+            | company_qa["Verification Status"].eq("Verified")
+            | company_qa["Record Decision"].isin(
                 ["Keep", "Update", "Possible Duplicate", "Remove"]
             )
+            | excluded_mask
         )
-        reviewed = int(reviewed_mask.sum())
-        verified = int(active["Verification Status"].eq("Verified").sum())
-        ready = int(ready_mask(active).sum())
-        critical = int(active["QA Status"].eq("Critical").sum())
+        reviewed = int(reviewed_mask_all.sum())
+
+        # Verification/readiness apply only to eligible directory records.
+        verified = int(active["Verification Status"].eq("Verified").sum()) if active_count else 0
+        ready = int(ready_mask(active).sum()) if active_count else 0
+        critical = int(active["QA Status"].eq("Critical").sum()) if active_count else 0
         follow_up_mask = active["Record Readiness"].isin(
-            [
-                "Duplicate Review",
-                "Needs Follow-up",
-                "Fix Critical Data",
-                "Needs Data Review",
-                "Needs Update",
-            ]
-        )
+            ["Duplicate Review", "Needs Follow-up", "Fix Critical Data", "Needs Data Review", "Needs Update"]
+        ) if active_count else pd.Series(False, index=active.index, dtype="bool")
         follow_up = int(follow_up_mask.sum())
-        # Reviewed warnings remain visible in QA, but once a record is explicitly
-        # Verified + Keep and passes the mandatory trail checks, they no longer
-        # count as unresolved company attention.
         attention_mask = (~ready_mask(active)) & (
             active["QA Status"].isin(["Critical", "Review"]) | follow_up_mask
-        )
+        ) if active_count else pd.Series(False, index=active.index, dtype="bool")
         attention = int(attention_mask.sum())
-        progress = verified / collected if collected else 0.0
+        progress = verified / active_count if active_count else 0.0
 
         explicit_complete = stored_status in {"Complete", "Complete with limitations"}
-        calculated_complete = collected > 0 and verified == collected and attention == 0
-        if explicit_complete or calculated_complete:
+        all_research_reviewed = reviewed == collected
+        calculated_complete = active_count > 0 and verified == active_count and attention == 0
+
+        if active_count == 0:
+            # Research exists, but no row is eligible for the directory.
+            display_status = (
+                "Complete with limitations"
+                if explicit_complete or all_research_reviewed
+                else "Researching"
+            )
+        elif explicit_complete:
+            display_status = stored_status
+        elif calculated_complete:
             display_status = "Complete"
         elif critical or follow_up:
             display_status = "Needs attention"
@@ -6962,12 +6997,12 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
             ["Imported - Needs Review", "Not Started", "In Progress"]
         ).any():
             display_status = "Researching"
-        elif verified < collected:
-            display_status = "Ready for review"
+        elif verified < active_count:
+            display_status = "Ready for QA"
         else:
             display_status = "Researching"
 
-    unverified = max(collected - verified, 0)
+    unverified = max(active_count - verified, 0)
     if not website and collected == 0:
         next_title = "Add the company website"
         next_copy = "Register the official website, or add a known building manually."
@@ -6978,17 +7013,22 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
         next_copy = "Scan the public website or register the first building manually."
         next_section = "Website scanner"
         next_button = "Start research"
+    elif active_count == 0 and excluded:
+        next_title = "Research completed with no eligible listings"
+        next_copy = f"All {excluded:,} researched record(s) are excluded from the directory. Review the exclusion evidence if needed."
+        next_section = "Review records"
+        next_button = "Review exclusions"
     elif attention:
         next_title = "Resolve records needing attention"
-        next_copy = f"Review {attention:,} record(s) with missing details, evidence, or decisions."
+        next_copy = f"Review {attention:,} active record(s) with missing details, evidence, or decisions."
         next_section = "Review records"
         next_button = "Review & quality"
     elif unverified:
         next_title = "Complete human verification"
-        next_copy = f"Verify the remaining {unverified:,} collected record(s)."
+        next_copy = f"Verify the remaining {unverified:,} eligible record(s)."
         next_section = "Review records"
         next_button = "Verify records"
-    elif display_status == "Complete":
+    elif display_status in {"Complete", "Complete with limitations"}:
         next_title = "Company research is complete"
         next_copy = "Review the project summary or continue with another company."
         next_section = "Analysis & report"
@@ -7006,6 +7046,8 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
         "stored_status": stored_status,
         "status": display_status,
         "collected": collected,
+        "active_count": active_count,
+        "excluded": excluded,
         "reviewed": reviewed,
         "verified": verified,
         "ready": ready,
@@ -7014,7 +7056,7 @@ def company_progress_snapshot(company_row: pd.Series, records: pd.DataFrame) -> 
         "follow_up": follow_up,
         "progress": progress,
         "progress_percent": int(round(progress * 100)),
-        "complete": display_status == "Complete",
+        "complete": display_status in {"Complete", "Complete with limitations"},
         "next_title": next_title,
         "next_copy": next_copy,
         "next_section": next_section,
@@ -8385,9 +8427,12 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                     unsafe_allow_html=True,
                 )
 
-        company_records = comparison_records.loc[
-            comparison_records["Company ID"].astype(str).eq(selected_id)
-        ].copy()
+        company_records = _company_records_for_progress(
+            comparison_records,
+            company_id=selected_id,
+            company_name=safe_text(selected_row.get("Management/Owner")),
+            company_website=safe_text(selected_row.get("Main Website")),
+        )
         company_qa = qa_checks(company_records) if not company_records.empty else pd.DataFrame()
         active_company_qa = (
             company_qa.loc[~company_qa["Record Readiness"].eq("Excluded from Listings")].copy()
@@ -8409,7 +8454,7 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
         company_source_pct = _analytics_percent(company_matched, company_source_records)
 
         _render_analytics_kpis([
-            {"label": "Buildings", "value": f"{snapshot['collected']:,}", "helper": "Active research records", "tone": "accent"},
+            {"label": "Researched", "value": f"{snapshot['collected']:,}", "helper": f"{snapshot['active_count']:,} eligible · {snapshot['excluded']:,} excluded", "tone": "accent"},
             {"label": "Reviewed", "value": f"{snapshot['reviewed']:,}", "helper": "Human review completed", "tone": "neutral"},
             {"label": "Verified", "value": f"{snapshot['verified']:,}", "helper": f"{snapshot['progress_percent']:,}% verified", "tone": "positive" if snapshot["progress_percent"] >= 80 else "accent"},
             {"label": "Source coverage", "value": f"{source_rate}%" if len(company_qa) else "—", "helper": f"{source_links:,} source-linked", "tone": "positive" if source_rate >= 90 else "accent"},
