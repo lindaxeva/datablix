@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Guided Progressive Workflow + Analytics UX + Source Comparison 2026.07.28-v55"
+DATABLIX_BUILD = "Ottawa Website Scan + App-Wide Progressive Disclosure + UX Analytics Workspace 2026.07.28-v55"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -332,9 +332,6 @@ S_SHOW_AUTH = "db_show_auth"
 S_SOURCE_BASELINE_META = "db_source_baseline_meta"
 S_SOURCE_VERSIONS = "db_source_versions"
 S_CLASSIFICATION_RULES = "db_classification_rules"
-S_SHOW_ALL_WORKFLOW = "db_show_all_workflow"
-S_REPORT_VIEWED = "db_report_viewed"
-S_REVIEW_BASELINE_BYPASS = "db_review_baseline_bypass"
 S_COMPANY_LINK_REPAIR_VERSION = "db_company_link_repair_version"
 
 AUTOSAVE_DIRECTORY = Path(
@@ -354,7 +351,7 @@ AUTOSAVE_STATE_KEYS = [
     S_PROJECT_LOADED, S_SCAN_HISTORY, S_SCAN_CANDIDATES, S_SCAN_PAGES,
     S_SOURCE_BASELINE_META, S_SOURCE_VERSIONS, S_CLASSIFICATION_RULES,
     S_COMPANY_LINK_REPAIR_VERSION,
-    S_CLOUD_PROJECT_ID, S_REPORT_VIEWED, "db_section",
+    S_CLOUD_PROJECT_ID, "db_section",
 ]
 
 
@@ -6454,6 +6451,30 @@ def render_guidance(title: str, message: str) -> None:
     )
 
 
+def smart_expander(
+    title: str,
+    *,
+    count: int | None = None,
+    status: str = "",
+    expanded: bool = False,
+):
+    """Create a consistently labelled progressive-disclosure section.
+
+    Keep context, KPIs, warnings and next actions visible. Use this helper for
+    supporting evidence, long tables, optional tools, settings and history.
+    Streamlit still executes collapsed content, so this improves information
+    hierarchy rather than computation time.
+    """
+    details = []
+    if count is not None:
+        try:
+            details.append(f"{int(count):,}")
+        except (TypeError, ValueError):
+            details.append(str(count))
+    if str(status or "").strip():
+        details.append(str(status).strip())
+    label = title + (" · " + " · ".join(details) if details else "")
+    return st.expander(label, expanded=bool(expanded))
 
 
 def _review_quality_company(qa_frame: pd.DataFrame) -> tuple[str | None, pd.DataFrame]:
@@ -6665,7 +6686,17 @@ def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | Non
     else:
         st.info("Capture the starting quality baseline above to enable before-and-after progress metrics.")
 
-    with st.expander("See quality details", expanded=False):
+    quality_exception_count = (
+        int(company_qa["QA Status"].eq("Critical").sum())
+        + int(company_qa["Warning Count"].sum())
+        + int(company_qa["Research Gap Count"].sum())
+    )
+    with smart_expander(
+        "Quality details",
+        count=quality_exception_count,
+        status="open signals",
+        expanded=False,
+    ):
         detail_tabs = st.tabs(["Current issues", "Research progress", "Field coverage"])
         with detail_tabs[0]:
             issues = issue_summary(company_qa)
@@ -6956,280 +6987,6 @@ def project_progress_snapshot(registry: pd.DataFrame, records: pd.DataFrame) -> 
         "progress_percent": int(round(completed / total_companies * 100)) if total_companies else 0,
         "company_rows": rows,
     }
-
-
-def workflow_disclosure_state(registry: pd.DataFrame, records: pd.DataFrame) -> dict:
-    """Return the project-wide progressive-disclosure state.
-
-    Datablix uses one guided workflow by default:
-
-    Project -> Research -> Review -> Report -> Export
-
-    Future areas remain hidden until their prerequisite is real in the saved
-    project state. This keeps the interface focused without deleting any
-    capability. An experienced user can reveal every area from the sidebar.
-    """
-    registry = normalize_company_registry(registry)
-    records = _normalize_analytics_records(records)
-    source_records = current_starting_source_records()
-    source_ready = isinstance(source_records, pd.DataFrame) and not source_records.empty
-
-    active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
-    active_row = None
-    if active_id and not registry.empty:
-        active_match = registry.loc[registry["Company ID"].astype(str).eq(active_id)]
-        if not active_match.empty:
-            active_row = active_match.iloc[0]
-
-    active_records = (
-        records.loc[records["Company ID"].astype(str).eq(active_id)].copy()
-        if active_id and not records.empty and "Company ID" in records.columns
-        else records.iloc[0:0].copy()
-    )
-    qa_records = qa_checks(records) if not records.empty else pd.DataFrame()
-    active_qa = (
-        qa_records.loc[qa_records["Company ID"].astype(str).eq(active_id)].copy()
-        if active_id and not qa_records.empty and "Company ID" in qa_records.columns
-        else pd.DataFrame()
-    )
-
-    prompt_saved = False
-    if active_row is not None:
-        prompt_saved = bool(safe_text(active_row.get("Research Prompt", "")))
-
-    review_started = False
-    if not active_qa.empty:
-        review_started = bool((
-            active_qa["Research Status"].eq("Completed")
-            | active_qa["Verification Status"].ne("Not Reviewed")
-            | active_qa["Record Decision"].ne("Undecided")
-        ).any())
-
-    project_snapshot = project_progress_snapshot(registry, qa_records)
-    active_snapshot = (
-        company_progress_snapshot(active_row, qa_records)
-        if active_row is not None
-        else None
-    )
-    all_companies_complete = bool(
-        project_snapshot["companies"]
-        and project_snapshot["completed"] == project_snapshot["companies"]
-    )
-    approved_project = (
-        int(approved_for_export_mask(qa_records).sum())
-        if not qa_records.empty
-        else 0
-    )
-    # The report-view marker is tied to the current reviewed project state. If a
-    # company, verification decision, or export approval changes later, Report is
-    # treated as unread again and Export is hidden until the updated report opens.
-    report_fingerprint_payload = {
-        "companies": [
-            {
-                "id": safe_text(row.get("Company ID", "")),
-                "status": safe_text(row.get("Company Status", "")),
-            }
-            for row in registry.to_dict(orient="records")
-        ],
-        "records": [
-            {
-                "id": safe_text(row.get("Record ID", "")),
-                "research": safe_text(row.get("Research Status", "")),
-                "verification": safe_text(row.get("Verification Status", "")),
-                "decision": safe_text(row.get("Record Decision", "")),
-                "entry": safe_text(row.get("Directory Entry Status", "")),
-            }
-            for row in records.to_dict(orient="records")
-        ],
-    }
-    report_fingerprint = hashlib.sha256(
-        json.dumps(report_fingerprint_payload, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    report_viewed = (
-        safe_text(st.session_state.get(S_REPORT_VIEWED, "")) == report_fingerprint
-    )
-
-    # Legacy projects with research records remain usable even when Starting Data
-    # was not previously saved. New empty projects are intentionally guided to
-    # import Starting Data before company research begins.
-    project_has_records = not records.empty
-    research_unlocked = bool(active_row is not None and (source_ready or project_has_records))
-    review_unlocked = bool(active_row is not None and not active_records.empty)
-    report_unlocked = bool(all_companies_complete and project_has_records)
-    export_unlocked = bool(report_unlocked and report_viewed and approved_project > 0)
-
-    access = {
-        "Research projects & companies": True,
-        "Website scanner": research_unlocked,
-        "Review records": review_unlocked,
-        "Analysis & report": report_unlocked,
-        "Downloads": export_unlocked,
-    }
-
-    blocked_reasons = {
-        "Website scanner": "Import Starting Data and select a company first.",
-        "Review records": "Import the selected company's first research records first.",
-        "Analysis & report": "Complete research and review for every company first.",
-        "Downloads": "Open the completed report and approve at least one record first.",
-    }
-
-    if not source_ready and not project_has_records:
-        next_title = "Import the current Starting Data"
-        next_copy = (
-            "Add the project-wide source workbook first. It becomes the comparison "
-            "baseline for existing records, new discoveries, and source-only gaps."
-        )
-        next_section = "Research projects & companies"
-        next_button = "Import Starting Data"
-    elif registry.empty:
-        next_title = "Add the first company"
-        next_copy = "Register the first owner or management company inside this project."
-        next_section = "Research projects & companies"
-        next_button = "Add company"
-    elif active_row is None:
-        next_title = "Select the company to work on"
-        next_copy = "Choose one company so research, review, and progress stay correctly linked."
-        next_section = "Research projects & companies"
-        next_button = "Select company"
-    elif not safe_text(active_row.get("Main Website", "")) and active_records.empty:
-        next_title = "Add the official company website"
-        next_copy = "Save the official website before preparing the company research prompt."
-        next_section = "Research projects & companies"
-        next_button = "Add website"
-    elif active_records.empty:
-        next_title = "Prepare and import the company research"
-        next_copy = (
-            "Save the company prompt, complete the website research, and import the single "
-            "consolidated CSV deliverable."
-        )
-        next_section = "Website scanner"
-        next_button = "Continue research"
-    elif active_snapshot is not None and not active_snapshot["complete"]:
-        if not quality_baseline_exists(active_id) and not st.session_state.get(
-            f"{S_REVIEW_BASELINE_BYPASS}_{active_id}", False
-        ):
-            next_title = "Capture the quality starting point"
-            next_copy = "Save the baseline before correcting records so improvement can be measured."
-            next_button = "Capture baseline"
-        elif active_snapshot["attention"]:
-            next_title = "Resolve records needing attention"
-            next_copy = (
-                f"Review {active_snapshot['attention']:,} record(s) with missing evidence, "
-                "quality issues, or unresolved decisions."
-            )
-            next_button = "Review records"
-        else:
-            remaining = max(active_snapshot["collected"] - active_snapshot["verified"], 0)
-            next_title = "Finish human verification"
-            next_copy = f"Verify the remaining {remaining:,} collected record(s)."
-            next_button = "Verify records"
-        next_section = "Review records"
-    elif not all_companies_complete:
-        next_title = "Continue with the next company"
-        next_copy = "This company is complete. Select another incomplete company from the project page."
-        next_section = "Research projects & companies"
-        next_button = "Choose next company"
-    elif not report_viewed:
-        next_title = "Review the completed project report"
-        next_copy = "Confirm analytics, source reconciliation, methodology, limitations, and final summary."
-        next_section = "Analysis & report"
-        next_button = "Open report"
-    elif approved_project > 0:
-        next_title = "Export the approved directory records"
-        next_copy = f"Preview and download {approved_project:,} approved record(s) as the final CSV."
-        next_section = "Downloads"
-        next_button = "Open export"
-    else:
-        next_title = "Approve final records"
-        next_copy = "Return to Review and complete the approval fields for the records you will deliver."
-        next_section = "Review records"
-        next_button = "Approve records"
-
-    ordered_sections = [
-        "Research projects & companies",
-        "Website scanner",
-        "Review records",
-        "Analysis & report",
-        "Downloads",
-    ]
-    return {
-        "source_ready": source_ready,
-        "project_has_records": project_has_records,
-        "active_company_id": active_id,
-        "active_company": active_row,
-        "active_records": active_records,
-        "active_qa": active_qa,
-        "prompt_saved": prompt_saved,
-        "review_started": review_started,
-        "all_companies_complete": all_companies_complete,
-        "approved_project": approved_project,
-        "report_viewed": report_viewed,
-        "report_fingerprint": report_fingerprint,
-        "access": access,
-        "blocked_reasons": blocked_reasons,
-        "recommended_section": next_section,
-        "next_title": next_title,
-        "next_copy": next_copy,
-        "next_button": next_button,
-        "step_number": ordered_sections.index(next_section) + 1,
-        "total_steps": len(ordered_sections),
-        "project_snapshot": project_snapshot,
-        "active_snapshot": active_snapshot,
-    }
-
-
-def render_workflow_focus(state: dict, current_section: str) -> None:
-    """Show one clear current priority instead of exposing every future task."""
-    chips = []
-    if state.get("source_ready"):
-        chips.append("Starting Data ready")
-    if state.get("active_company") is not None:
-        chips.append("Company selected")
-    if not state.get("active_records", pd.DataFrame()).empty:
-        chips.append(f"{len(state['active_records']):,} company records")
-    if state.get("approved_project"):
-        chips.append(f"{state['approved_project']:,} approved")
-    chip_html = "".join(
-        f'<span class="db-focus-chip">{escape(str(chip))}</span>' for chip in chips[:4]
-    )
-    st.markdown(
-        f"""
-        <section class="db-workflow-focus" aria-label="Current workflow priority">
-            <div class="db-workflow-focus-copy">
-                <div class="db-workflow-focus-label">GUIDED WORKFLOW · STEP {state['step_number']} OF {state['total_steps']}</div>
-                <h3>{escape(state['next_title'])}</h3>
-                <p>{escape(state['next_copy'])}</p>
-                <div class="db-focus-chips">{chip_html}</div>
-            </div>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-    if state["recommended_section"] != current_section:
-        if st.button(
-            state["next_button"],
-            type="primary",
-            width="stretch",
-            key=f"db_global_next_{norm_header(state['recommended_section'])}",
-        ):
-            go_to(state["recommended_section"])
-            st.rerun()
-
-
-def render_stage_gate(title: str, message: str, note: str = "") -> None:
-    """Render a calm stopping point while later page sections remain hidden."""
-    note_html = f'<span>{escape(note)}</span>' if note else ""
-    st.markdown(
-        f"""
-        <div class="db-stage-gate">
-            <div class="db-stage-gate-label">NEXT STEP</div>
-            <strong>{escape(title)}</strong>
-            <p>{escape(message)}</p>
-            {note_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def company_progress_table(
@@ -8132,63 +7889,80 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
             priority_tone,
         )
 
-        _render_analytics_section(
-            "Research readiness",
-            "See which companies are closest to completion and where review effort is still concentrated.",
-            "PROGRESS",
-        )
         if project["companies"]:
             project_chart = company_progress_table(registry, comparison_records, project)
-            progress_left, progress_right = st.columns([1.5, 1], gap="large")
-            with progress_left:
-                _render_verification_progress_chart(project_chart)
-            with progress_right:
-                attention_chart = project_chart[["Company", "Needs attention"]].copy()
-                _render_horizontal_bar_chart(
-                    attention_chart,
-                    "Company",
-                    "Needs attention",
-                    "Records requiring attention",
-                    color="#C27C0E",
-                    description="Only companies with unresolved review or quality issues are shown.",
+            with smart_expander(
+                "Research readiness by company",
+                count=project["companies"],
+                status="companies",
+                expanded=True,
+            ):
+                _render_analytics_section(
+                    "Research readiness",
+                    "See which companies are closest to completion and where review effort is still concentrated.",
+                    "PROGRESS",
                 )
+                progress_left, progress_right = st.columns([1.5, 1], gap="large")
+                with progress_left:
+                    _render_verification_progress_chart(project_chart)
+                with progress_right:
+                    attention_chart = project_chart[["Company", "Needs attention"]].copy()
+                    _render_horizontal_bar_chart(
+                        attention_chart,
+                        "Company",
+                        "Needs attention",
+                        "Records requiring attention",
+                        color="#C27C0E",
+                        description="Only companies with unresolved review or quality issues are shown.",
+                    )
 
-            _render_analytics_section(
-                "Data quality signals",
-                "Use these views to identify workflow bottlenecks and the information researchers should seek next.",
-                "QUALITY",
-            )
-            lower_left, lower_right = st.columns(2, gap="large")
-            with lower_left:
-                status_counts = (
-                    project_chart["Status"]
-                    .value_counts()
-                    .rename_axis("Company status")
-                    .reset_index(name="Companies")
+            with smart_expander(
+                "Data quality signals and missing information",
+                count=project["attention_records"],
+                status="records need attention",
+                expanded=False,
+            ):
+                _render_analytics_section(
+                    "Data quality signals",
+                    "Use these views to identify workflow bottlenecks and the information researchers should seek next.",
+                    "QUALITY",
                 )
-                _render_horizontal_bar_chart(
-                    status_counts,
-                    "Company status",
-                    "Companies",
-                    "Companies by workflow status",
-                    value_title="Companies",
-                    color="#1287CE",
-                    description="A compact view of how companies are distributed across the research workflow.",
-                )
-            with lower_right:
-                missing_summary = _missing_information_summary(
-                    reconciliation["active_research"]
-                )
-                _render_horizontal_bar_chart(
-                    missing_summary,
-                    "Missing field",
-                    "Records",
-                    "Most frequently missing information",
-                    color="#64748B",
-                    description="Prioritize fields that are missing across the largest number of active records.",
-                )
+                lower_left, lower_right = st.columns(2, gap="large")
+                with lower_left:
+                    status_counts = (
+                        project_chart["Status"]
+                        .value_counts()
+                        .rename_axis("Company status")
+                        .reset_index(name="Companies")
+                    )
+                    _render_horizontal_bar_chart(
+                        status_counts,
+                        "Company status",
+                        "Companies",
+                        "Companies by workflow status",
+                        value_title="Companies",
+                        color="#1287CE",
+                        description="A compact view of how companies are distributed across the research workflow.",
+                    )
+                with lower_right:
+                    missing_summary = _missing_information_summary(
+                        reconciliation["active_research"]
+                    )
+                    _render_horizontal_bar_chart(
+                        missing_summary,
+                        "Missing field",
+                        "Records",
+                        "Most frequently missing information",
+                        color="#64748B",
+                        description="Prioritize fields that are missing across the largest number of active records.",
+                    )
 
-            with st.expander("View detailed company progress", expanded=False):
+            with smart_expander(
+                "Detailed company progress",
+                count=len(project_chart),
+                status="companies",
+                expanded=False,
+            ):
                 st.caption(
                     "Use the table for exact counts after reviewing the dashboard summary."
                 )
@@ -8280,26 +8054,37 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                 "warning" if unresolved_total else "positive",
             )
 
-            compare_left, compare_right = st.columns([1.55, 1], gap="large")
-            with compare_left:
-                _render_grouped_company_chart(
-                    reconciliation["company_table"],
-                    "Source records versus current research",
-                    "A larger research count may indicate new findings; a smaller count may indicate incomplete reconciliation or verification.",
-                )
-            with compare_right:
-                _render_horizontal_bar_chart(
-                    reconciliation["status_table"],
-                    "Reconciliation status",
-                    "Records",
-                    "Portfolio reconciliation status",
-                    color="#1287CE",
-                    description="Counts are mutually interpreted as reconciliation outcomes, not workflow stages.",
-                )
+            with smart_expander(
+                "Explore source comparison charts",
+                count=unresolved_total,
+                status="unresolved exceptions",
+                expanded=True,
+            ):
+                compare_left, compare_right = st.columns([1.55, 1], gap="large")
+                with compare_left:
+                    _render_grouped_company_chart(
+                        reconciliation["company_table"],
+                        "Source records versus current research",
+                        "A larger research count may indicate new findings; a smaller count may indicate incomplete reconciliation or verification.",
+                    )
+                with compare_right:
+                    _render_horizontal_bar_chart(
+                        reconciliation["status_table"],
+                        "Reconciliation status",
+                        "Records",
+                        "Portfolio reconciliation status",
+                        color="#1287CE",
+                        description="Counts are mutually interpreted as reconciliation outcomes, not workflow stages.",
+                    )
 
-            _render_net_change_chart(reconciliation["company_table"])
+                _render_net_change_chart(reconciliation["company_table"])
 
-            with st.expander("View detailed source reconciliation", expanded=False):
+            with smart_expander(
+                "Detailed source reconciliation",
+                count=len(reconciliation["company_table"]),
+                status="companies",
+                expanded=False,
+            ):
                 st.caption(
                     "This table supports record-level follow-up after reviewing the visual summary."
                 )
@@ -8307,6 +8092,24 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
                     reconciliation["company_table"].drop(columns=["Company ID"]),
                     width="stretch",
                     hide_index=True,
+                )
+
+            with smart_expander(
+                "How Datablix compares research with the source file",
+                expanded=False,
+            ):
+                st.markdown(
+                    """
+                    **Matched source:** A current research record was linked to a record in the active Starting Data.
+
+                    **Newly discovered:** Current research found a property that did not receive a credible source-file match.
+
+                    **Source-only:** A source-file record did not receive a credible match from current research.
+
+                    **Needs classification:** Available evidence is not strong enough for Datablix to classify the record automatically.
+
+                    **Net verified change:** Verified current properties minus source records associated with the company.
+                    """
                 )
         else:
             st.info(
@@ -8395,193 +8198,219 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
         )
 
         if reconciliation["available"]:
-            _render_analytics_section(
-                "Company source comparison",
-                "Confirm how this company aligns with the active project source before interpreting new discoveries.",
-                "RECONCILIATION",
+            company_source = (
+                company_reconciliation.iloc[0]
+                if not company_reconciliation.empty
+                else None
             )
-            if company_reconciliation.empty:
-                st.info("No source or research rows are currently linked to this company.")
-            else:
-                company_source = company_reconciliation.iloc[0]
+            company_source_exceptions = 0
+            if company_source is not None:
                 company_source_exceptions = (
                     int(company_source["Source-only"])
                     + int(company_source["Needs classification"])
                     + int(company_source["Possible duplicates"])
                 )
-                _render_analytics_kpis([
-                    {
-                        "label": "Source records",
-                        "value": f"{int(company_source['Source records']):,}",
-                        "helper": "Records linked from baseline",
-                        "tone": "neutral",
-                    },
-                    {
-                        "label": "Matched",
-                        "value": f"{int(company_source['Matched']):,}",
-                        "helper": "Confirmed source matches",
-                        "tone": "positive",
-                    },
-                    {
-                        "label": "New",
-                        "value": f"{int(company_source['New']):,}",
-                        "helper": "Newly discovered records",
-                        "tone": "accent",
-                    },
-                    {
-                        "label": "Source-only",
-                        "value": f"{int(company_source['Source-only']):,}",
-                        "helper": "Not matched to current research",
-                        "tone": "warning" if int(company_source["Source-only"]) else "positive",
-                    },
-                    {
-                        "label": "Exceptions",
-                        "value": f"{company_source_exceptions:,}",
-                        "helper": "Unmatched, ambiguous or duplicate",
-                        "tone": "warning" if company_source_exceptions else "positive",
-                    },
-                ])
-                company_status_data = pd.DataFrame({
-                    "Reconciliation status": [
-                        "Matched source",
-                        "Newly discovered",
-                        "Source-only / unmatched",
-                        "Needs classification",
-                        "Possible duplicates",
-                        "Excluded / not current",
-                    ],
-                    "Records": [
-                        int(company_source["Matched"]),
-                        int(company_source["New"]),
-                        int(company_source["Source-only"]),
-                        int(company_source["Needs classification"]),
-                        int(company_source["Possible duplicates"]),
-                        int(company_source["Excluded"]),
-                    ],
-                })
-                _render_horizontal_bar_chart(
-                    company_status_data,
-                    "Reconciliation status",
-                    "Records",
-                    "Company reconciliation profile",
-                    color="#1287CE",
-                    description="Use this chart to distinguish confirmed matches from exceptions that still require a decision.",
+
+            with smart_expander(
+                "Company source comparison",
+                count=company_source_exceptions,
+                status="exceptions",
+                expanded=company_source_exceptions > 0,
+            ):
+                _render_analytics_section(
+                    "Company source comparison",
+                    "Confirm how this company aligns with the active project source before interpreting new discoveries.",
+                    "RECONCILIATION",
                 )
+                if company_source is None:
+                    st.info("No source or research rows are currently linked to this company.")
+                else:
+                    _render_analytics_kpis([
+                        {
+                            "label": "Source records",
+                            "value": f"{int(company_source['Source records']):,}",
+                            "helper": "Records linked from baseline",
+                            "tone": "neutral",
+                        },
+                        {
+                            "label": "Matched",
+                            "value": f"{int(company_source['Matched']):,}",
+                            "helper": "Confirmed source matches",
+                            "tone": "positive",
+                        },
+                        {
+                            "label": "New",
+                            "value": f"{int(company_source['New']):,}",
+                            "helper": "Newly discovered records",
+                            "tone": "accent",
+                        },
+                        {
+                            "label": "Source-only",
+                            "value": f"{int(company_source['Source-only']):,}",
+                            "helper": "Not matched to current research",
+                            "tone": "warning" if int(company_source["Source-only"]) else "positive",
+                        },
+                        {
+                            "label": "Exceptions",
+                            "value": f"{company_source_exceptions:,}",
+                            "helper": "Unmatched, ambiguous or duplicate",
+                            "tone": "warning" if company_source_exceptions else "positive",
+                        },
+                    ])
+                    company_status_data = pd.DataFrame({
+                        "Reconciliation status": [
+                            "Matched source",
+                            "Newly discovered",
+                            "Source-only / unmatched",
+                            "Needs classification",
+                            "Possible duplicates",
+                            "Excluded / not current",
+                        ],
+                        "Records": [
+                            int(company_source["Matched"]),
+                            int(company_source["New"]),
+                            int(company_source["Source-only"]),
+                            int(company_source["Needs classification"]),
+                            int(company_source["Possible duplicates"]),
+                            int(company_source["Excluded"]),
+                        ],
+                    })
+                    _render_horizontal_bar_chart(
+                        company_status_data,
+                        "Reconciliation status",
+                        "Records",
+                        "Company reconciliation profile",
+                        color="#1287CE",
+                        description="Use this chart to distinguish confirmed matches from exceptions that still require a decision.",
+                    )
 
         company_records = comparison_records.loc[
             comparison_records["Company ID"].astype(str).eq(selected_id)
         ].copy()
-        _render_analytics_section(
-            "Research quality",
-            "Review verification, source evidence and missing information for the selected company.",
-            "QUALITY CONTROL",
-        )
-        if company_records.empty:
-            st.info("No building records have been added for this company yet.")
-        else:
-            company_qa = qa_checks(company_records)
-            active_company_qa = company_qa.loc[
-                ~company_qa["Record Readiness"].eq("Excluded from Listings")
-            ].copy()
-
-            verified = int(active_company_qa["Verification Status"].eq("Verified").sum())
-            reviewed = min(snapshot["reviewed"], snapshot["collected"])
-            progress_data = pd.DataFrame({
-                "Stage": ["Verified", "Reviewed, not verified", "Not reviewed"],
-                "Records": [
-                    verified,
-                    max(reviewed - verified, 0),
-                    max(snapshot["collected"] - reviewed, 0),
-                ],
-            })
-
-            source_links = int(company_qa["Source URL"].fillna("").astype(str).str.strip().ne("").sum())
-            source_rate = _analytics_percent(source_links, len(company_qa))
-            passing = int(company_qa["QA Status"].eq("Pass").sum())
-            critical = int(company_qa["QA Status"].eq("Critical").sum())
-
-            _render_analytics_kpis([
-                {
-                    "label": "Source-linked records",
-                    "value": f"{source_links:,}",
-                    "helper": f"{source_rate}% source coverage",
-                    "tone": "positive" if source_rate >= 90 else "accent",
-                },
-                {
-                    "label": "Passing QA",
-                    "value": f"{passing:,}",
-                    "helper": "No current critical QA issue",
-                    "tone": "positive",
-                },
-                {
-                    "label": "Critical records",
-                    "value": f"{critical:,}",
-                    "helper": "Immediate review priority",
-                    "tone": "warning" if critical else "positive",
-                },
-                {
-                    "label": "Active records",
-                    "value": f"{len(active_company_qa):,}",
-                    "helper": "Excludes listing removals",
-                    "tone": "neutral",
-                },
-            ])
-
-            progress_left, progress_right = st.columns([1, 1], gap="large")
-            with progress_left:
-                _render_horizontal_bar_chart(
-                    progress_data,
-                    "Stage",
-                    "Records",
-                    "Research progress",
-                    color="#16835F",
-                    description="Verification stages are mutually exclusive so the chart does not double-count records.",
-                    include_zero=True,
-                )
-            with progress_right:
-                missing_summary = _missing_information_summary(active_company_qa)
-                _render_horizontal_bar_chart(
-                    missing_summary,
-                    "Missing field",
-                    "Records",
-                    "Most frequently missing information",
-                    color="#64748B",
-                    description="Use this ranking to guide the next targeted research pass.",
-                )
-
-            quality_summary = (
-                company_qa["QA Status"]
-                .value_counts()
-                .rename_axis("QA status")
-                .reset_index(name="Records")
+        company_qa = pd.DataFrame()
+        with smart_expander(
+            "Research quality and missing information",
+            count=snapshot["attention"],
+            status="need attention",
+            expanded=snapshot["attention"] > 0,
+        ):
+            _render_analytics_section(
+                "Research quality",
+                "Review verification, source evidence and missing information for the selected company.",
+                "QUALITY CONTROL",
             )
-            verification_summary = (
-                company_qa["Verification Status"]
-                .value_counts()
-                .rename_axis("Verification status")
-                .reset_index(name="Records")
-            )
-            q_left, q_right = st.columns(2, gap="large")
-            with q_left:
-                _render_horizontal_bar_chart(
-                    quality_summary,
-                    "QA status",
-                    "Records",
-                    "Quality status",
-                    color="#C27C0E",
-                    description="QA status summarizes completeness and record-readiness checks.",
-                )
-            with q_right:
-                _render_horizontal_bar_chart(
-                    verification_summary,
-                    "Verification status",
-                    "Records",
-                    "Verification status",
-                    color="#16835F",
-                    description="Verification status reflects the human review state of each record.",
-                )
+            if company_records.empty:
+                st.info("No building records have been added for this company yet.")
+            else:
+                company_qa = qa_checks(company_records)
+                active_company_qa = company_qa.loc[
+                    ~company_qa["Record Readiness"].eq("Excluded from Listings")
+                ].copy()
 
-            with st.expander("View selected company records", expanded=False):
+                verified = int(active_company_qa["Verification Status"].eq("Verified").sum())
+                reviewed = min(snapshot["reviewed"], snapshot["collected"])
+                progress_data = pd.DataFrame({
+                    "Stage": ["Verified", "Reviewed, not verified", "Not reviewed"],
+                    "Records": [
+                        verified,
+                        max(reviewed - verified, 0),
+                        max(snapshot["collected"] - reviewed, 0),
+                    ],
+                })
+
+                source_links = int(company_qa["Source URL"].fillna("").astype(str).str.strip().ne("").sum())
+                source_rate = _analytics_percent(source_links, len(company_qa))
+                passing = int(company_qa["QA Status"].eq("Pass").sum())
+                critical = int(company_qa["QA Status"].eq("Critical").sum())
+
+                _render_analytics_kpis([
+                    {
+                        "label": "Source-linked records",
+                        "value": f"{source_links:,}",
+                        "helper": f"{source_rate}% source coverage",
+                        "tone": "positive" if source_rate >= 90 else "accent",
+                    },
+                    {
+                        "label": "Passing QA",
+                        "value": f"{passing:,}",
+                        "helper": "No current critical QA issue",
+                        "tone": "positive",
+                    },
+                    {
+                        "label": "Critical records",
+                        "value": f"{critical:,}",
+                        "helper": "Immediate review priority",
+                        "tone": "warning" if critical else "positive",
+                    },
+                    {
+                        "label": "Active records",
+                        "value": f"{len(active_company_qa):,}",
+                        "helper": "Excludes listing removals",
+                        "tone": "neutral",
+                    },
+                ])
+
+                progress_left, progress_right = st.columns([1, 1], gap="large")
+                with progress_left:
+                    _render_horizontal_bar_chart(
+                        progress_data,
+                        "Stage",
+                        "Records",
+                        "Research progress",
+                        color="#16835F",
+                        description="Verification stages are mutually exclusive so the chart does not double-count records.",
+                        include_zero=True,
+                    )
+                with progress_right:
+                    missing_summary = _missing_information_summary(active_company_qa)
+                    _render_horizontal_bar_chart(
+                        missing_summary,
+                        "Missing field",
+                        "Records",
+                        "Most frequently missing information",
+                        color="#64748B",
+                        description="Use this ranking to guide the next targeted research pass.",
+                    )
+
+                quality_summary = (
+                    company_qa["QA Status"]
+                    .value_counts()
+                    .rename_axis("QA status")
+                    .reset_index(name="Records")
+                )
+                verification_summary = (
+                    company_qa["Verification Status"]
+                    .value_counts()
+                    .rename_axis("Verification status")
+                    .reset_index(name="Records")
+                )
+                q_left, q_right = st.columns(2, gap="large")
+                with q_left:
+                    _render_horizontal_bar_chart(
+                        quality_summary,
+                        "QA status",
+                        "Records",
+                        "Quality status",
+                        color="#C27C0E",
+                        description="QA status summarizes completeness and record-readiness checks.",
+                    )
+                with q_right:
+                    _render_horizontal_bar_chart(
+                        verification_summary,
+                        "Verification status",
+                        "Records",
+                        "Verification status",
+                        color="#16835F",
+                        description="Verification status reflects the human review state of each record.",
+                    )
+
+        if not company_qa.empty:
+            with smart_expander(
+                "Selected company records",
+                count=len(company_qa),
+                status="records",
+                expanded=False,
+            ):
                 detail_columns = [
                     column for column in [
                         "Building Name", "Street Address", "Postal Code",
@@ -8661,19 +8490,6 @@ def render_project_progress_sidebar() -> None:
         f"{project['verified_records']:,} records verified"
     )
 
-    with st.expander("Workflow display", expanded=False):
-        if S_SHOW_ALL_WORKFLOW not in st.session_state:
-            st.session_state[S_SHOW_ALL_WORKFLOW] = False
-        st.toggle(
-            "Show future sections",
-            key=S_SHOW_ALL_WORKFLOW,
-            help=(
-                "Off by default: Datablix reveals each area only when its prerequisite "
-                "is ready. Turn this on only when you need unrestricted navigation."
-            ),
-        )
-        st.caption("Guided mode keeps unfinished future areas hidden and emphasizes one next action.")
-
     active = active_company_row()
     st.divider()
     st.caption("SELECTED COMPANY")
@@ -8736,21 +8552,23 @@ def render_project_progress_sidebar() -> None:
 
     st.divider()
     if st.session_state.get(S_DEMO_MODE):
-        st.caption("DEMO WORKSPACE")
-        st.write("Sample rental property information")
-        if st.button("Leave Demo", width="stretch", key="db_sidebar_leave_demo"):
-            return_to_project_start()
-            st.rerun()
         project_id = ""
+        with smart_expander("Account and access", status="Demo workspace", expanded=False):
+            st.caption("DEMO WORKSPACE")
+            st.write("Sample rental property information")
+            if st.button("Leave Demo", width="stretch", key="db_sidebar_leave_demo"):
+                return_to_project_start()
+                st.rerun()
     else:
-        st.caption("SIGNED IN")
-        st.write(current_user_email())
-        account_cols = st.columns(2)
-        if account_cols[0].button("Sign out", width="stretch", key="db_sidebar_sign_out"):
-            sign_out_datablix()
-            st.rerun()
-        account_cols[1].caption(f"Role: {st.session_state.get(S_PROJECT_ROLE, 'owner').title()}")
         project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
+        role_label = st.session_state.get(S_PROJECT_ROLE, "owner").title()
+        with smart_expander("Account and access", status=role_label, expanded=False):
+            st.caption("SIGNED IN")
+            st.write(current_user_email())
+            st.caption(f"Role: {role_label}")
+            if st.button("Sign out", width="stretch", key="db_sidebar_sign_out"):
+                sign_out_datablix()
+                st.rerun()
 
     if project_id and st.session_state.get(S_PROJECT_ROLE) == "owner":
         with st.expander("Share project", expanded=False):
@@ -8773,21 +8591,11 @@ def render_project_progress_sidebar() -> None:
                             st.rerun()
 
     st.divider()
-    disclosure = workflow_disclosure_state(registry, records)
-    show_all = bool(st.session_state.get(S_SHOW_ALL_WORKFLOW, False))
-    if disclosure["access"]["Downloads"] or show_all:
-        utility_columns = st.columns(2)
-        project_button = utility_columns[0]
-        export_button = utility_columns[1]
-    else:
-        project_button = st
-        export_button = None
-    if project_button.button("Project", width="stretch", key="db_sidebar_project"):
+    utility_columns = st.columns(2)
+    if utility_columns[0].button("Project", width="stretch", key="db_sidebar_project"):
         go_to("Research projects & companies")
         st.rerun()
-    if export_button is not None and export_button.button(
-        "Export", width="stretch", key="db_sidebar_save"
-    ):
+    if utility_columns[1].button("Export", width="stretch", key="db_sidebar_save"):
         go_to("Downloads")
         st.rerun()
 
@@ -9428,51 +9236,6 @@ div[data-testid="stTabs"] div[data-baseweb="tab-list"]{
     background:var(--db-accent);
 }
 
-/* Progressive disclosure: one clear priority, with future work hidden by default. */
-.db-workflow-focus{
-    margin:.55rem 0 1rem;
-    padding:1rem 1.05rem;
-    border:1px solid var(--db-accent-edge);
-    border-radius:14px;
-    background:var(--db-accent-soft);
-}
-.db-workflow-focus-label,.db-stage-gate-label{
-    color:var(--db-accent-strong);
-    font-size:.7rem;
-    font-weight:800;
-    letter-spacing:.08em;
-}
-.db-workflow-focus h3{
-    margin:.2rem 0 .25rem;
-    font-family:var(--db-display);
-    font-size:1.05rem;
-}
-.db-workflow-focus p,.db-stage-gate p{margin:.1rem 0 .55rem; opacity:.78}
-.db-focus-chips{display:flex; flex-wrap:wrap; gap:.35rem}
-.db-focus-chip{
-    display:inline-flex;
-    padding:.2rem .48rem;
-    border-radius:999px;
-    background:rgba(255,255,255,.55);
-    border:1px solid var(--db-border);
-    font-size:.7rem;
-}
-@media(prefers-color-scheme:dark){.db-focus-chip{background:rgba(255,255,255,.06)}}
-.db-stage-gate{
-    margin:.75rem 0;
-    padding:1rem;
-    border:1px dashed var(--db-accent-edge);
-    border-radius:14px;
-    background:var(--db-soft);
-}
-.db-stage-gate strong{display:block; margin:.22rem 0; font-family:var(--db-display)}
-.db-stage-gate span{font-size:.78rem; opacity:.68}
-.db-workflow-step-line{
-    margin:.25rem 0 .55rem;
-    font-size:.75rem;
-    opacity:.7;
-}
-
 /* Keep navigation scannable and equal in height. */
 div[data-testid="stHorizontalBlock"] .stButton>button{
     line-height:1.2;
@@ -9689,19 +9452,19 @@ if S_WORKING not in st.session_state:
                     except Exception as error:
                         st.error(str(error))
 
-    st.subheader("What happens next")
-    flow_columns = st.columns(4)
-    flow_items = [
-        ("Project", "Create or open the container for the assignment."),
-        ("Company", "Register and select one company inside the project."),
-        ("Research", "Generate the company research prompt, import the completed spreadsheet, or add a building manually."),
-        ("Finish", "Review & quality, report, and export the project."),
-    ]
-    for column, (heading, copy) in zip(flow_columns, flow_items):
-        with column:
-            with st.container(border=True):
-                st.markdown(f"**{heading}**")
-                st.caption(copy)
+    with smart_expander("How Datablix works", expanded=False):
+        flow_columns = st.columns(4)
+        flow_items = [
+            ("Project", "Create or open the container for the assignment."),
+            ("Company", "Register and select one company inside the project."),
+            ("Research", "Generate the company research prompt, import the completed spreadsheet, or add a building manually."),
+            ("Finish", "Review & quality, report, and export the project."),
+        ]
+        for column, (heading, copy) in zip(flow_columns, flow_items):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"**{heading}**")
+                    st.caption(copy)
     st.stop()
 
 
@@ -9759,29 +9522,6 @@ current_section = legacy_sections.get(current_section, current_section)
 if current_section not in all_sections:
     current_section = "Research projects & companies"
 st.session_state["db_section"] = current_section
-
-workflow_state = workflow_disclosure_state(project_registry, working)
-show_all_workflow = bool(st.session_state.get(S_SHOW_ALL_WORKFLOW, False))
-if not show_all_workflow and not workflow_state["access"].get(current_section, False):
-    blocked_message = workflow_state["blocked_reasons"].get(
-        current_section,
-        "Complete the current workflow step first.",
-    )
-    st.session_state[S_FLASH] = f"{NAV_LABELS[current_section]} is hidden for now. {blocked_message}"
-    go_to(workflow_state["recommended_section"])
-    st.rerun()
-
-# Count the report as viewed only after it is genuinely unlocked and opened.
-# Recalculate immediately so Export can appear as the next available step.
-if current_section == "Analysis & report" and workflow_state["access"]["Analysis & report"]:
-    st.session_state[S_REPORT_VIEWED] = workflow_state["report_fingerprint"]
-    workflow_state = workflow_disclosure_state(project_registry, working)
-
-primary_sections = (
-    all_sections
-    if show_all_workflow
-    else [name for name in all_sections if workflow_state["access"].get(name, False)]
-)
 
 project_name_display = str(
     st.session_state.get(S_PROJECT_NAME, "Datablix project")
@@ -9843,15 +9583,10 @@ NAV_DESCRIPTIONS = {
     "Downloads": "Choose the company, records, and columns, preview them, then download CSV.",
 }
 
-# Guided mode renders only completed/currently available workflow areas.
-# Future areas do not compete for attention and appear automatically later.
-st.markdown(
-    f'<div class="db-workflow-step-line">Available workflow areas: '
-    f'{len(primary_sections)} of {len(all_sections)} · Future sections appear automatically.</div>',
-    unsafe_allow_html=True,
-)
+# Keep all five navigation buttons in one horizontal row.
+# Arrows are added visually through CSS and therefore consume no columns.
 with st.container(key="db_nav_row"):
-    nav_columns = st.columns(max(len(primary_sections), 1), gap="small")
+    nav_columns = st.columns(5, gap="small")
     for nav_column, section_key in zip(nav_columns, primary_sections):
         is_active = visible_active_section == section_key
         with nav_column:
@@ -9870,7 +9605,6 @@ st.markdown(
     f'{escape(NAV_DESCRIPTIONS[section])}</div>',
     unsafe_allow_html=True,
 )
-render_workflow_focus(workflow_state, section)
 if st.session_state.get(S_PROJECT_ROLE) == "viewer":
     st.info("You have view-only access to this project. Ask the owner for Editor access to make changes.")
 
@@ -10139,14 +9873,6 @@ if section == "Research projects & companies":
                     except Exception as error:
                         st.error("Starting data import could not be completed. " + str(error))
 
-    if not workflow_state["source_ready"] and not workflow_state["project_has_records"] and not show_all_workflow:
-        render_stage_gate(
-            "Import Starting Data before adding companies",
-            "The company workspace, research tools, analytics, report, and export remain hidden until a structured project source baseline is ready.",
-            "This protects the existing-versus-new comparison from being configured too late.",
-        )
-        st.stop()
-
     st.subheader("Companies in this project")
     registry_main = normalize_company_registry(st.session_state.get(S_COMPANIES))
     company_table = company_progress_table(registry_main, working, project_snapshot)
@@ -10155,29 +9881,35 @@ if section == "Research projects & companies":
             "No companies are registered. Add the first company below, or start a different project and import its assignment file."
         )
     else:
-        st.dataframe(
-            company_table.drop(columns=["Company ID"]),
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "Company": st.column_config.TextColumn("Company", width="large"),
-                "Website": st.column_config.TextColumn("Website", width="medium"),
-                "Buildings": st.column_config.NumberColumn("Buildings", format="%d"),
-                "Reviewed": st.column_config.NumberColumn("Reviewed", format="%d"),
-                "Verified": st.column_config.NumberColumn("Verified", format="%d"),
-                "Needs attention": st.column_config.NumberColumn(
-                    "Needs attention", format="%d"
-                ),
-                "Progress": st.column_config.TextColumn("Progress"),
-                "Status": st.column_config.TextColumn("Status"),
-                "Research prompt": st.column_config.TextColumn(
-                    "Research prompt", width="small"
-                ),
-                "Next action": st.column_config.TextColumn(
-                    "Next action", width="large"
-                ),
-            },
-        )
+        with smart_expander(
+            "All companies in this project",
+            count=len(company_table),
+            status="progress overview",
+            expanded=False,
+        ):
+            st.dataframe(
+                company_table.drop(columns=["Company ID"]),
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Company": st.column_config.TextColumn("Company", width="large"),
+                    "Website": st.column_config.TextColumn("Website", width="medium"),
+                    "Buildings": st.column_config.NumberColumn("Buildings", format="%d"),
+                    "Reviewed": st.column_config.NumberColumn("Reviewed", format="%d"),
+                    "Verified": st.column_config.NumberColumn("Verified", format="%d"),
+                    "Needs attention": st.column_config.NumberColumn(
+                        "Needs attention", format="%d"
+                    ),
+                    "Progress": st.column_config.TextColumn("Progress"),
+                    "Status": st.column_config.TextColumn("Status"),
+                    "Research prompt": st.column_config.TextColumn(
+                        "Research prompt", width="small"
+                    ),
+                    "Next action": st.column_config.TextColumn(
+                        "Next action", width="large"
+                    ),
+                },
+            )
 
         st.subheader("Choose the company to work on")
         main_ids = registry_main["Company ID"].astype(str).tolist()
@@ -10281,9 +10013,14 @@ if section == "Research projects & companies":
                     go_to("Website scanner")
                 st.rerun()
 
-        with st.expander(
+        company_setup_incomplete = (
+            not bool(selected_snapshot["website"])
+            or selected_snapshot["status"] == "Not started"
+        )
+        with smart_expander(
             "Edit selected company details",
-            expanded=not bool(selected_snapshot["website"]),
+            status="setup incomplete" if company_setup_incomplete else "optional",
+            expanded=company_setup_incomplete,
         ):
             with st.form(
                 f"db_main_company_details_{project_context_token}_{selected_main_id}"
@@ -10457,14 +10194,8 @@ if section == "Research projects & companies":
             except Exception as error:
                 st.error(str(error))
 
-    if has_records:
-        st.divider()
-        render_project_company_analytics(project_registry, working)
-    else:
-        render_stage_gate(
-            "Analytics will appear after the first research import",
-            "Complete and import one company research deliverable first. Datablix will then reveal project progress, source comparison, quality, and company analytics.",
-        )
+    st.divider()
+    render_project_company_analytics(project_registry, working)
 
     with st.expander("Project administration", expanded=False):
         st.caption(
@@ -10643,19 +10374,33 @@ elif section == "Overview":
             go_to("Review records")
             st.rerun()
 
-        st.subheader("Listing preview")
-        st.caption(
-            "Each record follows the required field-and-value layout. Required listing fields appear first, followed by confirmed additional findings."
-        )
-        render_listing_preview(qa, limit=5)
+        preview_count = min(len(qa), 5)
+        with smart_expander(
+            "Listing preview",
+            count=preview_count,
+            status=f"of {len(qa):,} records",
+            expanded=False,
+        ):
+            st.caption(
+                "Each record follows the required field-and-value layout. Required listing fields appear first, followed by confirmed additional findings."
+            )
+            render_listing_preview(qa, limit=5)
 
-        with st.expander("Workspace details and column matching"):
+        mapped_count = int(
+            st.session_state[S_MAPPING]["Mapping Status"].ne("Not found").sum()
+        )
+        with smart_expander(
+            "Workspace details and column matching",
+            count=mapped_count,
+            status="fields mapped",
+            expanded=False,
+        ):
             detail_columns = st.columns(3)
             detail_columns[0].metric("Source type", workspace_source)
             detail_columns[1].metric("Original columns", f"{len(working.columns):,}")
             detail_columns[2].metric(
                 "Mapped fields",
-                f"{int(st.session_state[S_MAPPING]['Mapping Status'].ne('Not found').sum()):,}",
+                f"{mapped_count:,}",
             )
             st.caption(
                 "Your original columns remain in the working data. This table shows how imported headings were matched to consistent rental property fields."
@@ -10793,41 +10538,54 @@ elif section == "Website scanner":
     saved_priority_notes = str(active_company.get("Prompt Priority Notes", "") or "").strip() or default_priority_notes
     saved_output_notes = str(active_company.get("Prompt Output Notes", "") or "").strip() or default_output_notes
 
-    prompt_left, prompt_right = st.columns(2)
-    geographic_scope = PROJECT_GEOGRAPHIC_SCOPE
-    prompt_left.text_input(
-        "Geographic scope",
-        value=PROJECT_GEOGRAPHIC_SCOPE,
-        key=f"db_prompt_scope_{company_id}",
-        disabled=True,
-        help="Fixed project scope: only properties within the City of Ottawa municipal boundary belong in this project.",
-    )
-    prompt_left.caption("Project-wide rule: company properties outside Ottawa must be omitted from the research CSV.")
+    prompt_updated = str(active_company.get("Prompt Updated", "") or "").strip()
+    prompt_saved = bool(prompt_updated)
+    with smart_expander(
+        "Customize company research rules",
+        status=(f"saved {prompt_updated}" if prompt_saved else "not saved"),
+        expanded=not prompt_saved,
+    ):
+        prompt_left, prompt_right = st.columns(2)
+        geographic_scope = PROJECT_GEOGRAPHIC_SCOPE
+        prompt_left.text_input(
+            "Geographic scope",
+            value=PROJECT_GEOGRAPHIC_SCOPE,
+            key=f"db_prompt_scope_{company_id}",
+            disabled=True,
+            help="Fixed project scope: only properties within the City of Ottawa municipal boundary belong in this project.",
+        )
+        prompt_left.caption("Project-wide rule: company properties outside Ottawa must be omitted from the research CSV.")
 
-    prompt_right.caption("Starting Data comparison is handled inside Datablix after you import the completed CSV.")
+        prompt_right.caption("Starting Data comparison is handled inside Datablix after you import the completed CSV.")
 
-    source_policy = prompt_left.text_area(
-        "Source policy",
-        value=saved_source_policy,
-        height=180,
-        key=f"db_prompt_sources_{company_id}",
-        disabled=True,
-        help="Project-wide guardrail: Ottawa company-website scanning only, with controlled external exceptions for exact-address Postal Code recovery and Number of Storeys / Building Classification.",
-    )
-    priority_notes = prompt_right.text_area(
-        "Company-specific priorities or exclusions",
-        value=saved_priority_notes,
-        height=150,
-        key=f"db_prompt_priority_{company_id}",
-        help="Use this for company-specific exclusions, special website structure, or research priorities.",
-    )
-    output_notes = st.text_area(
-        "Deliverable instructions",
-        value=saved_output_notes,
-        height=105,
-        key=f"db_prompt_output_{company_id}",
-        help="Persistent company-specific content rules. The exactly-one consolidated CSV output format is enforced by the master prompt and cannot be overridden here.",
-    )
+        source_policy = prompt_left.text_area(
+            "Source policy",
+            value=saved_source_policy,
+            height=180,
+            key=f"db_prompt_sources_{company_id}",
+            disabled=True,
+            help="Project-wide guardrail: Ottawa company-website scanning only, with controlled external exceptions for exact-address Postal Code recovery and Number of Storeys / Building Classification.",
+        )
+        priority_notes = prompt_right.text_area(
+            "Company-specific priorities or exclusions",
+            value=saved_priority_notes,
+            height=150,
+            key=f"db_prompt_priority_{company_id}",
+            help="Use this for company-specific exclusions, special website structure, or research priorities.",
+        )
+        output_notes = st.text_area(
+            "Deliverable instructions",
+            value=saved_output_notes,
+            height=105,
+            key=f"db_prompt_output_{company_id}",
+            help="Persistent company-specific content rules. The exactly-one consolidated CSV output format is enforced by the master prompt and cannot be overridden here.",
+        )
+        ai_tool_used = st.text_input(
+            "AI tool used (optional)",
+            value=str(active_company.get("AI Tool Used", "") or "").strip(),
+            placeholder="Example: ChatGPT, Claude, Gemini or Copilot",
+            key=f"db_prompt_ai_tool_{company_id}",
+        )
 
     generated_prompt = build_company_website_research_prompt(
         company_name=company_name,
@@ -10848,38 +10606,35 @@ elif section == "Website scanner":
         if str(session_key).startswith(master_key_prefix) and session_key != master_prompt_key:
             st.session_state.pop(session_key, None)
 
-    editable_prompt = st.text_area(
-        "Editable master research prompt",
-        value=generated_prompt,
-        height=650,
-        key=master_prompt_key,
-        help=(
-            "Automatically rebuilt when the selected company, website, or saved prompt settings change. "
-            "For persistent custom rules, edit the fields above and save them to the company workspace."
-        ),
-    )
-    st.caption(
-        "The company name and website refresh automatically. Starting Data is intentionally excluded from the AI prompt. "
-        "Persistent research rules are stored separately per company; the full prompt saved below is an audit snapshot."
-    )
+    with smart_expander(
+        "Review or edit the full master research prompt",
+        status="advanced",
+        expanded=False,
+    ):
+        editable_prompt = st.text_area(
+            "Editable master research prompt",
+            value=generated_prompt,
+            height=650,
+            key=master_prompt_key,
+            help=(
+                "Automatically rebuilt when the selected company, website, or saved prompt settings change. "
+                "For persistent custom rules, edit the fields above and save them to the company workspace."
+            ),
+        )
+        st.caption(
+            "The company name and website refresh automatically. Starting Data is intentionally excluded from the AI prompt. "
+            "Persistent research rules are stored separately per company; the full prompt saved below is an audit snapshot."
+        )
 
     previous_prompt_snapshot = str(active_company.get("Research Prompt", "") or "").strip()
     if previous_prompt_snapshot and previous_prompt_snapshot != generated_prompt:
-        with st.expander("Previous saved prompt snapshot", expanded=False):
+        with smart_expander("Previous saved prompt snapshot", status="audit history", expanded=False):
             st.caption(
                 "Kept for audit/history. Datablix no longer uses an old full prompt as the source of truth, so company changes cannot leave the active prompt stale."
             )
             st.code(previous_prompt_snapshot, language="markdown")
 
-    prompt_meta_left, prompt_meta_right = st.columns([1.2, 1])
-    ai_tool_used = prompt_meta_left.text_input(
-        "AI tool used (optional)",
-        value=str(active_company.get("AI Tool Used", "") or "").strip(),
-        placeholder="Example: ChatGPT, Claude, Gemini or Copilot",
-        key=f"db_prompt_ai_tool_{company_id}",
-    )
-    prompt_updated = str(active_company.get("Prompt Updated", "") or "").strip()
-    prompt_meta_right.caption(
+    st.caption(
         f"Prompt settings saved to this company: {prompt_updated}"
         if prompt_updated
         else "This company's prompt settings have not yet been saved."
@@ -10905,7 +10660,7 @@ elif section == "Website scanner":
         autosave_current_project()
         st.rerun()
 
-    with st.expander("Copy-ready prompt", expanded=False):
+    with smart_expander("Copy-ready prompt", status="copy or inspect", expanded=False):
         st.caption("Use the copy icon in the code block after finishing your edits above.")
         st.code(editable_prompt, language="markdown")
     prompt_download_name = f"{safe_filename(company_name)}_website_research_prompt.txt"
@@ -10937,14 +10692,6 @@ elif section == "Website scanner":
         "Do not upload the project Starting Data to the AI research tool. Research the website independently, "
         "then import the completed CSV here. Datablix performs the project-source comparison after import."
     )
-
-    if not workflow_state["prompt_saved"] and company_rows.empty and not show_all_workflow:
-        render_stage_gate(
-            "Save the company prompt before importing research",
-            "The import controls remain hidden until the prompt is saved to this company workspace. This creates a clear audit trail for how the research was requested.",
-            "After saving, complete the research externally and return to import the single consolidated CSV.",
-        )
-        st.stop()
 
     st.divider()
     st.subheader("2. Import the single completed CSV research deliverable")
@@ -11027,16 +10774,10 @@ elif section == "Website scanner":
             except Exception as error:
                 st.error(str(error))
 
-    if company_rows.empty and not show_all_workflow:
-        render_stage_gate(
-            "Import the primary research before running a scanner cross-check",
-            "The optional scanner is deliberately hidden until the first company research file has been imported. It is a coverage check, not the primary research method.",
-        )
-        st.stop()
-
     st.divider()
-    with st.expander(
-        "Optional: run the Datablix website scanner for coverage and cross-checking",
+    with smart_expander(
+        "Optional Datablix website scanner",
+        status="coverage and cross-checking",
         expanded=False,
     ):
         st.caption(
@@ -11092,34 +10833,6 @@ elif section == "Review records":
     )
 
     review_quality_company_id = render_review_quality_baseline(qa) if has_records else None
-
-    baseline_bypass_key = (
-        f"{S_REVIEW_BASELINE_BYPASS}_{review_quality_company_id}"
-        if review_quality_company_id
-        else ""
-    )
-    baseline_ready = bool(
-        review_quality_company_id and quality_baseline_exists(review_quality_company_id)
-    )
-    if (
-        review_quality_company_id
-        and not baseline_ready
-        and not st.session_state.get(baseline_bypass_key, False)
-        and not show_all_workflow
-    ):
-        render_stage_gate(
-            "Capture the baseline before opening the review workspace",
-            "The review queue and editable fields remain hidden so corrections do not begin before the starting quality position is recorded.",
-            "You may continue without a baseline when prior review work has already started, but before-and-after reporting will be limited.",
-        )
-        if st.button(
-            "Continue without a baseline",
-            width="stretch",
-            key=f"db_continue_without_baseline_{review_quality_company_id}",
-        ):
-            st.session_state[baseline_bypass_key] = True
-            st.rerun()
-        st.stop()
 
     st.divider()
     st.markdown("### Review and verify records")
@@ -11424,29 +11137,7 @@ elif section == "Review records":
                     st.rerun()
 
     if has_records:
-        refreshed_review_qa = qa_checks(st.session_state[S_WORKING].copy())
-        selected_review_qa = (
-            refreshed_review_qa.loc[
-                refreshed_review_qa["Company ID"].astype(str).eq(str(review_quality_company_id))
-            ].copy()
-            if review_quality_company_id
-            else pd.DataFrame()
-        )
-        review_activity_started = bool(
-            not selected_review_qa.empty
-            and (
-                selected_review_qa["Research Status"].eq("Completed")
-                | selected_review_qa["Verification Status"].ne("Not Reviewed")
-                | selected_review_qa["Record Decision"].ne("Undecided")
-            ).any()
-        )
-        if review_activity_started or show_all_workflow:
-            render_review_quality_progress(refreshed_review_qa, review_quality_company_id)
-        else:
-            render_stage_gate(
-                "Review progress will appear after the first saved decision",
-                "Update and save at least one record. Datablix will then reveal approval progress, exclusions, baseline impact, and the export finish line.",
-            )
+        render_review_quality_progress(qa_checks(st.session_state[S_WORKING].copy()), review_quality_company_id)
 
 # -----------------------------
 # Analysis and report
@@ -11531,16 +11222,16 @@ elif section == "Analysis & report":
     metric_columns[4].metric("Approved for Export", f"{int(approved_for_export_mask(analysis_qa).sum()):,}")
     metric_columns[5].metric("Entered", f"{entered_metric:,}")
 
-    st.markdown("### Project deliverables")
-    st.caption(
-        "Each formal project deliverable now has a corresponding Datablix view. "
-        "Use Export only for the final directory CSV."
-    )
-    st.dataframe(
-        project_deliverables_table(),
-        width="stretch",
-        hide_index=True,
-    )
+    with smart_expander("Project deliverables map", expanded=False):
+        st.caption(
+            "Each formal project deliverable has a corresponding Datablix view. "
+            "Use Export only for the final directory CSV."
+        )
+        st.dataframe(
+            project_deliverables_table(),
+            width="stretch",
+            hide_index=True,
+        )
 
     analysis_tabs = st.tabs([
         "Research results",
@@ -11705,7 +11396,13 @@ elif section == "Analysis & report":
                     "Profile Field": label,
                     "Value": "" if is_unresolved(value) else str(value).strip(),
                 })
-            st.dataframe(pd.DataFrame(profile_rows), width="stretch", hide_index=True)
+            with smart_expander(
+                "Profile source fields",
+                count=len(profile_rows),
+                status="fields",
+                expanded=False,
+            ):
+                st.dataframe(pd.DataFrame(profile_rows), width="stretch", hide_index=True)
             st.markdown("**Copy-ready draft**")
             st.code(community_profile_text(profile_row), language="markdown")
 
@@ -11715,10 +11412,16 @@ elif section == "Analysis & report":
             "Recommendations combine the requested directory structure with the actual public-data coverage observed in this research scope."
         )
         recommendations = directory_recommendations_with_coverage(analysis_qa)
-        st.dataframe(recommendations, width="stretch", hide_index=True, height=620)
         if not recommendations.empty:
             coverage_chart = recommendations.set_index("Field")[["Observed Coverage %"]]
             st.bar_chart(coverage_chart)
+        with smart_expander(
+            "Detailed directory recommendations",
+            count=len(recommendations),
+            status="recommended fields",
+            expanded=False,
+        ):
+            st.dataframe(recommendations, width="stretch", hide_index=True, height=620)
 
     with analysis_tabs[4]:
         st.subheader("Research methodology and limitations")
@@ -11726,7 +11429,13 @@ elif section == "Analysis & report":
             analysis_qa,
             scope_label,
         )
-        st.dataframe(method_report, width="stretch", hide_index=True)
+        with smart_expander(
+            "Complete methodology and limitations",
+            count=len(method_report),
+            status="sections",
+            expanded=True,
+        ):
+            st.dataframe(method_report, width="stretch", hide_index=True)
         st.caption(
             "These sections are generated from the current Datablix workflow and dataset. Read through them before placing them in the final stakeholder report."
         )
@@ -11739,7 +11448,13 @@ elif section == "Analysis & report":
             scope_label=scope_label,
             baseline=analysis_baseline,
         )
-        st.dataframe(report, width="stretch", hide_index=True)
+        with smart_expander(
+            "Supporting report calculations",
+            count=len(report),
+            status="metrics",
+            expanded=False,
+        ):
+            st.dataframe(report, width="stretch", hide_index=True)
         st.markdown("**Copy-ready presentation summary**")
         st.code(
             presentation_summary_text(
@@ -11849,8 +11564,8 @@ elif section == "Downloads":
     st.subheader("3. Choose columns")
 
     # Start the custom export with the exact directory-entry form fields.
-    # The default now mirrors the final entry form, including Storeys, while allowing
-    # any Datablix research, QA, or audit column to be added afterward.
+    # The default mirrors the final entry form while allowing any Datablix
+    # research, QA or audit column to be added when needed.
     listing_view = listing_export(export_source)
     export_view = listing_view.copy()
     for column in export_source.columns:
@@ -11863,38 +11578,50 @@ elif section == "Downloads":
         if column in exportable_columns
     ]
 
-    # Reset to the new default once after this export-layout update, then preserve
-    # any choices the user makes during the rest of the session.
     export_defaults_version = "listing_columns_v23"
     if st.session_state.get("db_export_defaults_version") != export_defaults_version:
         st.session_state["db_custom_export_columns"] = default_columns
         st.session_state["db_export_defaults_version"] = export_defaults_version
 
-    export_controls = st.columns(2)
-    if export_controls[0].button("Select all columns", width="stretch", key="db_export_select_all"):
-        st.session_state["db_custom_export_columns"] = exportable_columns
-        st.rerun()
-    if export_controls[1].button("Clear selection", width="stretch", key="db_export_clear_columns"):
-        st.session_state["db_custom_export_columns"] = []
-        st.rerun()
-
     stored_selection = st.session_state.get("db_custom_export_columns", default_columns)
     if not isinstance(stored_selection, list):
         stored_selection = default_columns
-    st.session_state["db_custom_export_columns"] = [
+    stored_selection = [
         column for column in stored_selection if column in exportable_columns
     ]
+    st.session_state["db_custom_export_columns"] = stored_selection
 
-    selected_columns = st.multiselect(
-        "Columns to include",
-        options=exportable_columns,
-        key="db_custom_export_columns",
-        help="The CSV will contain exactly these columns in the order shown here.",
-    )
+    with smart_expander(
+        "Customize export columns",
+        count=len(stored_selection),
+        status="selected",
+        expanded=False,
+    ):
+        export_controls = st.columns(2)
+        if export_controls[0].button(
+            "Select all columns",
+            width="stretch",
+            key="db_export_select_all",
+        ):
+            st.session_state["db_custom_export_columns"] = exportable_columns
+            st.rerun()
+        if export_controls[1].button(
+            "Clear selection",
+            width="stretch",
+            key="db_export_clear_columns",
+        ):
+            st.session_state["db_custom_export_columns"] = []
+            st.rerun()
 
-    st.subheader("4. Preview")
+        selected_columns = st.multiselect(
+            "Columns to include",
+            options=exportable_columns,
+            key="db_custom_export_columns",
+            help="The CSV will contain exactly these columns in the order shown here.",
+        )
+
     if export_source.empty:
-        st.info("There are no records to preview for the selected export choice.")
+        st.info("There are no records to preview or download for the selected export choice.")
     elif not selected_columns:
         st.warning("Choose at least one column to create the CSV.")
     else:
@@ -11902,158 +11629,24 @@ elif section == "Downloads":
         preview_metrics = st.columns(2)
         preview_metrics[0].metric("Rows to download", f"{len(export_table):,}")
         preview_metrics[1].metric("Selected columns", f"{len(selected_columns):,}")
-        st.dataframe(export_table.head(250), width="stretch", hide_index=True, height=500)
 
-        st.subheader("5. Directory Entry Assistant")
-        st.caption(
-            "Use this after review. Copy each field into the final directory form, "
-            "submit the building, then mark the record Entered so Datablix tracks what remains."
-        )
-
-        assistant_records = scope_qa.loc[
-            approved_for_export_mask(scope_qa)
-        ].copy()
-        if assistant_records.empty:
-            st.info(
-                "No approved records are available for directory entry in this scope yet."
+        with smart_expander(
+            "Preview exact CSV",
+            count=len(export_table),
+            status=f"rows × {len(selected_columns):,} columns",
+            expanded=False,
+        ):
+            st.caption(
+                "This preview uses the exact selected rows and column order that will appear in the CSV."
             )
-        else:
-            assistant_records = assistant_records.sort_values(
-                ["Management/Owner", "Building Name", "Street Address"],
-                kind="stable",
-            ).reset_index(drop=True)
-
-            entered_count = int(
-                assistant_records["Directory Entry Status"].eq("Entered").sum()
-            )
-            correction_count = int(
-                assistant_records["Directory Entry Status"].eq("Needs Correction").sum()
-            )
-            remaining_count = max(len(assistant_records) - entered_count, 0)
-
-            entry_metrics = st.columns(4)
-            entry_metrics[0].metric("Approved", f"{len(assistant_records):,}")
-            entry_metrics[1].metric("Entered", f"{entered_count:,}")
-            entry_metrics[2].metric("Remaining", f"{remaining_count:,}")
-            entry_metrics[3].metric("Needs correction", f"{correction_count:,}")
-
-            scope_token = hashlib.sha256(
-                f"{export_scope_mode}|{export_company_id or 'project'}".encode("utf-8")
-            ).hexdigest()[:10]
-            entry_index_key = f"db_directory_entry_index_{scope_token}"
-            try:
-                entry_index = int(st.session_state.get(entry_index_key, 0))
-            except (TypeError, ValueError):
-                entry_index = 0
-            entry_index = max(0, min(entry_index, len(assistant_records) - 1))
-            st.session_state[entry_index_key] = entry_index
-
-            nav_left, nav_middle, nav_right = st.columns([1, 2, 1])
-            if nav_left.button(
-                "Previous record",
+            st.dataframe(
+                export_table.head(250),
                 width="stretch",
-                disabled=entry_index <= 0,
-                key=f"db_entry_previous_{scope_token}",
-            ):
-                st.session_state[entry_index_key] = max(entry_index - 1, 0)
-                st.rerun()
-            nav_middle.markdown(
-                f"<div style='text-align:center;padding-top:.55rem'><strong>"
-                f"Record {entry_index + 1:,} of {len(assistant_records):,}"
-                f"</strong></div>",
-                unsafe_allow_html=True,
+                hide_index=True,
+                height=500,
             )
-            if nav_right.button(
-                "Next record",
-                width="stretch",
-                disabled=entry_index >= len(assistant_records) - 1,
-                key=f"db_entry_next_{scope_token}",
-            ):
-                st.session_state[entry_index_key] = min(
-                    entry_index + 1, len(assistant_records) - 1
-                )
-                st.rerun()
 
-            entry_row = assistant_records.iloc[entry_index]
-            record_id = str(entry_row.get("Record ID", "") or "").strip()
-            entry_label = directory_entry_record_label(entry_row)
-            current_entry_status = str(
-                entry_row.get("Directory Entry Status", "Not Entered")
-                or "Not Entered"
-            ).strip()
-            if current_entry_status not in DIRECTORY_ENTRY_STATUSES:
-                current_entry_status = "Not Entered"
-
-            with st.container(border=True):
-                st.markdown(f"#### {escape(entry_label)}")
-                if current_entry_status == "Entered":
-                    st.success("Directory Entry Status: Entered")
-                elif current_entry_status == "Needs Correction":
-                    st.warning("Directory Entry Status: Needs Correction")
-                else:
-                    st.info("Directory Entry Status: Not Entered")
-
-                st.caption(
-                    "Each code box has a copy control. The fields are shown in the same order as the directory form."
-                )
-
-                listing_values = []
-                for listing_label, source_field in LISTING_FIELD_MAP:
-                    value = (
-                        formatted_location(entry_row)
-                        if source_field is None
-                        else entry_row.get(source_field, "")
-                    )
-                    clean_value = _excel_display_value(value)
-                    listing_values.append((listing_label, clean_value))
-                    st.markdown(f"**{listing_label}**")
-                    st.code(clean_value or " ", language=None)
-
-                st.markdown("**Copy full record**")
-                st.caption(
-                    "This tab-separated line follows the same 10-field order and is useful for spreadsheets or backup notes."
-                )
-                st.code(
-                    "\t".join(value for _, value in listing_values),
-                    language=None,
-                )
-
-                status_actions = st.columns(3)
-                if status_actions[0].button(
-                    "Mark Entered & Next",
-                    type="primary",
-                    width="stretch",
-                    key=f"db_entry_mark_entered_{scope_token}_{record_id}",
-                ):
-                    if update_directory_entry_status(record_id, "Entered"):
-                        if entry_index < len(assistant_records) - 1:
-                            st.session_state[entry_index_key] = entry_index + 1
-                        st.session_state[S_FLASH] = (
-                            f"Marked {entry_label} as Entered."
-                        )
-                        st.rerun()
-                if status_actions[1].button(
-                    "Needs Correction",
-                    width="stretch",
-                    key=f"db_entry_mark_correction_{scope_token}_{record_id}",
-                ):
-                    if update_directory_entry_status(record_id, "Needs Correction"):
-                        st.session_state[S_FLASH] = (
-                            f"Marked {entry_label} as needing correction."
-                        )
-                        st.rerun()
-                if status_actions[2].button(
-                    "Reset to Not Entered",
-                    width="stretch",
-                    key=f"db_entry_reset_{scope_token}_{record_id}",
-                ):
-                    if update_directory_entry_status(record_id, "Not Entered"):
-                        st.session_state[S_FLASH] = (
-                            f"Reset {entry_label} to Not Entered."
-                        )
-                        st.rerun()
-
-        st.subheader("6. Download")
+        st.subheader("4. Download")
         scope_filename = safe_filename(export_scope_label)
         suffix = "approved" if export_record_mode == "Approved for Export" else "all_records"
         export_filename = f"{scope_filename}_{suffix}_selected_columns.csv"
@@ -12071,6 +11664,161 @@ elif section == "Downloads":
             width="stretch",
             key="db_download_custom_export",
         )
+
+        assistant_records = scope_qa.loc[
+            approved_for_export_mask(scope_qa)
+        ].copy()
+        if not assistant_records.empty:
+            assistant_records = assistant_records.sort_values(
+                ["Management/Owner", "Building Name", "Street Address"],
+                kind="stable",
+            ).reset_index(drop=True)
+
+        entered_count = int(
+            assistant_records["Directory Entry Status"].eq("Entered").sum()
+        ) if not assistant_records.empty else 0
+        correction_count = int(
+            assistant_records["Directory Entry Status"].eq("Needs Correction").sum()
+        ) if not assistant_records.empty else 0
+        remaining_count = max(len(assistant_records) - entered_count, 0)
+
+        with smart_expander(
+            "Directory Entry Assistant",
+            count=remaining_count,
+            status="remaining",
+            expanded=remaining_count > 0,
+        ):
+            st.caption(
+                "Use this after review. Copy each field into the final directory form, "
+                "submit the building, then mark the record Entered so Datablix tracks what remains."
+            )
+
+            if assistant_records.empty:
+                st.info(
+                    "No approved records are available for directory entry in this scope yet."
+                )
+            else:
+                entry_metrics = st.columns(4)
+                entry_metrics[0].metric("Approved", f"{len(assistant_records):,}")
+                entry_metrics[1].metric("Entered", f"{entered_count:,}")
+                entry_metrics[2].metric("Remaining", f"{remaining_count:,}")
+                entry_metrics[3].metric("Needs correction", f"{correction_count:,}")
+
+                scope_token = hashlib.sha256(
+                    f"{export_scope_mode}|{export_company_id or 'project'}".encode("utf-8")
+                ).hexdigest()[:10]
+                entry_index_key = f"db_directory_entry_index_{scope_token}"
+                try:
+                    entry_index = int(st.session_state.get(entry_index_key, 0))
+                except (TypeError, ValueError):
+                    entry_index = 0
+                entry_index = max(0, min(entry_index, len(assistant_records) - 1))
+                st.session_state[entry_index_key] = entry_index
+
+                nav_left, nav_middle, nav_right = st.columns([1, 2, 1])
+                if nav_left.button(
+                    "Previous record",
+                    width="stretch",
+                    disabled=entry_index <= 0,
+                    key=f"db_entry_previous_{scope_token}",
+                ):
+                    st.session_state[entry_index_key] = max(entry_index - 1, 0)
+                    st.rerun()
+                nav_middle.markdown(
+                    f"<div style='text-align:center;padding-top:.55rem'><strong>"
+                    f"Record {entry_index + 1:,} of {len(assistant_records):,}"
+                    f"</strong></div>",
+                    unsafe_allow_html=True,
+                )
+                if nav_right.button(
+                    "Next record",
+                    width="stretch",
+                    disabled=entry_index >= len(assistant_records) - 1,
+                    key=f"db_entry_next_{scope_token}",
+                ):
+                    st.session_state[entry_index_key] = min(
+                        entry_index + 1, len(assistant_records) - 1
+                    )
+                    st.rerun()
+
+                entry_row = assistant_records.iloc[entry_index]
+                record_id = str(entry_row.get("Record ID", "") or "").strip()
+                entry_label = directory_entry_record_label(entry_row)
+                current_entry_status = str(
+                    entry_row.get("Directory Entry Status", "Not Entered")
+                    or "Not Entered"
+                ).strip()
+                if current_entry_status not in DIRECTORY_ENTRY_STATUSES:
+                    current_entry_status = "Not Entered"
+
+                with st.container(border=True):
+                    st.markdown(f"#### {escape(entry_label)}")
+                    if current_entry_status == "Entered":
+                        st.success("Directory Entry Status: Entered")
+                    elif current_entry_status == "Needs Correction":
+                        st.warning("Directory Entry Status: Needs Correction")
+                    else:
+                        st.info("Directory Entry Status: Not Entered")
+
+                    st.caption(
+                        "Each code box has a copy control. The fields are shown in the same order as the directory form."
+                    )
+
+                    listing_values = []
+                    for listing_label, source_field in LISTING_FIELD_MAP:
+                        value = (
+                            formatted_location(entry_row)
+                            if source_field is None
+                            else entry_row.get(source_field, "")
+                        )
+                        clean_value = _excel_display_value(value)
+                        listing_values.append((listing_label, clean_value))
+                        st.markdown(f"**{listing_label}**")
+                        st.code(clean_value or " ", language=None)
+
+                    st.markdown("**Copy full record**")
+                    st.caption(
+                        "This tab-separated line follows the same 10-field order and is useful for spreadsheets or backup notes."
+                    )
+                    st.code(
+                        "\t".join(value for _, value in listing_values),
+                        language=None,
+                    )
+
+                    status_actions = st.columns(3)
+                    if status_actions[0].button(
+                        "Mark Entered & Next",
+                        type="primary",
+                        width="stretch",
+                        key=f"db_entry_mark_entered_{scope_token}_{record_id}",
+                    ):
+                        if update_directory_entry_status(record_id, "Entered"):
+                            if entry_index < len(assistant_records) - 1:
+                                st.session_state[entry_index_key] = entry_index + 1
+                            st.session_state[S_FLASH] = (
+                                f"Marked {entry_label} as Entered."
+                            )
+                            st.rerun()
+                    if status_actions[1].button(
+                        "Needs Correction",
+                        width="stretch",
+                        key=f"db_entry_mark_correction_{scope_token}_{record_id}",
+                    ):
+                        if update_directory_entry_status(record_id, "Needs Correction"):
+                            st.session_state[S_FLASH] = (
+                                f"Marked {entry_label} as needing correction."
+                            )
+                            st.rerun()
+                    if status_actions[2].button(
+                        "Reset to Not Entered",
+                        width="stretch",
+                        key=f"db_entry_reset_{scope_token}_{record_id}",
+                    ):
+                        if update_directory_entry_status(record_id, "Not Entered"):
+                            st.session_state[S_FLASH] = (
+                                f"Reset {entry_label} to Not Entered."
+                            )
+                            st.rerun()
 
 
 # Persist the latest completed state after every Streamlit rerun.
