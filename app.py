@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Ottawa Website Scan + Chart-Free Project and Company Health Analytics 2026.07.28-v57"
+DATABLIX_BUILD = "Ottawa Website Scan + Unified Overall Health Checklists 2026.07.28-v59"
 
 # This project is intentionally limited to rental apartment buildings within the
 # municipal boundary of the City of Ottawa. Company portfolios outside Ottawa
@@ -8023,27 +8023,60 @@ def _project_health_matrix(
     return pd.DataFrame(rows)
 
 
-def _render_source_comparison_summary(reconciliation: dict, *, company_name: str = "") -> None:
-    """Show source comparison as a compact flow and exact reconciliation table."""
-    scope = f" for {company_name}" if company_name else ""
-    st.markdown(f"#### Source comparison{scope}")
-    st.caption("Current source → current research → confirmed results and exceptions.")
-
+def _source_comparison_checklist(reconciliation: dict) -> list[dict]:
+    """Translate source reconciliation results into plain-English completion checks."""
+    available = bool(reconciliation.get("available", True))
     source_count = int(reconciliation.get("source_records", 0))
     research_count = int(reconciliation.get("research_records", 0))
     matched = int(reconciliation.get("matched_source", 0))
     new = int(reconciliation.get("newly_discovered", 0))
     source_only = int(reconciliation.get("source_only", 0))
     review = int(reconciliation.get("needs_classification", 0))
+    duplicates = int(reconciliation.get("possible_duplicates", 0))
+    matched_rate = _analytics_percent(matched, source_count) if source_count else 0
 
-    _render_analytics_kpis([
-        {"label": "Current source", "value": f"{source_count:,}", "helper": "Baseline records", "tone": "neutral"},
-        {"label": "Current research", "value": f"{research_count:,}", "helper": "Active researched records", "tone": "accent"},
-        {"label": "Matched", "value": f"{matched:,}", "helper": "Confirmed source matches", "tone": "positive"},
-        {"label": "New", "value": f"{new:,}", "helper": "Newly discovered", "tone": "accent"},
-        {"label": "Source-only", "value": f"{source_only:,}", "helper": "Unmatched source records", "tone": "warning" if source_only else "positive"},
-        {"label": "Needs review", "value": f"{review:,}", "helper": "Ambiguous classifications", "tone": "warning" if review else "positive"},
-    ])
+    return [
+        {
+            "state": "pass" if available and source_count else "pending",
+            "label": f"Current source baseline contains {source_count:,} record(s)" if available and source_count else "Current source baseline is not available",
+            "detail": "These records form the comparison baseline." if available and source_count else "Add Starting Data to activate source reconciliation.",
+        },
+        {
+            "state": "pass" if research_count >= source_count and research_count else ("warning" if research_count else "pending"),
+            "label": f"Current research contains {research_count:,} active record(s)",
+            "detail": f"Research is {'at or above' if research_count >= source_count else 'below'} the {source_count:,}-record source baseline.",
+        },
+        {
+            "state": "pass" if source_count and matched == source_count else ("warning" if source_count else "pending"),
+            "label": "Every source record has a confirmed research match" if source_count and matched == source_count else f"{matched:,} of {source_count:,} source record(s) are matched",
+            "detail": f"Current source-match coverage is {matched_rate}%.",
+        },
+        {
+            "state": "pass" if new else "pending",
+            "label": f"{new:,} newly discovered record(s) identified" if new else "No newly discovered records are currently confirmed",
+            "detail": "New records are findings that did not receive a credible match in the active source file.",
+        },
+        {
+            "state": "pass" if source_only == 0 and available else ("warning" if available else "pending"),
+            "label": "No source-only records remain" if available and source_only == 0 else f"{source_only:,} source-only record(s) remain",
+            "detail": "Source-only records have not yet been reconciled with current website research.",
+        },
+        {
+            "state": "pass" if review == 0 and duplicates == 0 else "warning",
+            "label": "No ambiguous or duplicate comparison results remain" if review == 0 and duplicates == 0 else f"{review:,} need classification · {duplicates:,} possible duplicate(s)",
+            "detail": "Resolve ambiguous matches and possible duplicates before marking reconciliation complete.",
+        },
+    ]
+
+
+def _render_source_comparison_summary(reconciliation: dict, *, company_name: str = "") -> None:
+    """Show source comparison as an actionable checklist instead of KPI cards."""
+    scope = f" for {company_name}" if company_name else ""
+    _render_health_checklist(
+        f"Source comparison{scope}",
+        _source_comparison_checklist(reconciliation),
+        "Each check explains whether the active source file and current research are fully reconciled.",
+    )
 
 
 def _company_checklist(
@@ -8147,54 +8180,59 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
         else:
             st.dataframe(health_matrix, width="stretch", hide_index=True)
 
-        checklist_left, checklist_right = st.columns([1, 1.35], gap="large")
-        with checklist_left:
-            companies_missing_websites = int(registry["Main Website"].fillna("").astype(str).str.strip().eq("").sum()) if not registry.empty else 0
-            project_checks = [
-                {
-                    "state": "pass" if reconciliation["available"] else "pending",
-                    "label": "Current source baseline is active" if reconciliation["available"] else "Current source baseline is not active",
-                    "detail": source_details["label"] if reconciliation["available"] else "Add Starting Data to activate source comparison.",
-                },
-                {
-                    "state": "pass" if companies_missing_websites == 0 and project["companies"] else ("warning" if companies_missing_websites else "pending"),
-                    "label": "Every company has an official website" if companies_missing_websites == 0 and project["companies"] else f"{companies_missing_websites:,} company website(s) missing",
-                    "detail": "Official websites anchor the research workflow.",
-                },
-                {
-                    "state": "pass" if reconciliation["source_only"] == 0 and reconciliation["available"] else ("warning" if reconciliation["available"] else "pending"),
-                    "label": "All source records are reconciled" if reconciliation["available"] and reconciliation["source_only"] == 0 else f"{reconciliation['source_only']:,} source-only record(s)",
-                    "detail": "Unmatched source records require review before completion.",
-                },
-                {
-                    "state": "pass" if reconciliation["needs_classification"] == 0 else "warning",
-                    "label": "No discovery classifications are pending" if reconciliation["needs_classification"] == 0 else f"{reconciliation['needs_classification']:,} record(s) need classification",
-                    "detail": "Ambiguous records should be manually reviewed.",
-                },
-                {
-                    "state": "pass" if project["attention_records"] == 0 and project["buildings"] else ("warning" if project["attention_records"] else "pending"),
-                    "label": "No active QA or verification exceptions" if project["attention_records"] == 0 and project["buildings"] else f"{project['attention_records']:,} record(s) need attention",
-                    "detail": "Resolve these records before final export.",
-                },
-                {
-                    "state": "pass" if project["completed"] == project["companies"] and project["companies"] else "pending",
-                    "label": "All companies are complete" if project["completed"] == project["companies"] and project["companies"] else f"{project['completed']:,} of {project['companies']:,} companies complete",
-                    "detail": "Completion requires verified records and no unresolved attention.",
-                },
-            ]
-            _render_health_checklist(
-                "Important project checklist",
-                project_checks,
-                "Only checks that affect project readiness are shown.",
-            )
-
-        with checklist_right:
-            if reconciliation["available"]:
-                _render_source_comparison_summary(reconciliation)
-            else:
-                with st.container(border=True):
-                    st.markdown("#### Source comparison")
-                    st.info("Add the current Starting Data baseline to compare source records with current research.")
+        companies_missing_websites = int(registry["Main Website"].fillna("").astype(str).str.strip().eq("").sum()) if not registry.empty else 0
+        project_checks = [
+            {
+                "state": "pass" if project["companies"] else "pending",
+                "label": f"{project['companies']:,} company record(s) are registered" if project["companies"] else "No companies are registered",
+                "detail": "Company records define the project research scope.",
+            },
+            {
+                "state": "pass" if companies_missing_websites == 0 and project["companies"] else ("warning" if companies_missing_websites else "pending"),
+                "label": "Every company has an official website" if companies_missing_websites == 0 and project["companies"] else f"{companies_missing_websites:,} company website(s) missing",
+                "detail": "Official websites anchor the research workflow.",
+            },
+            {
+                "state": "pass" if reconciliation["available"] else "pending",
+                "label": "Current source baseline is active" if reconciliation["available"] else "Current source baseline is not active",
+                "detail": source_details["label"] if reconciliation["available"] else "Add Starting Data to activate source comparison.",
+            },
+            {
+                "state": "pass" if reconciliation["available"] and reconciliation["matched_source"] == reconciliation["source_records"] else ("warning" if reconciliation["available"] else "pending"),
+                "label": "Every source record has a confirmed research match" if reconciliation["available"] and reconciliation["matched_source"] == reconciliation["source_records"] else f"{reconciliation['matched_source']:,} of {reconciliation['source_records']:,} source record(s) matched",
+                "detail": "Matched records confirm that current research aligns with the active source file.",
+            },
+            {
+                "state": "pass" if reconciliation["source_only"] == 0 and reconciliation["available"] else ("warning" if reconciliation["available"] else "pending"),
+                "label": "No source-only records remain" if reconciliation["available"] and reconciliation["source_only"] == 0 else f"{reconciliation['source_only']:,} source-only record(s) remain",
+                "detail": "Unmatched source records require review before completion.",
+            },
+            {
+                "state": "pass" if reconciliation["needs_classification"] == 0 and reconciliation["possible_duplicates"] == 0 else "warning",
+                "label": "No ambiguous or duplicate source results remain" if reconciliation["needs_classification"] == 0 and reconciliation["possible_duplicates"] == 0 else f"{reconciliation['needs_classification']:,} need classification · {reconciliation['possible_duplicates']:,} possible duplicate(s)",
+                "detail": "Resolve ambiguous matches and duplicate candidates before final reconciliation.",
+            },
+            {
+                "state": "pass" if reconciliation["newly_discovered"] else "pending",
+                "label": f"{reconciliation['newly_discovered']:,} newly discovered record(s) identified" if reconciliation["newly_discovered"] else "No newly discovered records are currently confirmed",
+                "detail": "New discoveries are current properties not credibly matched to the active source file.",
+            },
+            {
+                "state": "pass" if project["attention_records"] == 0 and project["buildings"] else ("warning" if project["attention_records"] else "pending"),
+                "label": "No active QA or verification exceptions" if project["attention_records"] == 0 and project["buildings"] else f"{project['attention_records']:,} record(s) need attention",
+                "detail": "Resolve these records before final export.",
+            },
+            {
+                "state": "pass" if project["completed"] == project["companies"] and project["companies"] else "pending",
+                "label": "All companies are complete" if project["completed"] == project["companies"] and project["companies"] else f"{project['completed']:,} of {project['companies']:,} companies complete",
+                "detail": "Completion requires verified records and no unresolved attention.",
+            },
+        ]
+        _render_health_checklist(
+            "Overall project checklist",
+            project_checks,
+            "Research readiness, source reconciliation, quality and completion are combined in one decision-focused checklist.",
+        )
 
         if reconciliation["available"]:
             with smart_expander(
@@ -8331,31 +8369,52 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
         ])
         st.dataframe(health_rows, width="stretch", hide_index=True)
 
-        company_left, company_right = st.columns([1, 1.35], gap="large")
-        with company_left:
-            _render_health_checklist(
-                "Important company checklist",
-                _company_checklist(selected_row, snapshot, company_qa, company_source, reconciliation["available"]),
-                "The checklist focuses only on conditions that block completion or export.",
-            )
-        with company_right:
-            if reconciliation["available"]:
-                company_reconciliation_snapshot = {
-                    "source_records": company_source_records,
-                    "research_records": int(company_source["Research records"]) if company_source is not None else snapshot["collected"],
-                    "matched_source": company_matched,
-                    "newly_discovered": int(company_source["New"]) if company_source is not None else 0,
-                    "source_only": int(company_source["Source-only"]) if company_source is not None else 0,
-                    "needs_classification": int(company_source["Needs classification"]) if company_source is not None else 0,
-                }
-                _render_source_comparison_summary(
-                    company_reconciliation_snapshot,
-                    company_name=snapshot["company_name"],
-                )
-            else:
-                with st.container(border=True):
-                    st.markdown("#### Company source comparison")
-                    st.info("Add the active Starting Data baseline to compare this company with the source file.")
+        company_checks = _company_checklist(
+            selected_row,
+            snapshot,
+            company_qa,
+            company_source,
+            reconciliation["available"],
+        )
+        if reconciliation["available"]:
+            company_new = int(company_source["New"]) if company_source is not None else 0
+            company_source_only = int(company_source["Source-only"]) if company_source is not None else 0
+            company_needs_classification = int(company_source["Needs classification"]) if company_source is not None else 0
+            company_possible_duplicates = int(company_source["Possible duplicates"]) if company_source is not None else 0
+            company_checks.extend([
+                {
+                    "state": "pass" if company_source_records and company_matched == company_source_records else ("warning" if company_source_records else "pending"),
+                    "label": "Every company source record has a confirmed research match" if company_source_records and company_matched == company_source_records else f"{company_matched:,} of {company_source_records:,} company source record(s) matched",
+                    "detail": f"Current source-match coverage is {company_source_pct}%.",
+                },
+                {
+                    "state": "pass" if company_source_only == 0 else "warning",
+                    "label": "No source-only company records remain" if company_source_only == 0 else f"{company_source_only:,} source-only company record(s) remain",
+                    "detail": "Review source entries that are not yet linked to current company research.",
+                },
+                {
+                    "state": "pass" if company_needs_classification == 0 and company_possible_duplicates == 0 else "warning",
+                    "label": "No ambiguous or duplicate company matches remain" if company_needs_classification == 0 and company_possible_duplicates == 0 else f"{company_needs_classification:,} need classification · {company_possible_duplicates:,} possible duplicate(s)",
+                    "detail": "Resolve these exceptions before marking the company fully reconciled.",
+                },
+                {
+                    "state": "pass" if company_new else "pending",
+                    "label": f"{company_new:,} newly discovered company record(s) identified" if company_new else "No newly discovered company records are currently confirmed",
+                    "detail": "New discoveries are company properties not credibly matched to the active source file.",
+                },
+            ])
+        else:
+            company_checks.append({
+                "state": "pending",
+                "label": "Company source comparison is not active",
+                "detail": "Add the active Starting Data baseline to compare this company with the source file.",
+            })
+
+        _render_health_checklist(
+            "Overall company checklist",
+            company_checks,
+            "Company setup, research evidence, source reconciliation, data quality and completion are combined in one checklist.",
+        )
 
         if not company_qa.empty:
             with smart_expander(
