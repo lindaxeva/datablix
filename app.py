@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "City of Ottawa + Company Official Entry Points 2026.07.28-v65"
+DATABLIX_BUILD = "City of Ottawa + Residential Property Types 2026.07.30-v66"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -37,8 +37,20 @@ PROJECT_PROVINCE = "Ontario"
 PROJECT_COUNTRY = "Canada"
 PROJECT_REGION_NAME = "City of Ottawa"
 PROJECT_GEOGRAPHIC_SCOPE = (
-    "Current apartment properties physically located within the municipal "
-    "boundaries of the City of Ottawa, Ontario, Canada"
+    "Current residential rental properties physically located within the municipal "
+    "boundaries of the City of Ottawa, Ontario, Canada, including apartment "
+    "buildings or units, condominium rentals, townhomes, duplexes, and garden homes"
+)
+
+# Property-form scope follows the categories present in the project Starting Data.
+# A current townhome, duplex, or garden home must not be excluded merely because
+# it is not a conventional apartment building. Detached single-family homes are
+# retained for human scope review unless the project owner gives a company-specific
+# instruction to include or exclude them.
+PROJECT_PROPERTY_SCOPE = (
+    "Include current apartment buildings and units, condominium rentals, townhomes, "
+    "duplexes, and garden homes. Retain current detached single-family homes for "
+    "human scope review instead of silently excluding them."
 )
 
 # Height-based building classification used by the project.
@@ -2381,6 +2393,9 @@ def _contains_legacy_regional_scope(value) -> bool:
         "carleton place",
         "smiths falls",
         "renfrew",
+        "current apartment listings",
+        "only physical apartment properties",
+        "apartment properties physically located",
     )
     return any(marker in text for marker in legacy_markers)
 
@@ -3368,6 +3383,47 @@ def normalize_height_classification(value):
     return mapping.get(key, str(value).strip())
 
 
+def _classification_parts(value) -> list[str]:
+    """Split height and source property-form/category labels without losing either."""
+    if is_unresolved(value):
+        return []
+    parts = re.split(r"\s*(?:\||;|,)\s*", str(value).strip())
+    normalized = []
+    for part in parts:
+        if not part:
+            continue
+        label = normalize_height_classification(part)
+        if is_unresolved(label):
+            continue
+        clean = str(label).strip()
+        if clean and norm_header(clean) not in {norm_header(v) for v in normalized}:
+            normalized.append(clean)
+    return normalized
+
+
+def _has_height_classification(value) -> bool:
+    height_keys = {"lowrise", "midrise", "highrise", "hirise"}
+    return any(norm_header(part) in height_keys for part in _classification_parts(value))
+
+
+def merge_classification_values(*values):
+    """Combine height band and source categories, for example Low-rise | Townhome."""
+    parts = []
+    seen = set()
+    for value in values:
+        for part in _classification_parts(value):
+            key = norm_header(part)
+            if key and key not in seen:
+                seen.add(key)
+                parts.append(part)
+
+    height_order = {"lowrise": 0, "midrise": 1, "highrise": 2, "hirise": 2}
+    height = [part for part in parts if norm_header(part) in height_order]
+    other = [part for part in parts if norm_header(part) not in height_order]
+    height.sort(key=lambda part: height_order[norm_header(part)])
+    return " | ".join(height + other) if height or other else pd.NA
+
+
 def ensure_ids(df):
     """Ensure every Datablix row has one unique stable Record ID."""
     out = df.copy()
@@ -3429,20 +3485,26 @@ def map_schema(df):
                         row["Imported Column(s)"] = ", ".join(combined)
                         row["Mapping Status"] = "Derived"
 
-    # Preserve an explicitly supplied classification, but normalize common height
-    # wording. When classification is blank, first use verified storey evidence
-    # because the project defines Low-rise/Mid-rise/High-rise by storey count.
+    # Preserve both dimensions represented by the Starting Data:
+    # 1) the verified height band derived from storeys; and
+    # 2) source property-form/category labels such as Townhome, Duplex, or Garden Home.
+    # A storey-based result must not erase a valid property-form label.
     current = resolved(mapped["Building Classification"]).apply(normalize_height_classification)
     height_derived = derive_height_classification_from_storeys(mapped["Number of Storeys"])
-    height_mask = unresolved_mask(current) & ~unresolved_mask(height_derived)
-    current.loc[height_mask] = height_derived.loc[height_mask]
-
-    # Legacy source category columns are kept only as a final fallback so older
-    # project files remain readable. They must not override a storey-based result.
     legacy_derived = derive_classification(imported)
-    legacy_mask = unresolved_mask(current) & ~unresolved_mask(legacy_derived)
-    current.loc[legacy_mask] = legacy_derived.loc[legacy_mask]
-    mapped["Building Classification"] = current
+
+    combined_classification = pd.Series(pd.NA, index=mapped.index, dtype="object")
+    for idx in mapped.index:
+        supplied = current.loc[idx]
+        # Do not add a second height label when the imported classification already
+        # contains one; retain the supplied height for human review if it conflicts.
+        derived_height = pd.NA if _has_height_classification(supplied) else height_derived.loc[idx]
+        combined_classification.loc[idx] = merge_classification_values(
+            derived_height,
+            supplied,
+            legacy_derived.loc[idx],
+        )
+    mapped["Building Classification"] = combined_classification
 
     source = resolved(mapped["Source URL"])
     website = resolved(mapped["Website"])
@@ -3845,8 +3907,18 @@ IMPORTANT WORKFLOW BOUNDARY:
 
 {official_entry_points_section}
 {special_notes_section}
+## Non-negotiable property-type scope
+Research the company's current residential rental inventory—not only conventional apartment towers.
+
+- Include current apartment buildings and apartment units, condominium rentals, townhomes, duplexes, and garden homes.
+- Do not exclude a current property solely because it is a townhome, duplex, garden home, condominium unit, or another low-density rental form recognized by the project Starting Data.
+- A current detached single-family home must not be silently discarded. Retain it in the CSV, keep Current Inventory Status based on the official inventory evidence, and add `Detached single-family home — Needs Scope Review` to Reviewer Notes unless company-specific instructions clearly resolve its scope.
+- Do not relabel an ordinary detached home as a Garden Home without explicit official or source-file evidence.
+- Record the supported property-form label in Building Classification alongside the height band when both are known, for example `Low-rise | Townhome`, `Low-rise | Duplex`, or `Low-rise | Garden Home`.
+- Inactive, archived, or no-longer-supported listings may still be marked Excluded because of inventory status; townhome, duplex, or garden-home form alone is never an exclusion reason.
+
 ## Non-negotiable City of Ottawa municipal boundary
-Return only apartment properties whose PHYSICAL LOCATION is within the municipal boundaries of the City of Ottawa, Ontario, Canada.
+Return only in-scope residential rental properties whose PHYSICAL LOCATION is within the municipal boundaries of the City of Ottawa, Ontario, Canada.
 
 - Website labels such as “Ottawa,” “Ottawa Region,” “Greater Ottawa,” “National Capital Region,” or “Eastern Ontario” are discovery hints, not geographic proof.
 - Ottawa localities such as Kanata, Nepean, Orléans, Gloucester, Barrhaven, Stittsville, Vanier, Manotick, Carp, Cumberland, Richmond, and other communities physically inside the amalgamated City of Ottawa remain in scope.
@@ -3892,7 +3964,7 @@ Do not create a property row for an orphan, empty, generic, redirected, placehol
 Inspect the complete relevant official content, including property overview, physical location, contact information, floor plans, rates, amenities, parking, laundry, utilities, accessibility, elevator, policies, official PDFs, brochures, leasing pages, JavaScript-rendered content, footer details, and linked official property websites.
 
 ### Phase 3 — Exhaustive PO Box and mailing-address search
-PO Box research is separate from the apartment building's physical address.
+PO Box research is separate from the rental property's physical address.
 
 Search the company's official web presence first, including:
 - property contact and leasing pages;
@@ -3909,11 +3981,11 @@ When the official website does not provide a PO Box or complete mailing address,
 - record the full source URL, evidence text/context, and confidence.
 
 CRITICAL ADDRESS SEPARATION:
-- Street Address is the apartment building's physical civic address.
+- Street Address is the rental property's physical civic address.
 - Mailing Address is the complete correspondence address when found.
 - PO Box contains only the box identifier/number.
 - Never replace Street Address with a corporate office, management office, PO Box, mailing address, leasing office, or payment address.
-- A PO Box does not prove the location of an apartment building and must never be used for geographic-scope determination.
+- A PO Box does not prove the location of a rental property and must never be used for geographic-scope determination.
 - When no PO Box is found after the required search, leave PO Box blank and set PO Box Search Status to Not Found after Search. Do not invent one.
 
 ### Phase 4 — Controlled geographic-position verification
@@ -3944,13 +4016,17 @@ Only after an official-site property candidate is established may outside eviden
 
 External evidence must never invent a property, override the company's official inventory status, or fill ordinary fields such as amenities, rates, unit types, leasing contacts, policies, or unit counts.
 
-## Building-classification rule
-Research Number of Storeys before classifying:
+## Property-form and building-classification rule
+First identify the official property form when the source supports it: apartment building/unit, condominium rental, townhome, duplex, garden home, detached single-family home, or another clearly stated form. Do not infer property form from appearance.
+
+Then research Number of Storeys before deriving the height band:
 - Low-rise = 1–4 storeys
 - Mid-rise = 5–11 storeys
 - High-rise = 12+ storeys
 
-Do not infer classification from appearance, unit count, elevator presence, building name, “tower,” “luxury,” or marketing terminology. When reliable counts conflict across classification bands, leave both Number of Storeys and Building Classification unresolved and document the conflict.
+When both dimensions are known, keep them in Building Classification separated by ` | `, for example `Low-rise | Townhome`. Property form does not replace the height band, and the height band must not erase the property form.
+
+Do not infer height classification from appearance, unit count, elevator presence, building name, “tower,” “luxury,” or marketing terminology. When reliable storey counts conflict across height bands, leave Number of Storeys and the height-band portion of Building Classification unresolved, preserve any independently confirmed property-form label, and document the conflict.
 
 ## Source policy
 {source_policy}
@@ -3964,8 +4040,9 @@ Field requirements:
 - Company Website: the selected company's root or canonical corporate/management website, not a property subdomain.
 - Property Website: the exact official building/community page or official property microsite.
 - Source URL: the strongest exact page supporting the row; place additional official URLs in Supporting Evidence.
-- Current Inventory Status: Current, Review, or Excluded — not in current website inventory.
+- Current Inventory Status: Current, Review, or Excluded — not in current website inventory. Property form alone does not determine this status.
 - Inventory Evidence: official website evidence supporting that status.
+- Building Classification: preserve the supported height band and property-form/category labels together, separated by ` | ` when more than one applies.
 - PO Box Search Status: Not Checked, Found, Not Found after Search, Not Applicable, or Needs Review.
 - PO Box Confidence: High, Medium, Low, or Not Checked.
 - Geographic Scope Status: Inside City of Ottawa, Outside City of Ottawa, Needs Geographic Review, or Not Checked.
@@ -3989,9 +4066,11 @@ Field requirements:
 12. Omit geographically out-of-scope properties from the final CSV.
 13. Treat AI findings as preliminary and subject to Datablix validation and human approval.
 14. Prefer transparent blanks over unsupported completeness.
+15. Never exclude a current townhome, duplex, or garden home merely because it is not a conventional apartment building.
+16. Keep detached single-family homes visible for human scope review unless a project or company rule explicitly resolves them.
 
 ## Priority or company-specific instructions
-The City of Ottawa municipal boundary, physical-vs-mailing address separation, exhaustive PO Box search, exact-address geographic verification, postal-code recovery, and storey-classification rules are project-wide. Company notes may refine priorities but must not broaden the project to nearby municipalities or weaken these rules.
+The City of Ottawa municipal boundary, residential property-type scope, physical-vs-mailing address separation, exhaustive PO Box search, exact-address geographic verification, postal-code recovery, and storey/classification rules are project-wide. Company notes may refine priorities but must not broaden the project to nearby municipalities or weaken these rules.
 
 {priority_notes or 'No additional priorities were provided.'}
 
@@ -4568,12 +4647,12 @@ def listing_block_dataframe(row, include_additional=True):
 def render_listing_preview(df, limit=5):
     """Show sample-style listing blocks without turning the page into a wide table."""
     if df.empty:
-        st.info("No apartment building records are available to preview yet.")
+        st.info("No residential rental-property records are available to preview yet.")
         return
 
     visible = df.head(limit)
     for listing_number, (_, row) in enumerate(visible.iterrows(), start=1):
-        name = _excel_display_value(row.get("Building Name")) or "Unnamed apartment building"
+        name = _excel_display_value(row.get("Building Name")) or "Unnamed rental property"
         with st.expander(
             f"Apartment Building {listing_number}: {name}",
             expanded=listing_number == 1,
@@ -5631,7 +5710,7 @@ def looks_like_company_assignment(df):
         return False
 
     # City, province, or postal columns may describe a company's office and do
-    # not prove that each row is an apartment building. Treat strong property
+    # not prove that each row is a residential rental property. Treat strong property
     # identity fields as the deciding signal.
     has_building_name = bool(source_columns(imported, ALIASES["Building Name"]))
     has_street_address = bool(source_columns(imported, ALIASES["Street Address"]))
@@ -10089,7 +10168,7 @@ if S_WORKING not in st.session_state:
     render_page_heading(
         "DATABLIX",
         "Your Rental Property Research & Data Audit Platform",
-        "Transform public rental property research into clear, reliable, and review-ready information. Organize projects, research apartment buildings and property companies, check every finding against its public source, and generate clear analytics and reports for decision-making.",
+        "Transform public rental property research into clear, reliable, and review-ready information. Organize projects, research residential rental properties and property companies, check every finding against its public source, and generate clear analytics and reports for decision-making.",
     )
     render_guidance(
         "From public-source research to trusted property records",
@@ -11410,7 +11489,8 @@ elif section == "Website scanner":
     default_scope = PROJECT_GEOGRAPHIC_SCOPE
     default_source_policy = (
         "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use the selected company's official website first, including confirmed official property pages, subdomains, and microsites under the same registrable root domain. Treat them as one company and do not create a company per hostname. "
-        "The project includes only physical apartment properties inside the City of Ottawa municipal boundary. Company labels such as Ottawa Region or National Capital Region are not geographic proof. "
+        "The project includes current residential rental properties inside the City of Ottawa municipal boundary, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Do not exclude these recognized property forms merely because they are not conventional apartment buildings. Retain current detached single-family homes for human scope review and identify them clearly in Reviewer Notes. Company labels such as Ottawa Region or National Capital Region are not geographic proof. "
+        "PROPERTY FORM: use official website or source evidence for apartment/condominium, townhome, duplex, garden-home, or detached-home labels. Preserve a supported property-form label together with the height band in Building Classification, separated by |. Do not infer property form from appearance. "
         "PO BOX / MAILING ADDRESS: search official Contact, Corporate, Legal, Privacy, Accessibility, footer, tenant-document, payment, PDF, and form pages. If still missing, Google/search engines may locate reliable underlying evidence. Keep mailing and PO Box information separate from the physical property address and record the source, evidence, and confidence. "
         "GEOGRAPHIC POSITION: after an official-site candidate is identified, Google Maps/geocoding and a City of Ottawa boundary check may verify latitude, longitude, municipality, and scope. Never geocode a PO Box to establish property location. "
         "POSTAL CODE: exact-address external recovery is allowed when the official property page omits it. "
@@ -11418,7 +11498,7 @@ elif section == "Website scanner":
         "Search snippets alone are not evidence; open the underlying source. External evidence must not discover extra properties or override official current-inventory evidence."
     )
     default_priority_notes = (
-        "Scan the selected company's official website for CURRENT apartment listings physically located within the City of Ottawa only. Follow confirmed official property subdomains and microsites that share the company's registrable root domain; keep them under the selected company and store them as Property Website sources. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
+        "Scan the selected company's official website for CURRENT residential rental listings physically located within the City of Ottawa only, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Do not exclude a current recognized property form merely because it is not a conventional apartment building. Retain current detached single-family homes for human scope review and identify them in Reviewer Notes. Follow confirmed official property subdomains and microsites that share the company's registrable root domain; keep them under the selected company and store them as Property Website sources. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
         "For every candidate, verify the exact physical address and geographic position. Record Latitude, Longitude, Geocoded Municipality, Geographic Scope Status, evidence, and confidence. "
         "Conduct an exhaustive PO Box/mailing-address search across official contact, corporate, legal, privacy, accessibility, footer, PDF, form, rent-payment, and tenant-document pages. If official sources remain incomplete, use Google to locate reliable underlying evidence. Never place a PO Box or corporate mailing address in Street Address. "
         "Recover missing Postal Code only from an exact civic-address match. Research Number of Storeys by exact address and derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
@@ -11455,7 +11535,7 @@ elif section == "Website scanner":
             value=PROJECT_GEOGRAPHIC_SCOPE,
             key=f"db_prompt_scope_{company_id}",
             disabled=True,
-            help="Fixed project scope: physical apartment properties inside the City of Ottawa municipal boundary only.",
+            help="Fixed project scope: current Ottawa residential rentals, including apartments/condos, townhomes, duplexes, and garden homes; detached homes remain visible for scope review.",
         )
         prompt_left.caption(
             "Project-wide rule: include only physical properties inside the City of Ottawa municipal boundary; exclude all independent nearby municipalities."
