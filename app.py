@@ -1081,13 +1081,17 @@ def clear_autosaved_project() -> None:
 # =========================================================
 
 def render_brand_header():
-    """Render the full horizontal Datablix logo without cropping."""
+    """Render the Datablix logo at a stable size without clipping or stretching."""
     logo_path = Path("datablix_logo.png")
 
     if logo_path.exists():
-        st.image(str(logo_path), width="stretch")
+        left_space, logo_column, right_space = st.columns([1, 2, 1])
+        with logo_column:
+            st.image(str(logo_path), width=380)
     else:
-        st.markdown("# DataBlix")
+        st.html("""
+        <div class="db-brand-name">Datablix</div>
+        """)
 
     st.html("""
     <div class="db-brand">
