@@ -1087,7 +1087,7 @@ def render_brand_header():
     if logo_path.exists():
         left_space, logo_column, right_space = st.columns([1, 2, 1])
         with logo_column:
-            st.image(str(logo_path), width=420)
+            st.image(str(logo_path), width=200)
     else:
         st.html("""
         <div class="db-brand-name">Datablix</div>
