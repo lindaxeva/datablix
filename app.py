@@ -1081,20 +1081,13 @@ def clear_autosaved_project() -> None:
 # =========================================================
 
 def render_brand_header():
-    """Render the Datablix identity without clipping or stretching the logo."""
-    logo_candidates = (
-        Path("datablix_logo.png"),
-        Path("datablix_logo.png"),
-        Path("datablix_logo.svg"),
-    )
-    logo_path = next((path for path in logo_candidates if path.exists()), None)
+    """Render the Datablix logo at a stable size without clipping or stretching."""
+    logo_path = Path("datablix_logo.png")
 
-    if logo_path is not None:
-        # Let Streamlit control the image dimensions instead of custom <img> CSS.
-        # The centered column keeps the horizontal logo balanced on wide screens.
-        _, logo_column, _ = st.columns([1, 3, 1])
+    if logo_path.exists():
+        left_space, logo_column, right_space = st.columns([1, 2, 1])
         with logo_column:
-            st.image(str(logo_path), width="280")
+            st.image(str(logo_path), width=380)
     else:
         st.html("""
         <div class="db-brand-name">Datablix</div>
