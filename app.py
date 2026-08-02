@@ -1081,13 +1081,41 @@ def clear_autosaved_project() -> None:
 # =========================================================
 
 def render_brand_header():
-    """Render the Datablix logo at a stable size without clipping or stretching."""
+    """Render the complete horizontal Datablix logo without clipping."""
     logo_path = Path("datablix_logo.png")
 
     if logo_path.exists():
-        left_space, logo_column, right_space = st.columns([1, 2, 1])
-        with logo_column:
-            st.image(str(logo_path), width=200)
+        encoded_logo = base64.b64encode(logo_path.read_bytes()).decode("utf-8")
+
+        st.html(f"""
+        <div style="
+            width:100%;
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            overflow:visible;
+            padding:0.35rem 0 0.75rem;
+        ">
+            <img
+                src="data:image/png;base64,{encoded_logo}"
+                alt="Datablix logo"
+                style="
+                    display:block;
+                    width:420px;
+                    max-width:100%;
+                    height:auto !important;
+                    max-height:none !important;
+                    object-fit:contain !important;
+                    object-position:center center;
+                    margin:0 auto;
+                    padding:0;
+                    border:0;
+                    clip-path:none !important;
+                    overflow:visible;
+                "
+            >
+        </div>
+        """)
     else:
         st.html("""
         <div class="db-brand-name">Datablix</div>
