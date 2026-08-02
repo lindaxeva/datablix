@@ -1081,28 +1081,31 @@ def clear_autosaved_project() -> None:
 # =========================================================
 
 def render_brand_header():
-    """Render the Datablix identity with a clear purpose statement."""
-    svg = Path("datablix_logo.svg")
-    png = Path("datablix_logo.png")
-    if svg.exists() or png.exists():
-        path = svg if svg.exists() else png
-        mime = "image/svg+xml" if path.suffix.lower() == ".svg" else "image/png"
-        encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
-        st.html(f"""
-        <div class="db-brand">
-            <img class="db-logo" src="data:{mime};base64,{encoded}" alt="Datablix logo">
-            <div class="db-tag">Turn your rental property research into structured, review-ready listings.</div>
-            <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
-        </div>
-        """)
+    """Render the Datablix identity without clipping or stretching the logo."""
+    logo_candidates = (
+        Path("datablix_logo.png"),
+        Path("datablix_logo.png"),
+        Path("datablix_logo.svg"),
+    )
+    logo_path = next((path for path in logo_candidates if path.exists()), None)
+
+    if logo_path is not None:
+        # Let Streamlit control the image dimensions instead of custom <img> CSS.
+        # The centered column keeps the horizontal logo balanced on wide screens.
+        _, logo_column, _ = st.columns([1, 3, 1])
+        with logo_column:
+            st.image(str(logo_path), width="stretch")
     else:
         st.html("""
-        <div class="db-brand">
-            <div class="db-brand-name">Datablix</div>
-            <div class="db-tag">Turn your rental property research into structured, review-ready listings.</div>
-            <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
-        </div>
+        <div class="db-brand-name">Datablix</div>
         """)
+
+    st.html("""
+    <div class="db-brand">
+        <div class="db-tag">Turn your rental property research into structured, review-ready listings.</div>
+        <div class="db-subtag">Collect public information, verify key details, preserve additional findings, and prepare consistent records for review or export.</div>
+    </div>
+    """)
 
 
 def safe_text(value, default=""):
@@ -9494,12 +9497,6 @@ h2{margin-bottom:.1rem}
 .db-brand{
     text-align:center;
     margin:.15rem auto 1.3rem;
-}
-.db-logo{
-    width:clamp(280px,42vw,540px);
-    max-width:88vw;
-    max-height:128px;
-    object-fit:contain;
 }
 .db-brand-name{
     font-family:var(--db-display);
