@@ -1094,7 +1094,7 @@ def render_brand_header():
         # The centered column keeps the horizontal logo balanced on wide screens.
         _, logo_column, _ = st.columns([1, 3, 1])
         with logo_column:
-            st.image(str(logo_path), width="stretch")
+            st.image(str(logo_path), width="280")
     else:
         st.html("""
         <div class="db-brand-name">Datablix</div>
