@@ -42,7 +42,7 @@ RenderMode = Literal["html", "auto", "javascript"]
 ProgressCallback = Callable[[dict], None]
 CheckpointCallback = Callable[["ScanReport"], None]
 
-USER_AGENT = "DatablixResearchScanner/3.3 (+human-reviewed research tool)"
+USER_AGENT = "DatablixResearchScanner/3.4 (+human-reviewed research tool)"
 DEFAULT_TIMEOUT = 20
 MAX_HTML_BYTES = 8_000_000
 MAX_SITEMAP_BYTES = 12_000_000
@@ -2099,25 +2099,116 @@ class FullSiteScanner:
                 continue
         return self._clean_text(" ".join(chunks))
 
-    def _exact_property_pdf_context(self, record: RecordCandidate, pdf_text: str) -> str:
+    _RECOVERY_STREET_ALIASES = {
+        "street": "st", "st": "st",
+        "avenue": "ave", "ave": "ave",
+        "road": "rd", "rd": "rd",
+        "boulevard": "blvd", "blvd": "blvd",
+        "drive": "dr", "dr": "dr",
+        "court": "ct", "ct": "ct",
+        "crescent": "cres", "cres": "cres",
+        "place": "pl", "pl": "pl",
+        "lane": "ln", "ln": "ln",
+        "terrace": "terr", "ter": "terr", "terr": "terr",
+        "parkway": "pkwy", "pkwy": "pkwy",
+        "highway": "hwy", "hwy": "hwy",
+        "trail": "trl", "trl": "trl",
+        "circle": "cir", "cir": "cir",
+        "way": "way",
+        "north": "n", "n": "n", "south": "s", "s": "s",
+        "east": "e", "e": "e", "west": "w", "w": "w",
+    }
+    _RECOVERY_STREET_QUALIFIERS = {
+        "st", "ave", "rd", "blvd", "dr", "ct", "cres", "pl", "ln",
+        "terr", "pkwy", "hwy", "trl", "cir", "way", "n", "s", "e", "w",
+    }
+    _RECOVERY_GENERIC_ADDRESS_TOKENS = _RECOVERY_STREET_QUALIFIERS | {
+        "unit", "suite", "apt", "apartment",
+    }
+
+    @classmethod
+    def _recovery_address_tokens(cls, value: str) -> list[str]:
+        normalized = cls._recovery_normalized_text(value)
+        return [
+            cls._RECOVERY_STREET_ALIASES.get(token, token)
+            for token in normalized.split()
+            if token
+        ]
+
+    @classmethod
+    def _exact_property_pdf_context(cls, record: RecordCandidate, pdf_text: str) -> str:
+        """Return PDF text only when the civic number and street name match safely.
+
+        The old fallback accepted a civic number plus any generic address word such as
+        ``road``. That could make ``1500 Riverside Road`` look like
+        ``1500 Walkley Road``. This token-level matcher requires the actual street-name
+        token(s), while still allowing common suffix variants such as Road/Rd.
+        """
         if not pdf_text:
             return ""
-        normalized = self._recovery_normalized_text(pdf_text)
-        address = self._recovery_normalized_text(record.street_address)
-        if not address:
+
+        address_tokens = cls._recovery_address_tokens(record.street_address)
+        if not address_tokens or not address_tokens[0].isdigit():
             return ""
-        position = normalized.find(address)
-        if position < 0:
-            tokens = address.split()
-            if not tokens or not tokens[0].isdigit():
-                return ""
-            civic = tokens[0]
-            position = normalized.find(civic)
-            nearby = normalized[max(0, position - 250):position + 550] if position >= 0 else ""
-            if position < 0 or not any(token in nearby for token in tokens[1:4] if len(token) >= 4):
-                return ""
-        raw_position = max(0, min(len(pdf_text), position))
-        return pdf_text[max(0, raw_position - 2600):raw_position + 4200]
+        civic = address_tokens[0]
+        street_name_tokens = [
+            token for token in address_tokens[1:]
+            if token not in cls._RECOVERY_GENERIC_ADDRESS_TOKENS
+            and not token.isdigit()
+        ]
+        required_qualifiers = [
+            token for token in address_tokens[1:]
+            if token in cls._RECOVERY_STREET_QUALIFIERS
+        ]
+        if not street_name_tokens:
+            return ""
+
+        raw_matches = list(re.finditer(r"[A-Za-z0-9À-ÿ]+", pdf_text))
+        pdf_tokens = [
+            cls._RECOVERY_STREET_ALIASES.get(
+                cls._recovery_normalized_text(match.group(0)),
+                cls._recovery_normalized_text(match.group(0)),
+            )
+            for match in raw_matches
+        ]
+
+        # Search each exact civic-number occurrence. The street-name tokens must then
+        # appear in order within a short address-sized window. Generic suffixes alone
+        # never qualify as a property match.
+        for civic_index, token in enumerate(pdf_tokens):
+            if token != civic:
+                continue
+            window_end = min(len(pdf_tokens), civic_index + 12)
+            cursor = civic_index + 1
+            matched_positions: list[int] = []
+            for wanted in street_name_tokens:
+                found = None
+                for position in range(cursor, window_end):
+                    if pdf_tokens[position] == wanted:
+                        found = position
+                        break
+                if found is None:
+                    matched_positions = []
+                    break
+                matched_positions.append(found)
+                cursor = found + 1
+            if not matched_positions:
+                continue
+
+            # The first true street-name token must be close to the civic number. This
+            # prevents a number at one address from matching an unrelated street name
+            # much later in a paragraph or table.
+            if matched_positions[0] - civic_index > 4:
+                continue
+            address_window = pdf_tokens[civic_index + 1:window_end]
+            if any(qualifier not in address_window for qualifier in required_qualifiers):
+                continue
+
+            raw_start = raw_matches[civic_index].start()
+            raw_end = raw_matches[matched_positions[-1]].end()
+            return pdf_text[max(0, raw_start - 2600):min(len(pdf_text), raw_end + 4200)]
+
+        return ""
 
     def _unit_count_evidence_snippet(self, text: str, value: str) -> str:
         for pattern in (
@@ -2151,7 +2242,6 @@ class FullSiteScanner:
             return records
 
         cache: dict[str, str] = {}
-        inspected = 0
         for record in unresolved:
             ranked = sorted(
                 ((self._pdf_candidate_relevance(record, url, context), url)
@@ -2159,17 +2249,20 @@ class FullSiteScanner:
                 reverse=True,
             )
             attempted = False
+            inspected_for_record = 0
             for relevance, url in ranked:
-                if relevance < 3 or inspected >= self.options.maximum_unit_recovery_pdfs:
+                if relevance < 3:
                     continue
+                if inspected_for_record >= self.options.maximum_unit_recovery_pdfs:
+                    break
                 attempted = True
+                inspected_for_record += 1
                 if url not in cache:
                     try:
                         cache[url] = self._fetch_official_pdf_text(url)
                     except Exception as exc:
                         report.errors.append(f"Official PDF unit-count recovery skipped {url}: {exc}")
                         cache[url] = ""
-                    inspected += 1
                 context = self._exact_property_pdf_context(record, cache[url])
                 if not context:
                     continue
@@ -2235,14 +2328,86 @@ class FullSiteScanner:
         for field_name in (
             "building_name", "management_owner", "street_address", "address_line_2",
             "city", "province", "postal_code", "country", "phone", "primary_email",
-            "website", "number_of_apartments", "apartment_count_search_status",
-            "apartment_count_source_url", "apartment_count_evidence",
-            "apartment_count_confidence", "number_of_storeys", "building_classification",
+            "website", "number_of_storeys", "building_classification",
             "source_url", "source_page_title",
             "extraction_method", "evidence", "inventory_evidence", "exclusion_reason",
         ):
             if not getattr(preferred, field_name) and getattr(other, field_name):
                 setattr(preferred, field_name, getattr(other, field_name))
+
+        # Keep apartment-count value and provenance together. ``Not Checked`` is a
+        # placeholder, not evidence. If two scanner records disagree on a resolved
+        # total, preserve both values as a review conflict rather than silently
+        # choosing the record with higher general extraction confidence.
+        def normalized_count(value: str) -> str:
+            text = str(value or "").strip().replace(",", "")
+            if re.fullmatch(r"\d+(?:\.0+)?", text):
+                return str(int(float(text)))
+            return text.lower()
+
+        first_count = str(first.number_of_apartments or "").strip()
+        second_count = str(second.number_of_apartments or "").strip()
+        first_normalized = normalized_count(first_count)
+        second_normalized = normalized_count(second_count)
+        if first_count and second_count and first_normalized != second_normalized:
+            values = list(dict.fromkeys([first_count, second_count]))
+            preferred.number_of_apartments = " or ".join(values)
+            preferred.apartment_count_search_status = "Conflict — Needs Review"
+            preferred.apartment_count_confidence = "Low"
+            sources = list(dict.fromkeys(v for v in [
+                str(first.apartment_count_source_url or "").strip(),
+                str(second.apartment_count_source_url or "").strip(),
+            ] if v))
+            preferred.apartment_count_source_url = sources[0] if sources else ""
+            evidence = list(dict.fromkeys(v for v in [
+                str(first.apartment_count_evidence or "").strip(),
+                str(second.apartment_count_evidence or "").strip(),
+            ] if v))
+            source_note = f" Sources checked: {'; '.join(sources)}." if sources else ""
+            preferred.apartment_count_evidence = (
+                "Conflicting apartment totals detected while merging scanner evidence: "
+                + " | ".join(evidence) + source_note
+            )[:1500]
+        else:
+            status_rank = {
+                "": 0, "Not Checked": 0, "Not Found after Search": 1,
+                "Reputable property source": 2, "Public record": 3,
+                "Official document": 4, "Official page": 5,
+                "Conflict — Needs Review": 6,
+            }
+            count_records = [item for item in (first, second) if str(item.number_of_apartments or "").strip()]
+            if count_records:
+                # Counts are equivalent here, so keep the preferred record's display
+                # value but take provenance from the strongest non-placeholder source.
+                preferred.number_of_apartments = (
+                    str(preferred.number_of_apartments or "").strip()
+                    or str(count_records[0].number_of_apartments or "").strip()
+                )
+                provenance = max(
+                    count_records,
+                    key=lambda item: status_rank.get(
+                        str(item.apartment_count_search_status or "").strip(), 1
+                    ),
+                )
+            else:
+                provenance = max(
+                    (first, second),
+                    key=lambda item: status_rank.get(
+                        str(item.apartment_count_search_status or "").strip(), 1
+                    ),
+                )
+            preferred.apartment_count_search_status = str(
+                provenance.apartment_count_search_status or "Not Checked"
+            ).strip() or "Not Checked"
+            preferred.apartment_count_source_url = str(
+                provenance.apartment_count_source_url or ""
+            ).strip()
+            preferred.apartment_count_evidence = str(
+                provenance.apartment_count_evidence or ""
+            ).strip()
+            preferred.apartment_count_confidence = str(
+                provenance.apartment_count_confidence or "Not Checked"
+            ).strip() or "Not Checked"
 
         amenity_values = []
         for value in (first.amenities, second.amenities):
