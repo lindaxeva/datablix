@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Source Comparison Matrix + Focused Detail Review 2026.08.07-v77"
+DATABLIX_BUILD = "Focused Change Review + Apartment Count Evidence 2026.08.07-v78"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -101,6 +101,8 @@ INTERNAL_COLUMNS = [
     "Geographic Scope Status", "Geographic Evidence", "Geographic Confidence",
     "Phone", "Primary Email", "Secondary Email", "Website",
     "Property Website", "Company Website", "Number of Apartments",
+    "Apartment Count Search Status", "Apartment Count Source URL",
+    "Apartment Count Evidence", "Apartment Count Confidence",
     "Number of Storeys", "Rental Rate Range", "Suite Types", "Amenities",
     "Parking", "Laundry", "Utilities", "Elevator", "Accessibility",
     "Pet Policy", "Smoke-Free", "Building Classification",
@@ -160,6 +162,10 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Secondary Email", "Secondary Email"),
     ("Property Website", "Property Website"),
     ("Company Website", "Company Website"),
+    ("Apartment Count Search Status", "Apartment Count Search Status"),
+    ("Apartment Count Source URL", "Apartment Count Source URL"),
+    ("Apartment Count Evidence", "Apartment Count Evidence"),
+    ("Apartment Count Confidence", "Apartment Count Confidence"),
     ("Rental Rate Range", "Rental Rate Range"),
     ("Suite Types", "Suite Types"),
     ("Amenities", "Amenities"),
@@ -237,6 +243,21 @@ ALIASES = {
         "Unit Count", "Total Units", "Units", "Residential Units", "Rental Units",
         "Dwelling Units", "Number of Suites", "Suite Count", "Total Suites",
         "Suites", "Number of Residences", "Residences", "Doors",
+    ],
+    "Apartment Count Search Status": [
+        "Apartment Count Search Status", "Unit Count Search Status",
+        "Apartment Count Status", "Unit Count Status",
+    ],
+    "Apartment Count Source URL": [
+        "Apartment Count Source URL", "Unit Count Source URL",
+        "Apartment Count Source", "Unit Count Source",
+    ],
+    "Apartment Count Evidence": [
+        "Apartment Count Evidence", "Unit Count Evidence",
+        "Apartment Count Supporting Evidence", "Unit Count Supporting Evidence",
+    ],
+    "Apartment Count Confidence": [
+        "Apartment Count Confidence", "Unit Count Confidence",
     ],
     "Number of Storeys": [
         "Number of Storeys", "Number of Floors", "Number of Stories", "Number of Levels",
@@ -3668,7 +3689,9 @@ AI_RESEARCH_DELIVERABLE_COLUMNS = [
     "Geographic Scope Status", "Geographic Evidence", "Geographic Confidence",
     "Management/Owner", "Phone", "Primary Email",
     "Secondary Email", "Property Website", "Company Website", "Source URL",
-    "Number of Apartments", "Number of Storeys", "Rental Rate Range",
+    "Number of Apartments", "Apartment Count Search Status",
+    "Apartment Count Source URL", "Apartment Count Evidence",
+    "Apartment Count Confidence", "Number of Storeys", "Rental Rate Range",
     "Suite Types", "Building Classification", "Amenities", "Parking",
     "Laundry", "Utilities", "Elevator", "Accessibility", "Pet Policy",
     "Smoke-Free",
@@ -4861,7 +4884,25 @@ Only after an official-site property candidate is established may outside eviden
 2. PO Box/mailing-address recovery — follow the exhaustive method above and keep it separate from the property address.
 3. Geographic-position verification — exact-address geocoding and municipal-boundary evidence only.
 4. Number of Storeys / Building Classification — search the exact address and reliable planning, development, public-document, or property evidence. Treat source wording such as storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when it clearly describes the building's storey count.
-5. Number of Apartments / Total Unit Count — when the official property page is silent, recover the total only for an already-established exact property/address. Follow this source order: (a) official property page or microsite; (b) official company PDF, brochure, report, filing, acquisition/development page, or other official document; (c) municipal, planning, development-application, assessment, or other reliable public record tied to the exact address; (d) a reputable property/database source with an exact property match. Leave the field blank when the total cannot be confirmed.
+5. Number of Apartments / Total Unit Count — when the official property page is silent, recover the total only for an already-established exact property/address. Follow this source order: (a) official property page or microsite; (b) official company PDF, brochure, report, filing, acquisition/development page, or other official document; (c) municipal, planning, development-application, assessment, CMHC/government publication, or other reliable public record tied to the exact address; (d) a reputable property/database source with an exact property match. Leave the field blank when the total cannot be confirmed.
+
+### Mandatory apartment-count closure pass
+Before producing the final CSV, inspect EVERY in-scope property row whose Number of Apartments is still blank. Do not finish merely because the official leasing page omitted the total.
+
+For each unresolved property:
+1. Search the exact civic address in quotation marks plus several total-count terms: `units`, `apartments`, `suites`, `residential units`, `dwelling units`, `unit count`, and `total units`.
+2. Repeat with the exact building/property name plus the address when a name is known.
+3. Open likely official PDFs/brochures/reports and public/planning/government documents; search-result snippets are not evidence.
+4. If still unresolved, check a reputable property/database source only when it matches the exact civic address/property.
+5. Record the outcome in Apartment Count Search Status, Apartment Count Source URL, Apartment Count Evidence, and Apartment Count Confidence even when Number of Apartments remains blank.
+
+Apartment Count Search Status values:
+- `Official page` — confirmed on the official property/company web page.
+- `Official document` — confirmed in an official company PDF, brochure, report, filing, acquisition/development document, or equivalent official document.
+- `Public record` — confirmed in a municipal/planning/government/CMHC or comparable reliable public record tied to the exact property.
+- `Reputable property source` — confirmed only after stronger source tiers were silent, using a reputable exact-address property/database source.
+- `Not Found after Search` — the mandatory recovery pass was completed but no reliable total could be confirmed.
+- `Conflict — Needs Review` — reliable exact-property sources report materially different totals and the conflict cannot be resolved safely.
 
 External evidence must never invent a property, override the company's official inventory status, or fill ordinary fields such as amenities, rates, unit types, leasing contacts, or policies. Number of Apartments is the deliberate exception above and must follow its exact-address/source-hierarchy rules.
 
@@ -4877,7 +4918,9 @@ Do NOT use:
 - a count from a nearby/similarly named property; or
 - an estimate inferred from storeys, windows, photos, maps, elevator count, or visual appearance.
 
-When searching outside the official property page, use the exact civic address plus terms such as `units`, `apartments`, `suites`, `residential units`, `unit count`, and `dwelling units`. Open the underlying source; a search-result snippet is not evidence. If two reliable sources conflict, preserve both counts and URLs in Supporting Evidence, set Confidence conservatively, and leave Number of Apartments unresolved unless one source is clearly more authoritative and directly property-specific.
+When searching outside the official property page, use the exact civic address plus terms such as `units`, `apartments`, `suites`, `residential units`, `unit count`, and `dwelling units`. Open the underlying source; a search-result snippet is not evidence. If two reliable sources conflict, preserve both counts and URLs in Apartment Count Evidence and Reviewer Notes, set Apartment Count Search Status to `Conflict — Needs Review`, set Apartment Count Confidence conservatively, and leave Number of Apartments unresolved unless one source is clearly more authoritative and directly property-specific.
+
+A blank Number of Apartments is acceptable only after the mandatory closure pass has been completed and documented as `Not Found after Search` or `Conflict — Needs Review`. Never leave Apartment Count Search Status blank for a completed property row.
 
 ## Property-form and building-classification rule
 First identify the official property form when the source supports it: apartment building/unit, condominium rental, townhome, duplex, garden home, detached single-family home, or another clearly stated form. Do not infer property form from appearance.
@@ -4907,6 +4950,10 @@ Field requirements:
 - Current Inventory Status: Current, Review, or Excluded — not in current website inventory. Property form alone does not determine this status.
 - Inventory Evidence: official website evidence supporting that status.
 - Number of Apartments: total residential inventory only. Recognize units/suites/residences and equivalent total-count wording; never substitute available/vacant listings. Use the dedicated exact-address recovery hierarchy when the official property page is silent.
+- Apartment Count Search Status: required for every completed row; use Official page, Official document, Public record, Reputable property source, Not Found after Search, or Conflict — Needs Review.
+- Apartment Count Source URL: the exact page/document supporting the total; blank only when no count was confirmed.
+- Apartment Count Evidence: concise exact-property wording/context supporting the count, or a short note describing the completed unsuccessful/conflicting recovery search.
+- Apartment Count Confidence: High, Medium, Low, or Not Checked; use High only for clear exact-property evidence from strong sources.
 - Building Classification: preserve the supported height band and property-form/category labels together, separated by ` | ` when more than one applies.
 - PO Box Search Status: Not Checked, Found, Not Found after Search, Not Applicable, or Needs Review.
 - PO Box Confidence: High, Medium, Low, or Not Checked.
@@ -5087,10 +5134,13 @@ def consolidate_shared_leasing_rows(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     list_like_fields = {
         "Amenities", "Suite Types", "Rental Rate Range", "Supporting Evidence",
-        "PO Box Evidence", "Geographic Evidence", "Missing Information", "Reviewer Notes",
+        "PO Box Evidence", "Geographic Evidence", "Apartment Count Evidence",
+        "Missing Information", "Reviewer Notes",
     }
     protected_conflict_fields = {
-        "Number of Apartments", "Number of Storeys", "Postal Code", "Phone",
+        "Number of Apartments", "Apartment Count Search Status",
+        "Apartment Count Source URL", "Apartment Count Confidence",
+        "Number of Storeys", "Postal Code", "Phone",
         "Primary Email", "Secondary Email", "Building Classification", "PO Box",
         "PO Box Postal Code", "Latitude", "Longitude", "Geographic Scope Status",
     }
@@ -12603,6 +12653,8 @@ elif section == "Review records":
                     ],
                     "Contact and source information": [
                         "Phone", "Primary Email", "Secondary Email", "Website", "Source URL",
+                        "Apartment Count Search Status", "Apartment Count Source URL",
+                        "Apartment Count Evidence", "Apartment Count Confidence",
                         "Date Researched", "Researcher", "Source Status",
                     ],
                     "Research and verification": [
