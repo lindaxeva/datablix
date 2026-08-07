@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Focused Change Review + Apartment Count Evidence 2026.08.07-v78"
+DATABLIX_BUILD = "Focused Change Review + Safer Apartment Count Prompt 2026.08.07-v79"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -4894,7 +4894,8 @@ For each unresolved property:
 2. Repeat with the exact building/property name plus the address when a name is known.
 3. Open likely official PDFs/brochures/reports and public/planning/government documents; search-result snippets are not evidence.
 4. If still unresolved, check a reputable property/database source only when it matches the exact civic address/property.
-5. Record the outcome in Apartment Count Search Status, Apartment Count Source URL, Apartment Count Evidence, and Apartment Count Confidence even when Number of Apartments remains blank.
+5. For any external match, the civic number, street name, street type, and directional component (when present) must refer to the same property. Do not accept a match based only on the civic number or on a generic street word such as Road, Street, Avenue, Drive, or Boulevard.
+6. Record the outcome in Apartment Count Search Status, Apartment Count Source URL, Apartment Count Evidence, and Apartment Count Confidence even when Number of Apartments remains blank.
 
 Apartment Count Search Status values:
 - `Official page` — confirmed on the official property/company web page.
@@ -4953,7 +4954,7 @@ Field requirements:
 - Apartment Count Search Status: required for every completed row; use Official page, Official document, Public record, Reputable property source, Not Found after Search, or Conflict — Needs Review.
 - Apartment Count Source URL: the exact page/document supporting the total; blank only when no count was confirmed.
 - Apartment Count Evidence: concise exact-property wording/context supporting the count, or a short note describing the completed unsuccessful/conflicting recovery search.
-- Apartment Count Confidence: High, Medium, Low, or Not Checked; use High only for clear exact-property evidence from strong sources.
+- Apartment Count Confidence: High, Medium, Low, or Not Checked. Use Not Checked only before the mandatory apartment-count closure pass has been completed. Once the closure pass is complete, do not leave confidence as Not Checked; use High only for clear exact-property evidence from strong sources, Medium for usable but less authoritative exact-property evidence, and Low for unresolved conflicts or weak/ambiguous evidence.
 - Building Classification: preserve the supported height band and property-form/category labels together, separated by ` | ` when more than one applies.
 - PO Box Search Status: Not Checked, Found, Not Found after Search, Not Applicable, or Needs Review.
 - PO Box Confidence: High, Medium, Low, or Not Checked.
@@ -4990,7 +4991,7 @@ The City of Ottawa municipal boundary, residential property-type scope, physical
 Create exactly one downloadable CSV file named clearly, for example:
 `company_name_ottawa_website_research_results.csv`
 
-The file must contain one unique company-leased City of Ottawa property per row, use the exact headings above, preserve evidence and blanks, and remain directly importable into Datablix. Do not return Excel, Google Sheets, JSON, PDF, Word, Markdown tables, ZIP files, or multiple research files.
+The file must contain one unique researched City of Ottawa property per row, use the exact headings above, preserve evidence and blanks, and remain directly importable into Datablix. This includes identifiable Current, Review, and Excluded/legacy properties when they are relevant to the company inventory research; use the status and evidence fields to distinguish them. Do not return Excel, Google Sheets, JSON, PDF, Word, Markdown tables, ZIP files, or multiple research files.
 
 When the platform cannot create a downloadable file, return that one CSV as raw RFC-style CSV text in a fenced csv code block with only a one-line limitation notice.
 
