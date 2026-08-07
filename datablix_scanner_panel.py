@@ -23,7 +23,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Storey-Floor Terminology + Safe Height Evidence 2026.08.07-r5"
+SCANNER_BUILD = "Unit-Count Recovery + Safe Height Evidence 2026.08.07-r6"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -2217,7 +2217,17 @@ def render_website_scanner_panel(
             "phone": st.column_config.TextColumn("Phone Number"),
             "primary_email": st.column_config.TextColumn("Email Contact", width="large"),
             "website": st.column_config.LinkColumn("Website", width="large"),
-            "number_of_apartments": st.column_config.TextColumn("Number of Apartments"),
+            "number_of_apartments": st.column_config.TextColumn(
+                "Number of Apartments",
+                help=(
+                    "Total residential inventory only. Datablix recognizes total apartments, units, suites, "
+                    "residences, dwelling units, and similar wording, including label-first forms such as "
+                    "'Number of units: 176'. Do not use currently available/vacant units as the total. "
+                    "If the official property page is silent, use the Datablix AI research prompt for controlled "
+                    "exact-address recovery from official documents, municipal/planning sources, then reputable "
+                    "property evidence."
+                ),
+            ),
             "number_of_storeys": st.column_config.TextColumn(
                 "Storeys",
                 help=(
