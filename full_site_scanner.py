@@ -4,6 +4,8 @@ import gzip
 import ipaddress
 import json
 import re
+import unicodedata
+from io import BytesIO
 import socket
 import time
 import xml.etree.ElementTree as ET
@@ -18,6 +20,11 @@ import requests
 from bs4 import BeautifulSoup, Tag
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+try:
+    from pypdf import PdfReader
+except ImportError:  # Official-PDF unit recovery is optional when pypdf is unavailable.
+    PdfReader = None
 
 try:
     import tldextract
@@ -35,10 +42,11 @@ RenderMode = Literal["html", "auto", "javascript"]
 ProgressCallback = Callable[[dict], None]
 CheckpointCallback = Callable[["ScanReport"], None]
 
-USER_AGENT = "DatablixResearchScanner/3.2 (+human-reviewed research tool)"
+USER_AGENT = "DatablixResearchScanner/3.3 (+human-reviewed research tool)"
 DEFAULT_TIMEOUT = 20
 MAX_HTML_BYTES = 8_000_000
 MAX_SITEMAP_BYTES = 12_000_000
+MAX_PDF_BYTES = 15_000_000
 
 TRACKING_QUERY_KEYS = {
     "fbclid",
@@ -245,6 +253,8 @@ class ScanOptions:
     obey_robots_txt: bool = True
     stop_after_consecutive_failures: int = 25
     checkpoint_every_pages: int = 10
+    recover_unit_counts_from_official_pdfs: bool = True
+    maximum_unit_recovery_pdfs: int = 12
 
     def validate(self) -> None:
         if not 1 <= self.max_pages <= 2_000:
@@ -261,6 +271,8 @@ class ScanOptions:
             raise WebsiteScanError(
                 "Checkpoint interval must be between 1 and 500 pages."
             )
+        if not 0 <= self.maximum_unit_recovery_pdfs <= 100:
+            raise WebsiteScanError("Maximum unit-recovery PDFs must be between 0 and 100.")
 
 
 @dataclass(slots=True)
@@ -295,6 +307,10 @@ class RecordCandidate:
     primary_email: str = ""
     website: str = ""
     number_of_apartments: str = ""
+    apartment_count_search_status: str = "Not Checked"
+    apartment_count_source_url: str = ""
+    apartment_count_evidence: str = ""
+    apartment_count_confidence: str = "Not Checked"
     number_of_storeys: str = ""
     amenities: str = ""
     building_classification: str = ""
@@ -430,6 +446,7 @@ class FullSiteScanner:
         self.inventory_link_sources: dict[str, set[str]] = {}
         self.inventory_source_pages: dict[str, str] = {}
         self.xml_sitemap_property_urls: set[str] = set()
+        self.official_pdf_candidates: dict[str, str] = {}
 
     def scan(self) -> ScanReport:
         report = ScanReport(
@@ -580,6 +597,8 @@ class FullSiteScanner:
 
             report.records = self._apply_inventory_status(report.records)
             report.records = self._deduplicate_records(report.records)
+            if self.options.recover_unit_counts_from_official_pdfs:
+                report.records = self._recover_missing_unit_counts_from_official_pdfs(report.records, report)
             report.completed_at_utc = self._utc_now()
             report.remaining_queue_urls = len(queue)
             report.visited_urls = len(visited)
@@ -1326,7 +1345,18 @@ class FullSiteScanner:
             # A malformed link is ignored; it must not stop the full scan.
             if not candidate:
                 continue
-            if self._is_in_scope(candidate) and not self._should_skip_url(candidate):
+            if not self._is_in_scope(candidate):
+                continue
+            if urlparse(candidate).path.lower().endswith(".pdf"):
+                anchor_text = self._clean_text(tag.get_text(" ", strip=True))
+                parent_text = self._clean_text(
+                    tag.parent.get_text(" ", strip=True) if tag.parent else ""
+                )[:600]
+                self.official_pdf_candidates.setdefault(
+                    candidate, self._clean_text(f"{anchor_text} {parent_text} {base_url}")
+                )
+                continue
+            if not self._should_skip_url(candidate):
                 links.add(candidate)
 
         return sorted(links, key=lambda value: (self._url_priority(value), value))
@@ -1844,6 +1874,15 @@ class FullSiteScanner:
                         local_context = page_text[max(0, position - 1400):position + len(street) + 1400]
                         local_unit_count = self._unit_count_from_text(local_context)
                 record.number_of_apartments = local_unit_count or page_unit_count
+            if record.number_of_apartments and record.apartment_count_search_status == "Not Checked":
+                if " or " in str(record.number_of_apartments):
+                    record.apartment_count_search_status = "Conflict — Needs Review"
+                    record.apartment_count_confidence = "Low"
+                else:
+                    record.apartment_count_search_status = "Official page"
+                    record.apartment_count_confidence = "High"
+                record.apartment_count_source_url = page_url
+                record.apartment_count_evidence = f"Official website supports total unit count: {record.number_of_apartments}"
             if not record.number_of_storeys and page_storeys:
                 record.number_of_storeys = page_storeys
             if not record.amenities and page_amenities:
@@ -1997,6 +2036,173 @@ class FullSiteScanner:
         match = pattern.search(text)
         return match.group(1) if match else ""
 
+    @staticmethod
+    def _recovery_normalized_text(value: str) -> str:
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+    def _pdf_candidate_relevance(self, record: RecordCandidate, url: str, context: str) -> int:
+        haystack = self._recovery_normalized_text(f"{url} {context}")
+        address = self._recovery_normalized_text(record.street_address)
+        name = self._recovery_normalized_text(record.building_name)
+        score = 0
+        if address and address in haystack:
+            score += 8
+        elif address:
+            tokens = address.split()
+            if tokens and tokens[0].isdigit() and tokens[0] in haystack:
+                score += 2
+            if any(token in haystack for token in tokens[1:4] if len(token) >= 4):
+                score += 2
+        if name and name in haystack:
+            score += 5
+        elif name:
+            tokens = [token for token in name.split() if len(token) >= 5]
+            if tokens and sum(token in haystack for token in tokens[:4]) >= min(2, len(tokens)):
+                score += 2
+        if re.search(r"\b(?:brochure|property|building|apartment|residential|development|report)\b", haystack):
+            score += 1
+        return score
+
+    def _fetch_official_pdf_text(self, url: str) -> str:
+        if PdfReader is None:
+            return ""
+        self._ensure_public_url(url)
+        if not self._is_in_scope(url):
+            return ""
+        if self.options.obey_robots_txt and not self._robots_allows(url):
+            return ""
+        self._respect_delay(url)
+        response = self.session.get(
+            url, timeout=self.options.request_timeout_seconds,
+            allow_redirects=True, stream=True,
+        )
+        response.raise_for_status()
+        final_url = self._canonicalize_url(response.url)
+        self._ensure_public_url(final_url)
+        if not self._is_in_scope(final_url):
+            return ""
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+        if "pdf" not in content_type and not urlparse(final_url).path.lower().endswith(".pdf"):
+            return ""
+        raw = self._read_limited_response(response, MAX_PDF_BYTES)
+        try:
+            reader = PdfReader(BytesIO(raw))
+        except Exception:
+            return ""
+        chunks = []
+        for page in reader.pages[:250]:
+            try:
+                chunks.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return self._clean_text(" ".join(chunks))
+
+    def _exact_property_pdf_context(self, record: RecordCandidate, pdf_text: str) -> str:
+        if not pdf_text:
+            return ""
+        normalized = self._recovery_normalized_text(pdf_text)
+        address = self._recovery_normalized_text(record.street_address)
+        if not address:
+            return ""
+        position = normalized.find(address)
+        if position < 0:
+            tokens = address.split()
+            if not tokens or not tokens[0].isdigit():
+                return ""
+            civic = tokens[0]
+            position = normalized.find(civic)
+            nearby = normalized[max(0, position - 250):position + 550] if position >= 0 else ""
+            if position < 0 or not any(token in nearby for token in tokens[1:4] if len(token) >= 4):
+                return ""
+        raw_position = max(0, min(len(pdf_text), position))
+        return pdf_text[max(0, raw_position - 2600):raw_position + 4200]
+
+    def _unit_count_evidence_snippet(self, text: str, value: str) -> str:
+        for pattern in (
+            UNIT_COUNT_EXPLICIT_LABEL_RE, UNIT_COUNT_LABEL_RE,
+            UNIT_COUNT_NARRATIVE_RE, UNIT_COUNT_RE,
+        ):
+            for match in pattern.finditer(text):
+                if match.group(1).replace(",", "") == str(value).replace(",", ""):
+                    return self._clean_text(
+                        text[max(0, match.start() - 180):match.end() + 180]
+                    )[:700]
+        return f"Official PDF supports total unit count {value}."
+
+    def _recover_missing_unit_counts_from_official_pdfs(
+        self, records: list[RecordCandidate], report: ScanReport
+    ) -> list[RecordCandidate]:
+        unresolved = [
+            record for record in records
+            if not self._clean_text(record.number_of_apartments)
+            and self._clean_text(record.street_address)
+        ]
+        if not unresolved:
+            return records
+        if PdfReader is None:
+            for record in unresolved:
+                if self.official_pdf_candidates:
+                    record.apartment_count_evidence = (
+                        "Same-site official PDFs were discovered, but pypdf is not installed. "
+                        "Use the Datablix AI exact-address recovery pass."
+                    )
+            return records
+
+        cache: dict[str, str] = {}
+        inspected = 0
+        for record in unresolved:
+            ranked = sorted(
+                ((self._pdf_candidate_relevance(record, url, context), url)
+                 for url, context in self.official_pdf_candidates.items()),
+                reverse=True,
+            )
+            attempted = False
+            for relevance, url in ranked:
+                if relevance < 3 or inspected >= self.options.maximum_unit_recovery_pdfs:
+                    continue
+                attempted = True
+                if url not in cache:
+                    try:
+                        cache[url] = self._fetch_official_pdf_text(url)
+                    except Exception as exc:
+                        report.errors.append(f"Official PDF unit-count recovery skipped {url}: {exc}")
+                        cache[url] = ""
+                    inspected += 1
+                context = self._exact_property_pdf_context(record, cache[url])
+                if not context:
+                    continue
+                total = self._unit_count_from_text(context)
+                if not total:
+                    continue
+                record.apartment_count_source_url = url
+                if " or " in total:
+                    record.apartment_count_search_status = "Conflict — Needs Review"
+                    record.apartment_count_confidence = "Low"
+                    record.apartment_count_evidence = (
+                        f"Official PDF contains multiple plausible exact-property totals: {total}."
+                    )
+                    break
+                record.number_of_apartments = total
+                record.apartment_count_search_status = "Official document"
+                record.apartment_count_confidence = "High"
+                record.apartment_count_evidence = self._unit_count_evidence_snippet(context, total)
+                record.evidence = (
+                    f"{record.evidence} | Unit-count recovery: {record.apartment_count_evidence}"
+                    if record.evidence else f"Unit-count recovery: {record.apartment_count_evidence}"
+                )
+                break
+            if (not record.number_of_apartments
+                and record.apartment_count_search_status == "Not Checked"
+                and attempted):
+                record.apartment_count_search_status = "Not Found after Search"
+                record.apartment_count_evidence = (
+                    "Relevant same-site official PDFs were checked without a safe exact-property total. "
+                    "Continue with the AI exact-address public-record recovery pass."
+                )
+        return records
+
     def _deduplicate_records(self, records: Iterable[RecordCandidate]) -> list[RecordCandidate]:
         winners: dict[str, RecordCandidate] = {}
         for record in records:
@@ -2029,7 +2235,9 @@ class FullSiteScanner:
         for field_name in (
             "building_name", "management_owner", "street_address", "address_line_2",
             "city", "province", "postal_code", "country", "phone", "primary_email",
-            "website", "number_of_apartments", "number_of_storeys", "building_classification",
+            "website", "number_of_apartments", "apartment_count_search_status",
+            "apartment_count_source_url", "apartment_count_evidence",
+            "apartment_count_confidence", "number_of_storeys", "building_classification",
             "source_url", "source_page_title",
             "extraction_method", "evidence", "inventory_evidence", "exclusion_reason",
         ):
