@@ -4086,19 +4086,22 @@ def _render_company_source_field_comparison(
     company_source: pd.DataFrame,
     research_records: pd.DataFrame,
     reconciliation: pd.DataFrame,
+    differences: pd.DataFrame | None = None,
 ) -> None:
-    """Render retroactive Starting Data vs saved-research differences."""
-    differences = company_source_field_comparison(
-        company_source,
-        research_records,
-        reconciliation=reconciliation,
-    )
-    if differences.empty:
-        rediscovered = int(
-            reconciliation["Reconciliation"].astype(str).str.startswith("Rediscovered").sum()
+    """Show only meaningful source-vs-research changes first.
+
+    The comparison remains retroactive and read-only. Harmless formatting
+    differences are intentionally hidden behind a collapsed technical-details
+    expander so the reviewer can focus on factual changes and gaps.
+    """
+    if differences is None:
+        differences = company_source_field_comparison(
+            company_source,
+            research_records,
+            reconciliation=reconciliation,
         )
-        if rediscovered:
-            st.success("Rediscovered records have no field-level differences in the compared Starting Data fields.")
+
+    if not isinstance(differences, pd.DataFrame) or differences.empty:
         return
 
     material_labels = {
@@ -4110,22 +4113,6 @@ def _render_company_source_field_comparison(
     material = differences.loc[differences["Comparison"].isin(material_labels)].copy()
     formatting = differences.loc[differences["Comparison"].eq("Formatting only")].copy()
 
-    changed_records = int(material["Starting Record"].nunique()) if not material.empty else 0
-    changed_fields = len(material)
-    formatting_fields = len(formatting)
-    newly_filled = int(material["Comparison"].eq("Added in research").sum()) if not material.empty else 0
-
-    st.markdown("#### Starting Data vs research changes")
-    st.caption(
-        "This comparison also works for research completed before this feature was added. "
-        "It reads the saved research records and current Starting Data at review time; neither dataset is overwritten automatically."
-    )
-    metric_columns = st.columns(4)
-    metric_columns[0].metric("Records with differences", f"{changed_records:,}")
-    metric_columns[1].metric("Fields to review", f"{changed_fields:,}")
-    metric_columns[2].metric("Newly filled", f"{newly_filled:,}")
-    metric_columns[3].metric("Formatting-only", f"{formatting_fields:,}")
-
     if not material.empty:
         priority_order = {
             "Changed — verify": 0,
@@ -4133,53 +4120,78 @@ def _render_company_source_field_comparison(
             "Missing from research": 2,
             "Added in research": 3,
         }
+        simple_labels = {
+            "Changed — verify": "Changed",
+            "Possible typo / minor text change": "Possible typo",
+            "Missing from research": "Missing in new research",
+            "Added in research": "New information",
+        }
         material["_priority"] = material["Comparison"].map(priority_order).fillna(9)
         material = material.sort_values(
-            ["_priority", "Starting Record", "Field"], kind="stable"
+            ["Starting Record", "_priority", "Field"], kind="stable"
         ).drop(columns=["_priority"])
+        material["Change"] = material["Comparison"].map(simple_labels).fillna(
+            material["Comparison"]
+        )
+        simple = material.rename(
+            columns={
+                "Starting Record": "Property",
+                "Starting Data": "Before",
+                "Research Result": "Now",
+            }
+        )[["Property", "Field", "Before", "Now", "Change"]]
+
+        changed_records = int(simple["Property"].nunique())
         with smart_expander(
-            "Field changes to review",
-            count=len(material),
-            status="source vs research",
+            "Changes to review",
+            count=changed_records,
+            status=f"{len(simple):,} field change(s)",
             expanded=True,
         ):
             st.caption(
-                "Changed values are review flags, not automatic corrections. 'Added in research' can be a legitimate update; 'Missing from research' means the matched research row left that field blank."
+                "Before = Starting Data. Now = saved research. Datablix only shows meaningful differences here and never chooses a winner automatically."
             )
             st.dataframe(
-                material[[
-                    "Starting Record", "Matched Research Record", "Field",
-                    "Starting Data", "Research Result", "Comparison", "Comparison Note",
-                ]],
+                simple,
                 width="stretch",
                 hide_index=True,
+                column_config={
+                    "Property": st.column_config.TextColumn("Property", width="medium"),
+                    "Field": st.column_config.TextColumn("Field", width="medium"),
+                    "Before": st.column_config.TextColumn("Before", width="medium"),
+                    "Now": st.column_config.TextColumn("Now", width="medium"),
+                    "Change": st.column_config.TextColumn("What changed", width="medium"),
+                },
+            )
+            st.info(
+                "Verify factual changes against the supporting source before deciding which value to keep. New information can be valid even when the Starting Data was blank."
             )
 
     if not formatting.empty:
         with smart_expander(
-            "Formatting and equivalent wording differences",
+            "Technical details: formatting differences",
             count=len(formatting),
             status="usually no factual conflict",
             expanded=False,
         ):
             st.caption(
-                "These values normalize to the same underlying value, such as St vs Street, phone formatting, URL formatting, accents, or equivalent classification wording."
+                "Hidden by default because these values normalize to the same information—for example St vs Street, accents, phone formatting, capitalization, or equivalent URL formatting."
             )
-            st.dataframe(
-                formatting[[
-                    "Starting Record", "Matched Research Record", "Field",
-                    "Starting Data", "Research Result", "Comparison Note",
-                ]],
-                width="stretch",
-                hide_index=True,
-            )
+            formatting_view = formatting.rename(
+                columns={
+                    "Starting Record": "Property",
+                    "Starting Data": "Before",
+                    "Research Result": "Now",
+                }
+            )[["Property", "Field", "Before", "Now"]]
+            st.dataframe(formatting_view, width="stretch", hide_index=True)
 
 
 def render_company_source_presence_reconciliation(
     company_id: str,
     research_records: pd.DataFrame,
 ) -> None:
-    """Show Starting Data records absent or ambiguous in one company's research."""
+    """Render a low-cognitive-load Starting Data vs research comparison."""
     company_id = safe_text(company_id)
     if not company_id:
         return
@@ -4212,102 +4224,148 @@ def render_company_source_presence_reconciliation(
     if reconciliation.empty:
         return
 
+    differences = company_source_field_comparison(
+        company_source,
+        research_records,
+        reconciliation=reconciliation,
+    )
+    material_labels = {
+        "Changed — verify",
+        "Possible typo / minor text change",
+        "Added in research",
+        "Missing from research",
+    }
+    material = (
+        differences.loc[differences["Comparison"].isin(material_labels)].copy()
+        if isinstance(differences, pd.DataFrame) and not differences.empty
+        else pd.DataFrame()
+    )
+
     rediscovered_mask = reconciliation["Reconciliation"].str.startswith("Rediscovered")
     possible_mask = reconciliation["Reconciliation"].eq("Possible match")
     missing_mask = reconciliation["Reconciliation"].eq("Not rediscovered")
-    rediscovered_count = int(rediscovered_mask.sum())
+    excluded_mask = reconciliation["Reconciliation"].eq("Rediscovered — excluded/not current")
+
+    found_count = int(rediscovered_mask.sum())
     possible_count = int(possible_mask.sum())
     missing_count = int(missing_mask.sum())
+    excluded_count = int(excluded_mask.sum())
+
+    review_labels = set()
+    if not material.empty:
+        review_labels.update(material["Starting Record"].dropna().astype(str))
+    review_labels.update(
+        reconciliation.loc[possible_mask, "Starting Record"].dropna().astype(str)
+    )
+    review_labels.update(
+        reconciliation.loc[excluded_mask, "Starting Record"].dropna().astype(str)
+    )
+    need_review_count = len(review_labels)
+
+    changed_labels = set(material["Starting Record"].dropna().astype(str)) if not material.empty else set()
+    excluded_labels = set(
+        reconciliation.loc[excluded_mask, "Starting Record"].dropna().astype(str)
+    )
+    clean_found_count = max(0, found_count - len(changed_labels | excluded_labels))
 
     st.divider()
-    st.markdown("### Starting Data reconciliation")
+    st.markdown("### Source comparison")
     st.caption(
-        "This reverse check asks whether every Starting Data record for the selected company appeared anywhere in the returned research. "
-        "It does not automatically delete, restore, or change inventory status."
+        "A simple check of this company's Starting Data against the research already saved in Datablix. Nothing is overwritten automatically."
     )
     metric_columns = st.columns(4)
-    metric_columns[0].metric("Starting source", f"{len(reconciliation):,}")
-    metric_columns[1].metric("Rediscovered", f"{rediscovered_count:,}")
-    metric_columns[2].metric("Possible match", f"{possible_count:,}")
-    metric_columns[3].metric("Not rediscovered", f"{missing_count:,}")
+    metric_columns[0].metric("Starting records", f"{len(reconciliation):,}")
+    metric_columns[1].metric("Found again", f"{found_count:,}")
+    metric_columns[2].metric("Need review", f"{need_review_count:,}")
+    metric_columns[3].metric("Not found", f"{missing_count:,}")
 
-    if missing_count:
-        st.warning(
-            f"{missing_count:,} Starting Data record(s) were not rediscovered in the current research for {company_name or 'this company'}. "
-            "Not rediscovered does not mean the property is no longer managed or inactive; it means no credible matching research row was returned."
-        )
-        with smart_expander(
-            "Starting records not rediscovered",
-            count=missing_count,
-            status="review against source",
-            expanded=True,
-        ):
-            missing = reconciliation.loc[missing_mask, [
-                "Starting Record ID", "Starting Record", "Street Address",
-                "City", "Postal Code", "Starting Source URL",
-            ]].copy()
-            st.dataframe(
-                missing,
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Starting Source URL": st.column_config.LinkColumn(
-                        "Starting Source", display_text="Open source"
-                    ),
-                },
-            )
-    elif possible_count:
-        st.info(
-            "No Starting Data record is completely unmatched, but one or more possible matches still need manual confirmation before Datablix treats the reconciliation as complete."
-        )
-    else:
+    if clean_found_count:
         st.success(
-            "Every Starting Data record for this company has a strong or reviewer-accepted match somewhere in the current research results."
+            f"{clean_found_count:,} Starting Data record(s) were found again with no important field changes to review."
         )
-
-    if possible_count:
-        with smart_expander(
-            "Possible source matches",
-            count=possible_count,
-            status="manual comparison needed",
-            expanded=False,
-        ):
-            possible = reconciliation.loc[possible_mask, [
-                "Starting Record", "Street Address", "Postal Code",
-                "Matched Research Record", "Best Match Score", "Match Reason",
-            ]].copy()
-            st.caption(
-                "These rows have credible similarities but are below Datablix's strong-match threshold. Confirm them manually before treating them as rediscovered."
-            )
-            st.dataframe(possible, width="stretch", hide_index=True)
-
-    excluded_matches = reconciliation.loc[
-        reconciliation["Reconciliation"].eq("Rediscovered — excluded/not current")
-    ].copy()
-    if not excluded_matches.empty:
-        with smart_expander(
-            "Rediscovered but excluded / not current",
-            count=len(excluded_matches),
-            status="present in research",
-            expanded=False,
-        ):
-            st.caption(
-                "These Starting Data records did appear in the returned research, but the research currently marks them excluded, not current, or removed. They are therefore not counted as missing from the research result."
-            )
-            st.dataframe(
-                excluded_matches[[
-                    "Starting Record", "Street Address", "Matched Research Record",
-                    "Research Result State", "Best Match Score", "Match Reason",
-                ]],
-                width="stretch",
-                hide_index=True,
-            )
+    if not need_review_count and not missing_count:
+        st.success("The Starting Data and saved research are aligned for this company.")
 
     _render_company_source_field_comparison(
         company_source,
         research_records,
         reconciliation,
+        differences=differences,
     )
+
+    if missing_count:
+        with smart_expander(
+            "Not found in new research",
+            count=missing_count,
+            status="manual check recommended",
+            expanded=True,
+        ):
+            st.warning(
+                "Not found does not mean the property is inactive or no longer managed. It only means Datablix could not find a credible matching research row."
+            )
+            missing = reconciliation.loc[missing_mask, [
+                "Starting Record ID", "Starting Record", "Street Address",
+                "City", "Postal Code", "Starting Source URL",
+            ]].copy().rename(
+                columns={
+                    "Starting Record ID": "Source ID",
+                    "Starting Record": "Property",
+                    "Starting Source URL": "Source",
+                }
+            )
+            st.dataframe(
+                missing,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Source": st.column_config.LinkColumn(
+                        "Source", display_text="Open source"
+                    ),
+                },
+            )
+
+    if possible_count:
+        with smart_expander(
+            "Possible same property",
+            count=possible_count,
+            status="confirm the match",
+            expanded=False,
+        ):
+            st.caption(
+                "Datablix found similarities, but not enough evidence for a strong automatic match. Compare the two records before confirming they are the same property."
+            )
+            possible = reconciliation.loc[possible_mask, [
+                "Starting Record", "Street Address", "Postal Code",
+                "Matched Research Record",
+            ]].copy().rename(
+                columns={
+                    "Starting Record": "Starting Data property",
+                    "Matched Research Record": "Possible research match",
+                }
+            )
+            st.dataframe(possible, width="stretch", hide_index=True)
+
+    if excluded_count:
+        with smart_expander(
+            "Found, but marked no longer current",
+            count=excluded_count,
+            status="review status",
+            expanded=False,
+        ):
+            st.caption(
+                "These properties were found in the research, so they are not missing. The saved research currently marks them excluded, removed, or not current."
+            )
+            excluded = reconciliation.loc[excluded_mask, [
+                "Starting Record", "Street Address", "Matched Research Record",
+                "Research Result State",
+            ]].copy().rename(
+                columns={
+                    "Starting Record": "Starting Data property",
+                    "Matched Research Record": "Research property",
+                    "Research Result State": "Current research status",
+                }
+            )
+            st.dataframe(excluded, width="stretch", hide_index=True)
 
 
 def build_research_package_bytes(
