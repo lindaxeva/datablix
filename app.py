@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "City of Ottawa + Residential Property Types 2026.07.30-v66"
+DATABLIX_BUILD = "City of Ottawa + Residential Property Types 2026.08.07-v67"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -383,8 +383,6 @@ S_EDIT_COUNT = "db_edit_count"
 S_PROJECT_NAME = "db_project_name"
 S_COMPANIES = "db_company_registry"
 S_ACTIVE_COMPANY = "db_active_company_id"
-S_QA_BASELINE = "db_quality_baseline"
-S_QA_BASELINE_META = "db_quality_baseline_meta"
 S_PROJECT_LOADED = "db_project_loaded"
 S_SCAN_HISTORY = "db_scan_history"
 S_SCAN_CANDIDATES = "db_scan_candidates_history"
@@ -419,7 +417,7 @@ def _autosave_file() -> Path:
 AUTOSAVE_STATE_KEYS = [
     S_FILE, S_ORIGINAL, S_WORKING, S_NAME, S_SHEET, S_MAPPING,
     S_SOURCE_TYPE, S_SOURCE_REF, S_SELECTOR, S_EDIT_COUNT,
-    S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY, S_QA_BASELINE, S_QA_BASELINE_META,
+    S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY,
     S_PROJECT_LOADED, S_SCAN_HISTORY, S_SCAN_CANDIDATES, S_SCAN_PAGES,
     S_SOURCE_BASELINE_META, S_SOURCE_VERSIONS, S_CLASSIFICATION_RULES,
     S_COMPANY_LINK_REPAIR_VERSION,
@@ -3213,7 +3211,6 @@ def delete_company_from_project(company_id: str) -> tuple[bool, str, dict]:
     stats = {
         "company": company_name,
         "records_removed": 0,
-        "baseline_rows_removed": 0,
         "scan_history_rows_removed": 0,
         "scan_candidate_rows_removed": 0,
         "scan_page_rows_removed": 0,
@@ -3224,7 +3221,6 @@ def delete_company_from_project(company_id: str) -> tuple[bool, str, dict]:
     for state_key, stat_key in [
         (S_WORKING, "records_removed"),
         (S_ORIGINAL, None),
-        (S_QA_BASELINE, "baseline_rows_removed"),
         (S_SCAN_HISTORY, "scan_history_rows_removed"),
         (S_SCAN_CANDIDATES, "scan_candidate_rows_removed"),
         (S_SCAN_PAGES, "scan_page_rows_removed"),
@@ -3243,9 +3239,6 @@ def delete_company_from_project(company_id: str) -> tuple[bool, str, dict]:
         if stat_key:
             stats[stat_key] = removed
 
-    baseline_meta = _quality_baseline_meta()
-    baseline_meta.pop(clean_company_id, None)
-    st.session_state[S_QA_BASELINE_META] = baseline_meta
 
     # Remove the organization from the project registry itself.
     registry = registry.loc[
@@ -4862,157 +4855,16 @@ def methodology(df, name, sheet):
     ])
 
 
-def qa_issue_rows(qa_frame):
-    columns = [
-        "Issue Key", "Company ID", "Management/Owner", "Record ID",
-        "Severity", "Issue", "Captured At",
-    ]
-    if qa_frame is None or qa_frame.empty:
-        return pd.DataFrame(columns=columns)
-    rows = []
-    captured_at = datetime.now().isoformat(timespec="seconds")
-    for _, record in qa_frame.iterrows():
-        record_id = str(record.get("Record ID", "")).strip()
-        company_id = str(record.get("Company ID", "")).strip()
-        owner = str(record.get("Management/Owner", "")).strip()
-        for item in str(record.get("QA Flags", "")).split("; "):
-            if not item or item == "No rental property data issues found":
-                continue
-            severity, separator, issue = item.partition(": ")
-            if not separator:
-                severity, issue = "Review", item
-            key = f"{record_id}|{severity}|{issue}"
-            rows.append({
-                "Issue Key": key,
-                "Company ID": company_id,
-                "Management/Owner": owner,
-                "Record ID": record_id,
-                "Severity": severity,
-                "Issue": issue,
-                "Captured At": captured_at,
-            })
-    return pd.DataFrame(rows, columns=columns).drop_duplicates(
-        subset=["Issue Key"], keep="last"
-    )
 
 
-def quality_impact_summary(qa_frame, baseline=None):
-    current = qa_issue_rows(qa_frame)
-    baseline = baseline.copy() if isinstance(baseline, pd.DataFrame) else pd.DataFrame()
-    if baseline.empty or "Issue Key" not in baseline.columns:
-        baseline = pd.DataFrame(columns=current.columns)
-    baseline_keys = set(baseline["Issue Key"].astype(str))
-    current_keys = set(current["Issue Key"].astype(str))
-    initial = len(baseline_keys)
-    remaining = len(baseline_keys & current_keys)
-    resolved_count = len(baseline_keys - current_keys)
-    new_count = len(current_keys - baseline_keys)
-    resolution_rate = (resolved_count / initial * 100) if initial else 0.0
-    return pd.DataFrame([
-        {"Metric": "Baseline issues", "Value": initial, "Interpretation": "Rule-based issues captured before correction."},
-        {"Metric": "Baseline issues resolved", "Value": resolved_count, "Interpretation": "Captured issues that no longer appear after revalidation."},
-        {"Metric": "Baseline issues remaining", "Value": remaining, "Interpretation": "Captured issues still present."},
-        {"Metric": "New issues currently detected", "Value": new_count, "Interpretation": "Current issues that were not part of the saved baseline."},
-        {"Metric": "Issue-resolution rate", "Value": round(resolution_rate, 1), "Interpretation": "Resolved baseline issues divided by baseline issues."},
-    ])
 
 
-def _quality_baseline_meta() -> dict:
-    """Return normalized baseline metadata keyed by company ID."""
-    value = st.session_state.get(S_QA_BASELINE_META)
-    return dict(value) if isinstance(value, dict) else {}
 
 
-def quality_baseline_exists(company_id: str | None = None) -> bool:
-    """A baseline can legitimately contain zero issues, so metadata is authoritative."""
-    meta = _quality_baseline_meta()
-    if company_id is not None:
-        key = str(company_id).strip()
-        if key in meta:
-            return True
-        baseline = st.session_state.get(S_QA_BASELINE)
-        return bool(
-            isinstance(baseline, pd.DataFrame)
-            and not baseline.empty
-            and "Company ID" in baseline.columns
-            and baseline["Company ID"].astype(str).eq(key).any()
-        )
-    baseline = st.session_state.get(S_QA_BASELINE)
-    return bool(meta) or bool(isinstance(baseline, pd.DataFrame) and not baseline.empty)
 
 
-def capture_quality_baseline(company_id=None, replace=False):
-    """Capture the starting QA state and remember it even when zero issues exist."""
-    working = st.session_state.get(S_WORKING)
-    if not isinstance(working, pd.DataFrame) or working.empty:
-        return 0
-
-    current_qa = qa_checks(working)
-    company_key = str(company_id or "").strip()
-    company_name = "All companies"
-    if company_key:
-        current_qa = current_qa.loc[
-            current_qa["Company ID"].astype(str).eq(company_key)
-        ]
-        registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
-        match = registry.loc[registry["Company ID"].astype(str).eq(company_key)]
-        company_name = (
-            str(match.iloc[0]["Management/Owner"]).strip()
-            if not match.empty
-            else company_key
-        ) or company_key
-
-    captured = qa_issue_rows(current_qa)
-    existing = st.session_state.get(S_QA_BASELINE)
-    if not isinstance(existing, pd.DataFrame):
-        existing = pd.DataFrame(columns=captured.columns)
-    elif existing.empty and not list(existing.columns):
-        existing = pd.DataFrame(columns=captured.columns)
-
-    meta = _quality_baseline_meta()
-    meta_key = company_key or "__project__"
-    if meta_key in meta and not replace:
-        return -1
-
-    if company_key and not existing.empty and "Company ID" in existing.columns:
-        existing = existing.loc[
-            ~existing["Company ID"].astype(str).eq(company_key)
-        ].copy()
-    elif replace and not company_key:
-        existing = existing.iloc[0:0].copy()
-
-    combined = pd.concat([existing, captured], ignore_index=True)
-    if "Issue Key" in combined.columns and not combined.empty:
-        combined = combined.drop_duplicates(subset=["Issue Key"], keep="last")
-    st.session_state[S_QA_BASELINE] = combined
-
-    meta[meta_key] = {
-        "company_id": company_key,
-        "company_name": company_name,
-        "captured_at": datetime.now().isoformat(timespec="seconds"),
-        "starting_issue_count": int(len(captured)),
-        "starting_record_count": int(len(current_qa)),
-    }
-    st.session_state[S_QA_BASELINE_META] = meta
-    return len(captured)
 
 
-def reset_quality_baseline(company_id: str) -> None:
-    """Remove one company's baseline and its metadata."""
-    company_key = str(company_id or "").strip()
-    baseline = st.session_state.get(S_QA_BASELINE)
-    if (
-        isinstance(baseline, pd.DataFrame)
-        and not baseline.empty
-        and "Company ID" in baseline.columns
-    ):
-        st.session_state[S_QA_BASELINE] = baseline.loc[
-            ~baseline["Company ID"].astype(str).eq(company_key)
-        ].reset_index(drop=True)
-
-    meta = _quality_baseline_meta()
-    meta.pop(company_key, None)
-    st.session_state[S_QA_BASELINE_META] = meta
 
 def company_progress_summary(qa_frame, registry=None):
     registry = normalize_company_registry(registry)
@@ -5236,7 +5088,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
     ])
 
 
-def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) -> str:
+def presentation_summary_text(qa_frame, registry, scope_label) -> str:
     """Create a copy-ready summary for the final project presentation."""
     approved = int(approved_for_export_mask(qa_frame).sum())
     entered = int(qa_frame["Directory Entry Status"].eq("Entered").sum()) if "Directory Entry Status" in qa_frame.columns else 0
@@ -5250,8 +5102,11 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
     company_count = int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
     if scope_label == "All companies" and not normalize_company_registry(registry).empty:
         company_count = len(normalize_company_registry(registry))
-    impact = quality_impact_summary(qa_frame, baseline)
-    impact_map = dict(zip(impact["Metric"], impact["Value"]))
+
+    critical = int(qa_frame["QA Status"].eq("Critical").sum()) if "QA Status" in qa_frame.columns else 0
+    warnings = int(qa_frame["Warning Count"].sum()) if "Warning Count" in qa_frame.columns else 0
+    research_gaps = int(qa_frame["Research Gap Count"].sum()) if "Research Gap Count" in qa_frame.columns else 0
+    verified = int(qa_frame["Verification Status"].eq("Verified").sum()) if "Verification Status" in qa_frame.columns else 0
 
     coverage = field_coverage(qa_frame) if not qa_frame.empty else pd.DataFrame()
     biggest_gaps = []
@@ -5279,12 +5134,12 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
 - Entered in directory: {entered}
 - Directory entries needing correction: {needs_correction}
 - Still in review or follow-up: {still_review}
-- Current QA findings: {int(qa_frame['QA Flag Count'].sum()) if not qa_frame.empty else 0}
 
-## Quality improvement
-- Baseline issues: {int(impact_map.get('Baseline issues', 0))}
-- Baseline issues resolved: {int(impact_map.get('Baseline issues resolved', 0))}
-- Resolution rate: {float(impact_map.get('Issue-resolution rate', 0)):.1f}%
+## Current quality position
+- Records with critical issues: {critical}
+- Warnings: {warnings}
+- Open research gaps: {research_gaps}
+- Human-verified records: {verified}
 
 ## Main public-data gaps
 {chr(10).join(f'- {gap}' for gap in biggest_gaps) if biggest_gaps else '- No major field-coverage gaps identified in the current scope.'}
@@ -5313,10 +5168,10 @@ def project_deliverables_table():
         {"Project Deliverable": "4. Data Source and Verification Tracker", "Datablix Location": "Report → Source & verification", "How Datablix supports it": "Source URL, research date, verification, missing information, reviewer notes, and follow-up."},
         {"Project Deliverable": "5. Directory Structure and Searchability Recommendations", "Datablix Location": "Report → Directory recommendations", "How Datablix supports it": "Recommended fields/filters combined with observed coverage rates."},
         {"Project Deliverable": "6. Research Methodology and Limitations Report", "Datablix Location": "Report → Methodology & limitations", "How Datablix supports it": "Dynamic methodology, assumptions, limitations, and next steps."},
-        {"Project Deliverable": "7. Final Directory Summary Presentation", "Datablix Location": "Report → Final summary", "How Datablix supports it": "Copy-ready summary metrics, quality impact, gaps, methodology, and recommendations."},
+        {"Project Deliverable": "7. Final Directory Summary Presentation", "Datablix Location": "Report → Final summary", "How Datablix supports it": "Copy-ready summary metrics, current quality, gaps, methodology, and recommendations."},
     ])
 
-def report_summary(qa_frame, registry=None, scope_label="All companies", baseline=None):
+def report_summary(qa_frame, registry=None, scope_label="All companies"):
     registry = normalize_company_registry(registry)
     company_count = int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
     if scope_label == "All companies" and not registry.empty:
@@ -5326,20 +5181,18 @@ def report_summary(qa_frame, registry=None, scope_label="All companies", baselin
     issue_count = int(qa_frame["QA Flag Count"].sum())
     unresolved_count = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
     cities = sorted(set(resolved(qa_frame["City"]).dropna().astype(str).str.strip()))
-    impact = quality_impact_summary(qa_frame, baseline)
-    impact_map = dict(zip(impact["Metric"], impact["Value"]))
     existing_count = int(qa_frame["Directory Discovery Status"].eq("Existing Source Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     discovered_count = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     needs_classification_count = int(qa_frame["Directory Discovery Status"].eq("Needs Classification").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     duplicate_count = int(qa_frame["Directory Discovery Status"].eq("Possible Duplicate").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     excluded_count = int(qa_frame["Directory Discovery Status"].eq("Excluded / Not Current").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
+    verified_count = int(qa_frame["Verification Status"].eq("Verified").sum()) if "Verification Status" in qa_frame.columns else 0
 
     rows = [
         {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Building records analysed: {len(qa_frame):,}."},
         {"Section": "Directory results", "Report Text": f"Datablix identified {len(qa_frame):,} building records across {len(cities):,} recorded cities. {approved_count:,} records are currently Approved for Export after human review, and {entered_count:,} records are marked Entered in the final directory."},
         {"Section": "Research contribution", "Report Text": f"The current scope contains {existing_count:,} existing source record(s), {discovered_count:,} newly discovered record(s), {needs_classification_count:,} record(s) still needing origin classification, {duplicate_count:,} possible duplicate(s), and {excluded_count:,} excluded/not-current record(s)."},
-        {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {unresolved_count:,} records still require correction, verification, a decision, or documented follow-up."},
-        {"Section": "Quality impact", "Report Text": f"The saved baseline contains {int(impact_map.get('Baseline issues', 0)):,} issues. {int(impact_map.get('Baseline issues resolved', 0)):,} no longer appear after revalidation, producing an issue-resolution rate of {float(impact_map.get('Issue-resolution rate', 0)):.1f}%."},
+        {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {verified_count:,} record(s) are human verified, while {unresolved_count:,} record(s) still require correction, verification, a decision, or documented follow-up."},
         {"Section": "Method", "Report Text": "Companies were researched separately using an inventory-first public-source method. Structured CSV research results and scanner cross-checks were imported as candidates, then reviewed by a person before approval."},
         {"Section": "Assumptions", "Report Text": "A loading property URL is not proof of current inventory; unavailable information is documented rather than invented; official company/property sources are primary evidence; and the project scope may expand when additional companies are assigned."},
         {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, blocked, duplicated, JavaScript-dependent, or inconsistent. Automated checks support review but do not independently prove ownership, unit counts, or portfolio completeness."},
@@ -5387,9 +5240,6 @@ def project_workbook_bytes():
             "QA Status": "Pass",
         }.items():
             qa_frame[column] = default
-    baseline = st.session_state.get(S_QA_BASELINE)
-    if not isinstance(baseline, pd.DataFrame):
-        baseline = pd.DataFrame()
     source_baseline = st.session_state.get(S_ORIGINAL)
     source_meta = st.session_state.get(S_SOURCE_BASELINE_META, {})
     if not isinstance(source_meta, dict) or not source_meta:
@@ -5431,10 +5281,7 @@ def project_workbook_bytes():
         "Classification Rules": classification_rules,
         "Current QA": qa_frame,
         "Company Analysis": company_progress_summary(qa_frame, registry) if not qa_frame.empty else pd.DataFrame(),
-        "Quality Baseline": baseline,
-        "Quality Baseline Meta": pd.DataFrame(list(_quality_baseline_meta().values())),
-        "Quality Impact": quality_impact_summary(qa_frame, baseline),
-        "Report Summary": report_summary(qa_frame, registry, baseline=baseline),
+        "Report Summary": report_summary(qa_frame, registry),
         "Scan History": st.session_state.get(S_SCAN_HISTORY, pd.DataFrame()),
         "Scan Candidates": st.session_state.get(S_SCAN_CANDIDATES, pd.DataFrame()),
         "Scan Pages": st.session_state.get(S_SCAN_PAGES, pd.DataFrame()),
@@ -5539,34 +5386,6 @@ def load_project_workbook(uploaded):
             if "Company Registry" in workbook.sheet_names
             else empty_company_registry()
         )
-        baseline = (
-            pd.read_excel(workbook, sheet_name="Quality Baseline")
-            if "Quality Baseline" in workbook.sheet_names
-            else pd.DataFrame()
-        )
-        baseline_meta_sheet = (
-            pd.read_excel(workbook, sheet_name="Quality Baseline Meta")
-            if "Quality Baseline Meta" in workbook.sheet_names
-            else pd.DataFrame()
-        )
-        baseline_meta = {}
-        if not baseline_meta_sheet.empty:
-            for _, meta_row in baseline_meta_sheet.iterrows():
-                meta_company_id = str(meta_row.get("company_id", "") or "").strip()
-                meta_key = meta_company_id or "__project__"
-                starting_issue_value = pd.to_numeric(
-                    meta_row.get("starting_issue_count", 0), errors="coerce"
-                )
-                starting_record_value = pd.to_numeric(
-                    meta_row.get("starting_record_count", 0), errors="coerce"
-                )
-                baseline_meta[meta_key] = {
-                    "company_id": meta_company_id,
-                    "company_name": str(meta_row.get("company_name", "") or ""),
-                    "captured_at": str(meta_row.get("captured_at", "") or ""),
-                    "starting_issue_count": 0 if pd.isna(starting_issue_value) else int(starting_issue_value),
-                    "starting_record_count": 0 if pd.isna(starting_record_value) else int(starting_record_value),
-                }
         scan_history = (
             pd.read_excel(workbook, sheet_name="Scan History")
             if "Scan History" in workbook.sheet_names
@@ -5642,8 +5461,6 @@ def load_project_workbook(uploaded):
         st.session_state[S_CLASSIFICATION_RULES] = (
             classification_rules
         )
-    st.session_state[S_QA_BASELINE] = baseline
-    st.session_state[S_QA_BASELINE_META] = baseline_meta
     st.session_state[S_SCAN_HISTORY] = scan_history
     st.session_state[S_SCAN_CANDIDATES] = scan_candidates
     st.session_state[S_SCAN_PAGES] = scan_pages
@@ -5681,7 +5498,7 @@ def open_workspace(
         mapped, registry = synchronize_company_registry(mapped, starting_registry)
 
         # A newly opened source is a new project context. Do not silently carry
-        # companies, scan results, or QA baselines from the previous project.
+        # companies or scan results from the previous project.
         st.session_state[S_FILE] = signature
         st.session_state[S_ORIGINAL] = mapped.copy()
         st.session_state[S_WORKING] = mapped.copy()
@@ -5697,8 +5514,6 @@ def open_workspace(
             safe_filename(name).replace("_", " ").title()
             or "Datablix master project"
         )
-        st.session_state[S_QA_BASELINE] = pd.DataFrame()
-        st.session_state[S_QA_BASELINE_META] = {}
         st.session_state[S_SCAN_HISTORY] = pd.DataFrame()
         st.session_state[S_SCAN_CANDIDATES] = pd.DataFrame()
         st.session_state[S_SCAN_PAGES] = pd.DataFrame()
@@ -6986,7 +6801,6 @@ def blank_workspace():
     mapping = pd.DataFrame({"Datablix Field": INTERNAL_COLUMNS, "Imported Column(s)": INTERNAL_COLUMNS, "Mapping Status": "Template field"})
     st.session_state.pop(S_FILE, None)
     st.session_state[S_COMPANIES] = empty_company_registry()
-    st.session_state[S_QA_BASELINE] = pd.DataFrame()
     st.session_state[S_ACTIVE_COMPANY] = ""
     st.session_state[S_PROJECT_NAME] = "Datablix master project"
     open_workspace(
@@ -7069,7 +6883,6 @@ def start_demo_workspace() -> None:
     frame = ensure_ids(normalize_workflow(frame))
     st.session_state[S_WORKING] = frame
     st.session_state[S_ORIGINAL] = frame.copy()
-    st.session_state[S_QA_BASELINE] = qa_issue_rows(qa_checks(frame))
     st.session_state[S_ACTIVE_COMPANY] = company_ids["North River Property Management"]
     st.session_state[S_SOURCE_TYPE] = "Demo workspace"
     st.session_state[S_SOURCE_REF] = "Fictional sample rental property information"
@@ -7270,8 +7083,8 @@ def smart_expander(
     return st.expander(label, expanded=bool(expanded))
 
 
-def _review_quality_company(qa_frame: pd.DataFrame) -> tuple[str | None, pd.DataFrame]:
-    """Choose the company whose fixed baseline and live quality progress are shown in Review."""
+def _review_company(qa_frame: pd.DataFrame) -> tuple[str | None, pd.DataFrame]:
+    """Choose the company whose records and live quality results are shown in Review."""
     registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
     if qa_frame is None or qa_frame.empty or registry.empty:
         return None, qa_frame.iloc[0:0].copy() if isinstance(qa_frame, pd.DataFrame) else pd.DataFrame()
@@ -7286,14 +7099,14 @@ def _review_quality_company(qa_frame: pd.DataFrame) -> tuple[str | None, pd.Data
     active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
     default_index = company_ids.index(active_id) if active_id in company_ids else 0
     selected_id = st.selectbox(
-        "Company for review and quality tracking",
+        "Company for review",
         company_ids,
         index=default_index,
         format_func=lambda company_id: company_label(
             available.loc[available["Company ID"].eq(company_id)].iloc[0]
         ),
-        key="db_review_quality_company",
-        help="The quality baseline is stored separately for each company.",
+        key="db_review_company",
+        help="Select the company whose records you want to review and verify.",
     )
     selected_qa = qa_frame.loc[
         qa_frame["Company ID"].astype(str).eq(str(selected_id))
@@ -7301,106 +7114,9 @@ def _review_quality_company(qa_frame: pd.DataFrame) -> tuple[str | None, pd.Data
     return str(selected_id), selected_qa
 
 
-def render_review_quality_baseline(qa_frame: pd.DataFrame) -> str | None:
-    """Render the fixed before-review quality snapshot at the top of Review."""
-    st.markdown("### Quality starting point")
-    st.caption(
-        "Capture this once before making review corrections. The baseline stays fixed while the live quality results change as you review records."
-    )
-    company_id, company_qa = _review_quality_company(qa_frame)
-    if not company_id:
-        st.info("Add company-linked building records before setting a quality baseline.")
-        return None
-
-    baseline = st.session_state.get(S_QA_BASELINE)
-    if not isinstance(baseline, pd.DataFrame):
-        baseline = pd.DataFrame()
-    company_baseline = baseline
-    if not company_baseline.empty and "Company ID" in company_baseline.columns:
-        company_baseline = company_baseline.loc[
-            company_baseline["Company ID"].astype(str).eq(company_id)
-        ].copy()
-    else:
-        company_baseline = pd.DataFrame()
-
-    baseline_exists = quality_baseline_exists(company_id)
-    meta = _quality_baseline_meta().get(company_id, {})
-    current_issues = len(qa_issue_rows(company_qa))
-    already_reviewed = int(
-        (
-            company_qa["Research Status"].eq("Completed")
-            | company_qa["Verification Status"].eq("Verified")
-            | company_qa["Record Decision"].isin(["Keep", "Update", "Possible Duplicate", "Remove"])
-        ).sum()
-    )
-
-    if not baseline_exists:
-        with st.container(border=True):
-            st.warning("Starting quality baseline has not been captured yet.")
-            if already_reviewed:
-                st.caption(
-                    f"{already_reviewed:,} record(s) already show review activity. Capturing now will create a baseline from the current state, not the original pre-review state."
-                )
-            baseline_metrics = st.columns(3)
-            baseline_metrics[0].metric("Records", f"{len(company_qa):,}")
-            baseline_metrics[1].metric("Current QA issues", f"{current_issues:,}")
-            baseline_metrics[2].metric(
-                "Needs verification",
-                f"{int(company_qa['Verification Status'].ne('Verified').sum()):,}",
-            )
-            if st.button(
-                "Capture starting quality baseline",
-                type="primary",
-                width="stretch",
-                key="db_review_capture_baseline",
-            ):
-                captured = capture_quality_baseline(company_id)
-                st.session_state[S_FLASH] = (
-                    f"Starting quality baseline saved with {max(captured, 0):,} issue(s)."
-                )
-                st.rerun()
-    else:
-        impact = quality_impact_summary(company_qa, company_baseline)
-        impact_map = dict(zip(impact["Metric"], impact["Value"]))
-        starting_issues = int(
-            meta.get("starting_issue_count", impact_map.get("Baseline issues", 0)) or 0
-        )
-        captured_at = str(meta.get("captured_at", "") or "")
-        with st.container(border=True):
-            st.success("Starting quality baseline is locked for comparison.")
-            if captured_at:
-                st.caption(f"Captured: {captured_at.replace('T', ' ')}")
-            metrics = st.columns(4)
-            metrics[0].metric("Starting issues", f"{starting_issues:,}")
-            metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
-            metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
-            metrics[3].metric("New", f"{int(impact_map.get('New issues currently detected', 0)):,}")
-            if starting_issues == 0:
-                st.info("This is a valid zero-issue baseline. Datablix will still track new issues that appear later.")
-
-            with st.expander("Reset starting baseline"):
-                st.caption("Reset only when you intentionally want a new starting point.")
-                confirm_reset = st.checkbox(
-                    "I understand this replaces the original baseline.",
-                    key="db_review_quality_confirm_reset",
-                )
-                if st.button(
-                    "Reset baseline",
-                    disabled=not confirm_reset,
-                    width="stretch",
-                    key="db_review_quality_reset",
-                ):
-                    reset_quality_baseline(company_id)
-                    captured = capture_quality_baseline(company_id, replace=True)
-                    st.session_state[S_FLASH] = (
-                        f"Starting baseline reset with {max(captured, 0):,} issue(s)."
-                    )
-                    st.rerun()
-
-    return company_id
 
 
-def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | None) -> None:
+def render_review_progress(qa_frame: pd.DataFrame, company_id: str | None) -> None:
     """Show live review progress and a direct path to exporting approved records."""
     if not company_id:
         return
@@ -7449,35 +7165,13 @@ def render_review_quality_progress(qa_frame: pd.DataFrame, company_id: str | Non
             "No records are approved for export yet. Finish the review fields for the records you want to deliver."
         )
 
-    baseline = st.session_state.get(S_QA_BASELINE)
-    if not isinstance(baseline, pd.DataFrame):
-        baseline = pd.DataFrame()
-    company_baseline = baseline
-    if not company_baseline.empty and "Company ID" in company_baseline.columns:
-        company_baseline = company_baseline.loc[
-            company_baseline["Company ID"].astype(str).eq(str(company_id))
-        ].copy()
-    else:
-        company_baseline = pd.DataFrame()
-
-    impact = quality_impact_summary(company_qa, company_baseline)
-    impact_map = dict(zip(impact["Metric"], impact["Value"]))
-
-    st.markdown("#### Quality progress")
+    st.markdown("#### Current quality")
     quality_metrics = st.columns(4)
     quality_metrics[0].metric("Critical issues", f"{int(company_qa['QA Status'].eq('Critical').sum()):,}")
     quality_metrics[1].metric("Warnings", f"{int(company_qa['Warning Count'].sum()):,}")
     quality_metrics[2].metric("Open research gaps", f"{int(company_qa['Research Gap Count'].sum()):,}")
     quality_metrics[3].metric("Human verified", f"{int(company_qa['Verification Status'].eq('Verified').sum()):,}")
 
-    if quality_baseline_exists(company_id):
-        progress_metrics = st.columns(4)
-        progress_metrics[0].metric("Baseline issues", f"{int(impact_map.get('Baseline issues', 0)):,}")
-        progress_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
-        progress_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
-        progress_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
-    else:
-        st.info("Capture the starting quality baseline above to enable before-and-after progress metrics.")
 
     quality_exception_count = (
         int(company_qa["QA Status"].eq("Critical").sum())
@@ -10229,7 +9923,7 @@ if S_WORKING not in st.session_state:
             elif not cloud_persistence_available():
                 st.info("Permanent cloud saving will activate after Supabase secrets are added.")
             st.write(
-                "You can also open a master project workbook to restore its companies, building records, scan history, quality baseline, and progress."
+                "You can also open a master project workbook to restore its companies, building records, scan history, and progress."
             )
             landing_project = st.file_uploader(
                 "Saved Datablix project",
@@ -10488,7 +10182,7 @@ review_population = (
 NAV_DESCRIPTIONS = {
     "Research projects & companies": "Set up your project and company workspaces.",
     "Website scanner": "Research the selected company and add or import building records.",
-    "Review records": "Review & Quality — capture the baseline, verify records, and approve clean records for export.",
+    "Review records": "Review & Quality — verify records, resolve quality issues, and approve clean records for export.",
     "Analysis & report": "Summarize coverage, quality, assumptions, limitations, and progress.",
     "Downloads": "Choose the company, records, and columns, preview them, then download CSV.",
 }
@@ -11059,7 +10753,7 @@ if section == "Research projects & companies":
                 st.warning(
                     f'This removes "{selected_snapshot["company_name"]}" from this project '
                     f'and permanently removes its {company_record_count:,} associated '
-                    "building record(s), QA baseline rows, scan history, and saved "
+                    "building record(s), scan history, and saved "
                     "company scanner state. The project and other companies are not affected."
                 )
 
@@ -11845,15 +11539,15 @@ elif section == "Review records":
     render_page_heading(
         "REVIEW & QUALITY",
         "Review records and track quality",
-        "Capture the starting data-quality position, correct and verify records, then measure what your review work improved.",
+        "Correct, verify, and approve records while Datablix refreshes the current quality checks after every save.",
     )
     st.caption(f"Workspace build: {DATABLIX_BUILD}")
     render_guidance(
-        "Baseline first, corrections second.",
-        "Capture the quality starting point before making review corrections whenever possible. The baseline stays fixed while current quality updates after every save.",
+        "Review, verify, approve.",
+        "Use the live quality checks to resolve critical issues, document research gaps, and move reviewed records toward Approved for Export.",
     )
 
-    review_quality_company_id = render_review_quality_baseline(qa) if has_records else None
+    review_company_id, _review_company_qa = _review_company(qa) if has_records else (None, pd.DataFrame())
 
     st.divider()
     st.markdown("### Review and verify records")
@@ -11863,8 +11557,8 @@ elif section == "Review records":
     )
 
     review_scope_qa = (
-        qa.loc[qa["Company ID"].astype(str).eq(str(review_quality_company_id))].copy()
-        if has_records and review_quality_company_id
+        qa.loc[qa["Company ID"].astype(str).eq(str(review_company_id))].copy()
+        if has_records and review_company_id
         else qa.copy() if has_records else pd.DataFrame()
     )
     filtered = review_scope_qa.copy()
@@ -11874,7 +11568,7 @@ elif section == "Review records":
         with geo_col:
             run_geo_validation = st.button(
                 "Validate Ottawa geography",
-                key=f"db_validate_geo_{review_quality_company_id or 'project'}",
+                key=f"db_validate_geo_{review_company_id or 'project'}",
                 width="stretch",
                 help="Geocode unresolved physical addresses and check City of Ottawa municipal scope. PO Box fields are never used.",
             )
@@ -11888,8 +11582,8 @@ elif section == "Review records":
         if run_geo_validation:
             working = st.session_state[S_WORKING].copy()
             target_mask = (
-                working["Company ID"].astype(str).eq(str(review_quality_company_id))
-                if review_quality_company_id
+                working["Company ID"].astype(str).eq(str(review_company_id))
+                if review_company_id
                 else pd.Series(True, index=working.index)
             )
             enriched = enrich_geographic_scope(working.loc[target_mask].copy(), max_requests=250)
@@ -12192,7 +11886,7 @@ elif section == "Review records":
                     st.rerun()
 
     if has_records:
-        render_review_quality_progress(qa_checks(st.session_state[S_WORKING].copy()), review_quality_company_id)
+        render_review_progress(qa_checks(st.session_state[S_WORKING].copy()), review_company_id)
 
 # -----------------------------
 # Analysis and report
@@ -12215,9 +11909,6 @@ elif section == "Analysis & report":
     selected_company_id = None
     scope_label = "All companies"
     analysis_qa = qa.copy()
-    analysis_baseline = st.session_state.get(S_QA_BASELINE)
-    if not isinstance(analysis_baseline, pd.DataFrame):
-        analysis_baseline = pd.DataFrame()
 
     if scope_mode == "One company":
         available = registry.loc[
@@ -12243,16 +11934,6 @@ elif section == "Analysis & report":
         company_row = available.loc[available["Company ID"].eq(selected_company_id)].iloc[0]
         scope_label = company_row["Management/Owner"]
         analysis_qa = qa.loc[qa["Company ID"].astype(str).eq(selected_company_id)].copy()
-        if not analysis_baseline.empty and "Company ID" in analysis_baseline.columns:
-            analysis_baseline = analysis_baseline.loc[
-                analysis_baseline["Company ID"].astype(str).eq(selected_company_id)
-            ].copy()
-
-        if not quality_baseline_exists(selected_company_id):
-            st.info(
-                "No starting quality baseline is saved for this company yet. "
-                "Open Review & Quality to capture it before using before-and-after metrics."
-            )
 
     company_count_metric = int(
         analysis_qa["Company ID"].astype(str).replace("", pd.NA).dropna().nunique()
@@ -12327,30 +12008,6 @@ elif section == "Analysis & report":
             if chart_fields:
                 chart_data = company_table.set_index("Management/Owner")[chart_fields]
                 st.bar_chart(chart_data)
-
-        with st.expander("Quality impact", expanded=False):
-            impact = quality_impact_summary(analysis_qa, analysis_baseline)
-            st.dataframe(impact, width="stretch", hide_index=True)
-            impact_map = dict(zip(impact["Metric"], impact["Value"]))
-            impact_metrics = st.columns(4)
-            impact_metrics[0].metric("Baseline issues", f"{int(impact_map.get('Baseline issues', 0)):,}")
-            impact_metrics[1].metric("Resolved", f"{int(impact_map.get('Baseline issues resolved', 0)):,}")
-            impact_metrics[2].metric("Remaining", f"{int(impact_map.get('Baseline issues remaining', 0)):,}")
-            impact_metrics[3].metric("Resolution rate", f"{float(impact_map.get('Issue-resolution rate', 0)):.1f}%")
-
-            baseline_exists_for_scope = (
-                quality_baseline_exists(selected_company_id)
-                if scope_mode == "One company" and selected_company_id
-                else quality_baseline_exists()
-            )
-            if not baseline_exists_for_scope:
-                st.info(
-                    "No starting quality baseline is saved for this scope. Open Review to capture one before using before-and-after metrics."
-                )
-            elif int(impact_map.get("Baseline issues", 0)) == 0:
-                st.info(
-                    "A valid zero-issue baseline is saved for this scope. New issues will still be tracked."
-                )
 
         with st.expander("Coverage and open gaps", expanded=False):
             coverage = field_coverage(analysis_qa)
@@ -12501,7 +12158,6 @@ elif section == "Analysis & report":
             analysis_qa,
             registry,
             scope_label=scope_label,
-            baseline=analysis_baseline,
         )
         with smart_expander(
             "Supporting report calculations",
@@ -12516,7 +12172,6 @@ elif section == "Analysis & report":
                 analysis_qa,
                 registry,
                 scope_label,
-                analysis_baseline,
             ),
             language="markdown",
         )
