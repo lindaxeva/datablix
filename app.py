@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Source Reconciliation + Field Change Review 2026.08.07-v70"
+DATABLIX_BUILD = "Source Reconciliation + Change Matrix Review 2026.08.07-v71"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -4088,11 +4088,11 @@ def _render_company_source_field_comparison(
     reconciliation: pd.DataFrame,
     differences: pd.DataFrame | None = None,
 ) -> None:
-    """Show only meaningful source-vs-research changes first.
+    """Show a property-first change matrix, with field details available on demand.
 
-    The comparison remains retroactive and read-only. Harmless formatting
-    differences are intentionally hidden behind a collapsed technical-details
-    expander so the reviewer can focus on factual changes and gaps.
+    The comparison remains retroactive and read-only. The matrix shows one row per
+    property so reviewers can scan many buildings quickly. Harmless formatting
+    differences remain hidden behind a collapsed technical-details expander.
     """
     if differences is None:
         differences = company_source_field_comparison(
@@ -4120,51 +4120,169 @@ def _render_company_source_field_comparison(
             "Missing from research": 2,
             "Added in research": 3,
         }
-        simple_labels = {
-            "Changed — verify": "Changed",
-            "Possible typo / minor text change": "Possible typo",
-            "Missing from research": "Missing in new research",
-            "Added in research": "New information",
-        }
         material["_priority"] = material["Comparison"].map(priority_order).fillna(9)
         material = material.sort_values(
             ["Starting Record", "_priority", "Field"], kind="stable"
         ).drop(columns=["_priority"])
-        material["Change"] = material["Comparison"].map(simple_labels).fillna(
-            material["Comparison"]
-        )
-        simple = material.rename(
-            columns={
-                "Starting Record": "Property",
-                "Starting Data": "Before",
-                "Research Result": "Now",
-            }
-        )[["Property", "Field", "Before", "Now", "Change"]]
 
-        changed_records = int(simple["Property"].nunique())
+        # Keep the matrix intentionally narrow. Exact matches and formatting-only
+        # differences display as a checkmark. Less common changed fields are rolled
+        # into "Other" and remain visible in the property detail table below.
+        matrix_fields = {
+            "Number of Apartments": "Apartments",
+            "Number of Storeys": "Storeys",
+            "Phone": "Phone",
+            "Primary Email": "Email",
+            "Website": "Website",
+            "Building Classification": "Classification",
+        }
+
+        def compact_cell(change_row: pd.Series) -> str:
+            comparison = safe_text(change_row.get("Comparison", ""))
+            before = safe_text(change_row.get("Starting Data", ""))
+            now = safe_text(change_row.get("Research Result", ""))
+            field = safe_text(change_row.get("Field", ""))
+
+            if comparison == "Added in research":
+                if field in {"Number of Apartments", "Number of Storeys", "Building Classification"} and now:
+                    return f"New: {now}"
+                return "New"
+            if comparison == "Missing from research":
+                return "Missing"
+            if comparison == "Possible typo / minor text change":
+                return "Check wording"
+
+            if field in {"Number of Apartments", "Number of Storeys"} and before and now:
+                return f"{before} → {now}"
+            if field == "Phone" and before and now and len(before) <= 18 and len(now) <= 18:
+                return f"{before} → {now}"
+            if field == "Building Classification" and before and now and len(before) + len(now) <= 34:
+                return f"{before} → {now}"
+            return "Updated"
+
+        matrix_rows = []
+        property_order = list(dict.fromkeys(material["Starting Record"].astype(str).tolist()))
+        for property_label in property_order:
+            group = material.loc[
+                material["Starting Record"].astype(str).eq(property_label)
+            ].copy()
+
+            row = {
+                "Property": property_label,
+                "Apartments": "✓",
+                "Storeys": "✓",
+                "Phone": "✓",
+                "Email": "✓",
+                "Website": "✓",
+                "Classification": "✓",
+                "Other": "",
+            }
+
+            other_fields = []
+            for _, change_row in group.iterrows():
+                field = safe_text(change_row.get("Field", ""))
+                matrix_column = matrix_fields.get(field)
+                if matrix_column:
+                    row[matrix_column] = compact_cell(change_row)
+                elif field and field not in other_fields:
+                    other_fields.append(field)
+
+            if other_fields:
+                row["Other"] = (
+                    other_fields[0]
+                    if len(other_fields) == 1
+                    else f"{len(other_fields)} more"
+                )
+            else:
+                row["Other"] = "—"
+
+            review_count = int(
+                group["Comparison"].isin({
+                    "Changed — verify",
+                    "Possible typo / minor text change",
+                    "Missing from research",
+                }).sum()
+            )
+            new_count = int(group["Comparison"].eq("Added in research").sum())
+            total_count = len(group)
+
+            if review_count:
+                row["Overall"] = f"⚠ {total_count} change" + ("" if total_count == 1 else "s")
+            elif new_count:
+                row["Overall"] = f"ℹ {new_count} new"
+            else:
+                row["Overall"] = f"{total_count} change" + ("" if total_count == 1 else "s")
+
+            matrix_rows.append(row)
+
+        matrix = pd.DataFrame(matrix_rows)
+        changed_records = len(matrix)
+
         with smart_expander(
             "Changes to review",
             count=changed_records,
-            status=f"{len(simple):,} field change(s)",
+            status="property-by-property",
             expanded=True,
         ):
             st.caption(
-                "Before = Starting Data. Now = saved research. Datablix only shows meaningful differences here and never chooses a winner automatically."
+                "One row per property. ✓ means no meaningful difference was detected for that field. "
+                "Before/after details are available below; Datablix never chooses a winner automatically."
             )
             st.dataframe(
-                simple,
+                matrix,
                 width="stretch",
                 hide_index=True,
                 column_config={
                     "Property": st.column_config.TextColumn("Property", width="medium"),
+                    "Apartments": st.column_config.TextColumn("Apartments", width="small"),
+                    "Storeys": st.column_config.TextColumn("Storeys", width="small"),
+                    "Phone": st.column_config.TextColumn("Phone", width="medium"),
+                    "Email": st.column_config.TextColumn("Email", width="small"),
+                    "Website": st.column_config.TextColumn("Website", width="small"),
+                    "Classification": st.column_config.TextColumn("Classification", width="medium"),
+                    "Other": st.column_config.TextColumn(
+                        "Other",
+                        width="small",
+                        help="Changed fields outside the main matrix columns. Open the property details below to see them.",
+                    ),
+                    "Overall": st.column_config.TextColumn("Overall", width="small"),
+                },
+            )
+
+            st.markdown("#### Property details")
+            st.caption("Choose a property only when you need to inspect the exact values that changed.")
+            property_options = matrix["Property"].astype(str).tolist()
+            selector_token = hashlib.sha256(
+                "||".join(property_options).encode("utf-8")
+            ).hexdigest()[:10]
+            selected_property = st.selectbox(
+                "View details for",
+                property_options,
+                key=f"db_source_change_property_{selector_token}",
+            )
+
+            detail = material.loc[
+                material["Starting Record"].astype(str).eq(str(selected_property))
+            ].copy()
+            detail = detail.rename(
+                columns={
+                    "Research Result": "New Research",
+                }
+            )[["Field", "Starting Data", "New Research"]]
+
+            st.dataframe(
+                detail,
+                width="stretch",
+                hide_index=True,
+                column_config={
                     "Field": st.column_config.TextColumn("Field", width="medium"),
-                    "Before": st.column_config.TextColumn("Before", width="medium"),
-                    "Now": st.column_config.TextColumn("Now", width="medium"),
-                    "Change": st.column_config.TextColumn("What changed", width="medium"),
+                    "Starting Data": st.column_config.TextColumn("Starting Data", width="large"),
+                    "New Research": st.column_config.TextColumn("New Research", width="large"),
                 },
             )
             st.info(
-                "Verify factual changes against the supporting source before deciding which value to keep. New information can be valid even when the Starting Data was blank."
+                "Verify factual differences against the supporting source before deciding which value to keep. "
+                "A new research value can be valid even when Starting Data was blank."
             )
 
     if not formatting.empty:
@@ -4185,7 +4303,6 @@ def _render_company_source_field_comparison(
                 }
             )[["Property", "Field", "Before", "Now"]]
             st.dataframe(formatting_view, width="stretch", hide_index=True)
-
 
 def render_company_source_presence_reconciliation(
     company_id: str,
