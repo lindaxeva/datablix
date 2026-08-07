@@ -26,7 +26,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "City of Ottawa + Residential Property Types 2026.08.07-v67"
+DATABLIX_BUILD = "Unit-Count Recovery + Ottawa Residential Scope 2026.08.07-v68"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -230,7 +230,12 @@ ALIASES = {
     "Website": ["Website", "WebSite", "Website / Source URL", "Official Website"],
     "Property Website": ["Property Website", "Official Property Website", "Building Website"],
     "Company Website": ["Company Website", "Management Company Website", "Corporate Website"],
-    "Number of Apartments": ["Number of Apartments", "No. of Units", "Number of Units", "Unit Count", "Units"],
+    "Number of Apartments": [
+        "Number of Apartments", "Apartment Count", "No. of Units", "Number of Units",
+        "Unit Count", "Total Units", "Units", "Residential Units", "Rental Units",
+        "Dwelling Units", "Number of Suites", "Suite Count", "Total Suites",
+        "Suites", "Number of Residences", "Residences", "Doors",
+    ],
     "Number of Storeys": [
         "Number of Storeys", "Number of Floors", "Number of Stories", "Number of Levels",
         "Storey", "Storeys", "Story", "Stories", "Floor", "Floors", "Level", "Levels",
@@ -3983,6 +3988,8 @@ Do not create a property row for an orphan, empty, generic, redirected, placehol
 ### Phase 2 — Research every Current Ottawa property deeply
 Inspect the complete relevant official content, including property overview, physical location, contact information, floor plans, rates, amenities, parking, laundry, utilities, accessibility, elevator, policies, official PDFs, brochures, leasing pages, JavaScript-rendered content, footer details, and linked official property websites.
 
+For Number of Apartments, actively search the official property/company material for equivalent total-inventory wording such as apartments, units, residential units, rental units, dwelling units, suites, residences, homes, doors, unit count, suite count, and total units. Do not stop merely because the exact phrase `Number of Apartments` is absent.
+
 ### Phase 3 — Exhaustive PO Box and mailing-address search
 PO Box research is separate from the rental property's physical address.
 
@@ -4033,8 +4040,23 @@ Only after an official-site property candidate is established may outside eviden
 2. PO Box/mailing-address recovery — follow the exhaustive method above and keep it separate from the property address.
 3. Geographic-position verification — exact-address geocoding and municipal-boundary evidence only.
 4. Number of Storeys / Building Classification — search the exact address and reliable planning, development, public-document, or property evidence. Treat source wording such as storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when it clearly describes the building's storey count.
+5. Number of Apartments / Total Unit Count — when the official property page is silent, recover the total only for an already-established exact property/address. Follow this source order: (a) official property page or microsite; (b) official company PDF, brochure, report, filing, acquisition/development page, or other official document; (c) municipal, planning, development-application, assessment, or other reliable public record tied to the exact address; (d) a reputable property/database source with an exact property match. Leave the field blank when the total cannot be confirmed.
 
-External evidence must never invent a property, override the company's official inventory status, or fill ordinary fields such as amenities, rates, unit types, leasing contacts, policies, or unit counts.
+External evidence must never invent a property, override the company's official inventory status, or fill ordinary fields such as amenities, rates, unit types, leasing contacts, or policies. Number of Apartments is the deliberate exception above and must follow its exact-address/source-hierarchy rules.
+
+## Number of Apartments / total-unit-count rule
+Treat `Number of Apartments` as the property's TOTAL residential inventory, not the number currently advertised as available.
+
+Accept equivalent source wording such as apartments, units, residential units, rental units, dwelling units, suites, residences, rental homes, doors, unit count, suite count, total units, and total suites when the context clearly describes the whole property. Examples of acceptable forms include `176 units`, `176-unit building`, `Number of units: 176`, `Unit count = 176`, and `the property comprises 176 suites`.
+
+Do NOT use:
+- available units, vacant units, units remaining, or search-result availability counts;
+- the number of floor plans, bedroom types, listings, or currently advertised suites;
+- a count for an entire multi-building complex as one building's count unless the row itself represents that exact complex or the source allocates the units to that building;
+- a count from a nearby/similarly named property; or
+- an estimate inferred from storeys, windows, photos, maps, elevator count, or visual appearance.
+
+When searching outside the official property page, use the exact civic address plus terms such as `units`, `apartments`, `suites`, `residential units`, `unit count`, and `dwelling units`. Open the underlying source; a search-result snippet is not evidence. If two reliable sources conflict, preserve both counts and URLs in Supporting Evidence, set Confidence conservatively, and leave Number of Apartments unresolved unless one source is clearly more authoritative and directly property-specific.
 
 ## Property-form and building-classification rule
 First identify the official property form when the source supports it: apartment building/unit, condominium rental, townhome, duplex, garden home, detached single-family home, or another clearly stated form. Do not infer property form from appearance.
@@ -4063,6 +4085,7 @@ Field requirements:
 - Source URL: the strongest exact page supporting the row; place additional official URLs in Supporting Evidence.
 - Current Inventory Status: Current, Review, or Excluded — not in current website inventory. Property form alone does not determine this status.
 - Inventory Evidence: official website evidence supporting that status.
+- Number of Apartments: total residential inventory only. Recognize units/suites/residences and equivalent total-count wording; never substitute available/vacant listings. Use the dedicated exact-address recovery hierarchy when the official property page is silent.
 - Building Classification: preserve the supported height band and property-form/category labels together, separated by ` | ` when more than one applies.
 - PO Box Search Status: Not Checked, Found, Not Found after Search, Not Applicable, or Needs Review.
 - PO Box Confidence: High, Medium, Low, or Not Checked.
@@ -11210,6 +11233,7 @@ elif section == "Website scanner":
         "PO BOX / MAILING ADDRESS: search official Contact, Corporate, Legal, Privacy, Accessibility, footer, tenant-document, payment, PDF, and form pages. If still missing, Google/search engines may locate reliable underlying evidence. Keep mailing and PO Box information separate from the physical property address and record the source, evidence, and confidence. "
         "GEOGRAPHIC POSITION: after an official-site candidate is identified, Google Maps/geocoding and a City of Ottawa boundary check may verify latitude, longitude, municipality, and scope. Never geocode a PO Box to establish property location. "
         "POSTAL CODE: exact-address external recovery is allowed when the official property page omits it. "
+        "NUMBER OF APARTMENTS: actively recognize total apartments, units, residential/rental/dwelling units, suites, residences, rental homes, doors, unit count, suite count, total units, and total suites. Never use available/vacant listings as the total. When the official property page is silent, use this exact-address hierarchy: official property/company documents first (including PDFs, brochures, reports, filings and development/acquisition pages), then municipal/planning/public records, then a reputable exact-match property/database source. Leave blank if still unconfirmed and record supporting URLs/evidence. "
         "BUILDING CLASSIFICATION: external exact-address research is allowed for Number of Storeys and the 1–4 / 5–11 / 12+ height band. "
         "Treat storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when the source clearly states the building total; normalize that evidence to Number of Storeys. Exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless the source explicitly counts them as storeys, and never use an apartment's floor location as the building storey count. "
         "Search snippets alone are not evidence; open the underlying source. External evidence must not discover extra properties or override official current-inventory evidence."
@@ -11218,7 +11242,7 @@ elif section == "Website scanner":
         "Scan the selected company's official website for CURRENT residential rental listings physically located within the City of Ottawa only, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Do not exclude a current recognized property form merely because it is not a conventional apartment building. Retain current detached single-family homes for human scope review and identify them in Reviewer Notes. Follow confirmed official property subdomains and microsites that share the company's registrable root domain; keep them under the selected company and store them as Property Website sources. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
         "For every candidate, verify the exact physical address and geographic position. Record Latitude, Longitude, Geocoded Municipality, Geographic Scope Status, evidence, and confidence. "
         "Conduct an exhaustive PO Box/mailing-address search across official contact, corporate, legal, privacy, accessibility, footer, PDF, form, rent-payment, and tenant-document pages. If official sources remain incomplete, use Google to locate reliable underlying evidence. Never place a PO Box or corporate mailing address in Street Address. "
-        "Recover missing Postal Code only from an exact civic-address match. Research Number of Storeys by exact address. Accept storey/storeys, story/stories, floor/floors, and level/levels only when they clearly describe the building total, normalize the result to Number of Storeys, and exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless explicitly counted by the source. Do not mistake an apartment's floor location for the building storey count. Derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
+        "Recover missing Postal Code only from an exact civic-address match. For Number of Apartments, search total-count synonyms (units, residential units, rental units, dwelling units, suites, residences, homes, doors, unit count, suite count) and distinguish total inventory from available/vacant listings. If the property page is silent, search official company documents/PDFs first, then municipal/planning/public records, then reputable exact-address property databases; leave blank if unresolved and preserve every supporting URL. Research Number of Storeys by exact address. Accept storey/storeys, story/stories, floor/floors, and level/levels only when they clearly describe the building total, normalize the result to Number of Storeys, and exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless explicitly counted by the source. Do not mistake an apartment's floor location for the building storey count. Derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
     )
     default_output_notes = (
         "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record—not one row per URL—and keep the exact requested headings in the exact requested order. Keep the root/corporate URL in Company Website, the exact property page or official subdomain in Property Website, and the strongest evidence page in Source URL. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
@@ -11266,7 +11290,7 @@ elif section == "Website scanner":
             height=180,
             key=f"db_prompt_sources_{company_id}",
             disabled=True,
-            help="Project-wide guardrail: City of Ottawa-only scanning, exhaustive PO Box research, exact-address geocoding, Postal Code recovery, and storey/classification evidence.",
+            help="Project-wide guardrail: City of Ottawa-only scanning, exhaustive PO Box research, exact-address geocoding, Postal Code recovery, total-unit-count recovery, and storey/classification evidence.",
         )
         priority_notes = prompt_right.text_area(
             "Company-specific priorities or exclusions",
