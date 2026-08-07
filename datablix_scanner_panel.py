@@ -23,7 +23,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Unit-Count Recovery + Safe Height Evidence 2026.08.07-r6"
+SCANNER_BUILD = "Targeted Unit-Count Recovery + PDF Evidence 2026.08.07-r7"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -427,6 +427,10 @@ DIRECTORY_FIELD_MAP = {
     "primary_email": "Primary Email",
     "website": "Website",
     "number_of_apartments": "Number of Apartments",
+    "apartment_count_search_status": "Apartment Count Search Status",
+    "apartment_count_source_url": "Apartment Count Source URL",
+    "apartment_count_evidence": "Apartment Count Evidence",
+    "apartment_count_confidence": "Apartment Count Confidence",
     "number_of_storeys": "Number of Storeys",
     "amenities": "Amenities",
     "building_classification": "Building Classification",
@@ -715,6 +719,8 @@ def _records_dataframe(report) -> pd.DataFrame:
                 "street_address",
                 "address_line_2", "city", "province", "postal_code", "country",
                 "phone", "primary_email", "website", "number_of_apartments",
+                "apartment_count_search_status", "apartment_count_source_url",
+                "apartment_count_evidence", "apartment_count_confidence",
                 "number_of_storeys", "amenities", "building_classification",
                 "inventory_status", "inventory_evidence",
                 "found_on_city_page", "found_on_html_sitemap",
@@ -748,6 +754,10 @@ SCAN_LISTING_FIELDS = [
 
 SCAN_ADDITIONAL_FIELDS = [
     ("Address Line 2", "address_line_2"),
+    ("Apartment Count Search Status", "apartment_count_search_status"),
+    ("Apartment Count Source URL", "apartment_count_source_url"),
+    ("Apartment Count Evidence", "apartment_count_evidence"),
+    ("Apartment Count Confidence", "apartment_count_confidence"),
     ("Amenities", "amenities"),
     ("Current Inventory Status", "inventory_status"),
     ("Inventory Evidence", "inventory_evidence"),
@@ -1290,7 +1300,9 @@ def _merge_into_working_data(
     fill_if_blank_columns = [
         "Building Name", "Street Address", "Address Line 2", "City",
         "Province", "Postal Code", "Country", "Phone", "Primary Email",
-        "Number of Apartments", "Number of Storeys", "Amenities",
+        "Number of Apartments", "Apartment Count Search Status",
+        "Apartment Count Source URL", "Apartment Count Evidence",
+        "Apartment Count Confidence", "Number of Storeys", "Amenities",
         "Building Classification", "Property Website", "Company Website",
     ]
 
@@ -2086,6 +2098,8 @@ def render_website_scanner_panel(
         "number_of_storeys",
         "building_classification",
         "number_of_apartments",
+        "apartment_count_search_status", "apartment_count_source_url",
+        "apartment_count_evidence", "apartment_count_confidence",
         "amenities",
         "inventory_status",
         "inventory_evidence",
@@ -2106,6 +2120,8 @@ def render_website_scanner_panel(
         "found_on_html_sitemap",
         "found_on_xml_sitemap",
         "exclusion_reason",
+        "apartment_count_search_status", "apartment_count_source_url",
+        "apartment_count_evidence", "apartment_count_confidence",
         "amenities",
         "address_line_2",
         "country",
@@ -2121,6 +2137,8 @@ def render_website_scanner_panel(
         "building_name", "management_owner", "street_address",
         "address_line_2", "city", "province", "postal_code", "country",
         "phone", "primary_email", "website", "number_of_apartments",
+        "apartment_count_search_status", "apartment_count_source_url",
+        "apartment_count_evidence", "apartment_count_confidence",
         "number_of_storeys", "building_classification", "amenities",
         "inventory_status", "inventory_evidence",
         "found_on_city_page", "found_on_html_sitemap", "found_on_xml_sitemap",
@@ -2220,13 +2238,22 @@ def render_website_scanner_panel(
             "number_of_apartments": st.column_config.TextColumn(
                 "Number of Apartments",
                 help=(
-                    "Total residential inventory only. Datablix recognizes total apartments, units, suites, "
-                    "residences, dwelling units, and similar wording, including label-first forms such as "
-                    "'Number of units: 176'. Do not use currently available/vacant units as the total. "
-                    "If the official property page is silent, use the Datablix AI research prompt for controlled "
-                    "exact-address recovery from official documents, municipal/planning sources, then reputable "
-                    "property evidence."
+                    "Total residential inventory only. The scanner performs a targeted same-site official-PDF "
+                    "recovery pass for unresolved counts; the AI research prompt continues exact-address recovery "
+                    "through public records and reputable property sources."
                 ),
+            ),
+            "apartment_count_search_status": st.column_config.TextColumn(
+                "Apartment Count Search Status", width="medium",
+            ),
+            "apartment_count_source_url": st.column_config.LinkColumn(
+                "Apartment Count Source", width="large",
+            ),
+            "apartment_count_evidence": st.column_config.TextColumn(
+                "Apartment Count Evidence", width="large",
+            ),
+            "apartment_count_confidence": st.column_config.TextColumn(
+                "Apartment Count Confidence", width="small",
             ),
             "number_of_storeys": st.column_config.TextColumn(
                 "Storeys",
@@ -2387,6 +2414,8 @@ def render_website_scanner_panel(
             "amenities",
             "building_classification",
             "number_of_apartments",
+            "apartment_count_search_status", "apartment_count_source_url",
+            "apartment_count_evidence", "apartment_count_confidence",
             "source_url",
             "source_page_title",
             "extraction_method",
