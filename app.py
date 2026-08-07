@@ -231,7 +231,10 @@ ALIASES = {
     "Property Website": ["Property Website", "Official Property Website", "Building Website"],
     "Company Website": ["Company Website", "Management Company Website", "Corporate Website"],
     "Number of Apartments": ["Number of Apartments", "No. of Units", "Number of Units", "Unit Count", "Units"],
-    "Number of Storeys": ["Number of Storeys", "Storeys", "Stories", "Floors"],
+    "Number of Storeys": [
+        "Number of Storeys", "Number of Floors", "Number of Stories", "Number of Levels",
+        "Storey", "Storeys", "Story", "Stories", "Floor", "Floors", "Level", "Levels",
+    ],
     "Rental Rate Range": ["Rental Rate Range", "Rental Rates", "Rent Range", "Rent"],
     "Suite Types": ["Suite Types", "Unit Types", "Bedroom Types", "Floor Plan Types"],
     "Amenities": ["Amenities", "Detected Amenities", "Features"],
@@ -4029,14 +4032,15 @@ Only after an official-site property candidate is established may outside eviden
 1. Postal Code recovery — use the exact verified physical address; accept only an exact civic-address match. Never infer from a neighbour, neighbourhood, FSA, or partial code.
 2. PO Box/mailing-address recovery — follow the exhaustive method above and keep it separate from the property address.
 3. Geographic-position verification — exact-address geocoding and municipal-boundary evidence only.
-4. Number of Storeys / Building Classification — search the exact address and reliable planning, development, public-document, or property evidence.
+4. Number of Storeys / Building Classification — search the exact address and reliable planning, development, public-document, or property evidence. Treat source wording such as storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when it clearly describes the building's storey count.
 
 External evidence must never invent a property, override the company's official inventory status, or fill ordinary fields such as amenities, rates, unit types, leasing contacts, policies, or unit counts.
 
 ## Property-form and building-classification rule
 First identify the official property form when the source supports it: apartment building/unit, condominium rental, townhome, duplex, garden home, detached single-family home, or another clearly stated form. Do not infer property form from appearance.
 
-Then research Number of Storeys before deriving the height band:
+Then research Number of Storeys before deriving the height band.
+Accept reliable source wording such as storey/storeys, story/stories, floor/floors, or level/levels when the wording clearly refers to the building's total storey count. Normalize the confirmed result into Number of Storeys. Do not count a basement, underground parking level, mezzanine, podium/mechanical level, or rooftop structure as a storey unless the source explicitly includes it in the building's stated storey count. Do not treat wording such as “2nd-floor apartment” or “unit on level 4” as evidence that the building has 2 or 4 storeys.
 - Low-rise = 1–4 storeys
 - Mid-rise = 5–11 storeys
 - High-rise = 12+ storeys
@@ -11207,13 +11211,14 @@ elif section == "Website scanner":
         "GEOGRAPHIC POSITION: after an official-site candidate is identified, Google Maps/geocoding and a City of Ottawa boundary check may verify latitude, longitude, municipality, and scope. Never geocode a PO Box to establish property location. "
         "POSTAL CODE: exact-address external recovery is allowed when the official property page omits it. "
         "BUILDING CLASSIFICATION: external exact-address research is allowed for Number of Storeys and the 1–4 / 5–11 / 12+ height band. "
+        "Treat storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when the source clearly states the building total; normalize that evidence to Number of Storeys. Exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless the source explicitly counts them as storeys, and never use an apartment's floor location as the building storey count. "
         "Search snippets alone are not evidence; open the underlying source. External evidence must not discover extra properties or override official current-inventory evidence."
     )
     default_priority_notes = (
         "Scan the selected company's official website for CURRENT residential rental listings physically located within the City of Ottawa only, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Do not exclude a current recognized property form merely because it is not a conventional apartment building. Retain current detached single-family homes for human scope review and identify them in Reviewer Notes. Follow confirmed official property subdomains and microsites that share the company's registrable root domain; keep them under the selected company and store them as Property Website sources. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
         "For every candidate, verify the exact physical address and geographic position. Record Latitude, Longitude, Geocoded Municipality, Geographic Scope Status, evidence, and confidence. "
         "Conduct an exhaustive PO Box/mailing-address search across official contact, corporate, legal, privacy, accessibility, footer, PDF, form, rent-payment, and tenant-document pages. If official sources remain incomplete, use Google to locate reliable underlying evidence. Never place a PO Box or corporate mailing address in Street Address. "
-        "Recover missing Postal Code only from an exact civic-address match. Research Number of Storeys by exact address and derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
+        "Recover missing Postal Code only from an exact civic-address match. Research Number of Storeys by exact address. Accept storey/storeys, story/stories, floor/floors, and level/levels only when they clearly describe the building total, normalize the result to Number of Storeys, and exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless explicitly counted by the source. Do not mistake an apartment's floor location for the building storey count. Derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
     )
     default_output_notes = (
         "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record—not one row per URL—and keep the exact requested headings in the exact requested order. Keep the root/corporate URL in Company Website, the exact property page or official subdomain in Property Website, and the strongest evidence page in Source URL. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
