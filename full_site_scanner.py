@@ -97,8 +97,27 @@ UNIT_COUNT_RE = re.compile(
     r"\b(\d{1,5})\s+(?:rental\s+)?(?:apartments?|residential\s+units?|units?|suites?)\b",
     re.IGNORECASE,
 )
+STOREY_TERM_PATTERN = r"(?:storey|storeys|story|stories|floor|floors|level|levels)"
+
+# Number-first wording commonly used on Canadian property pages:
+# "6 storeys", "6-story", "6 floors", "6 levels".
 STOREY_RE = re.compile(
-    r"\b(\d{1,3})\s*(?:[-–]\s*)?(?:storey|storeys|story|stories|floor|floors)\b",
+    rf"\b(\d{{1,3}})\s*(?:[-–]\s*)?{STOREY_TERM_PATTERN}\b",
+    re.IGNORECASE,
+)
+
+# Label-first wording is accepted only when the page clearly presents a field/value
+# relationship. This intentionally does not treat a plain phrase such as "floor 2"
+# as a building-height count because that usually describes a unit location.
+STOREY_LABEL_RE = re.compile(
+    rf"\b(?:number\s+of\s+)?(?:storeys|stories|floors|levels)\s*"
+    rf"(?:[:=\-]|\bis\b|\bare\b)\s*(\d{{1,3}})\b",
+    re.IGNORECASE,
+)
+
+STOREY_EXCLUSION_CONTEXT_RE = re.compile(
+    r"\b(?:apartment|apt|suite|unit)\b.{0,45}\b(?:on|at|located)\b"
+    r"|\b(?:parking|garage|underground|basement|mezzanine|podium|mechanical|roof|rooftop)\b",
     re.IGNORECASE,
 )
 CLASSIFICATION_PATTERNS = [
@@ -224,6 +243,7 @@ class RecordCandidate:
     primary_email: str = ""
     website: str = ""
     number_of_apartments: str = ""
+    number_of_storeys: str = ""
     amenities: str = ""
     building_classification: str = ""
     source_url: str = ""
@@ -1337,6 +1357,7 @@ class FullSiteScanner:
                 primary_email=self._clean_text(node.get("email")),
                 website=self._clean_text(node.get("url") or page_url),
                 number_of_apartments=self._unit_count_from_node(node),
+                number_of_storeys=self._storey_count_from_node(node),
                 amenities=self._amenities_from_node(node),
                 building_classification=self._classification_from_text(
                     " ".join(
@@ -1386,6 +1407,102 @@ class FullSiteScanner:
         match = UNIT_COUNT_RE.search(description)
         return match.group(1) if match else ""
 
+    def _storey_count_from_text(self, text: str) -> str:
+        """Return supported building-height evidence normalized as a storey count.
+
+        Canadian and US wording such as storey/storeys, story/stories, floor/floors,
+        and level/levels is treated as equivalent only when it clearly describes
+        building height. Unit-location wording and parking/basement/mechanical-level
+        wording is excluded rather than converted into a storey count.
+
+        When a page contains several supported counts, keep the distinct values joined
+        with `` or `` so downstream QA can preserve same-band alternatives and flag
+        cross-band conflicts instead of silently choosing one.
+        """
+        clean_text = self._clean_text(text)
+        if not clean_text:
+            return ""
+
+        matches: list[tuple[int, int, str]] = []
+        for pattern in (STOREY_RE, STOREY_LABEL_RE):
+            for match in pattern.finditer(clean_text):
+                number = int(match.group(1))
+                if not 1 <= number <= 200:
+                    continue
+
+                # Check nearby wording so a unit's location or non-residential level
+                # does not become the building's height.
+                before = clean_text[max(0, match.start() - 70):match.start()]
+                after = clean_text[match.end():match.end() + 40]
+                context = f"{before} {match.group(0)} {after}"
+
+                unit_location = bool(
+                    re.search(
+                        r"\b(?:apartment|apt|suite|unit)\b.{0,55}"
+                        r"\b(?:on|at|located(?:\s+on|\s+at)?)\b.{0,20}$",
+                        before,
+                        re.IGNORECASE,
+                    )
+                    or re.search(
+                        r"\b(?:on|at|located(?:\s+on|\s+at)?)\b.{0,20}$",
+                        before,
+                        re.IGNORECASE,
+                    )
+                )
+                excluded_level = bool(STOREY_EXCLUSION_CONTEXT_RE.search(context))
+
+                # Explicit building-height wording can override generic nearby words
+                # such as "parking" elsewhere in a long sentence.
+                explicit_building_height = bool(
+                    re.search(
+                        rf"\b(?:building|property|tower|structure)\b.{{0,35}}"
+                        rf"\b{re.escape(match.group(1))}\s*(?:[-–]\s*)?{STOREY_TERM_PATTERN}\b"
+                        rf"|\b{re.escape(match.group(1))}\s*(?:[-–]\s*)?{STOREY_TERM_PATTERN}\b"
+                        rf".{{0,35}}\b(?:building|property|tower|structure|high|tall)\b",
+                        context,
+                        re.IGNORECASE,
+                    )
+                )
+
+                if (unit_location or excluded_level) and not explicit_building_height:
+                    continue
+                matches.append((match.start(), match.end(), str(number)))
+
+        values: list[str] = []
+        seen_spans: set[tuple[int, int]] = set()
+        for start, end, value in sorted(matches):
+            if (start, end) in seen_spans:
+                continue
+            seen_spans.add((start, end))
+            if value not in values:
+                values.append(value)
+
+        return " or ".join(values)
+
+    def _storey_count_from_node(self, node: dict) -> str:
+        """Prefer explicit structured storey/floor fields, then page descriptions."""
+        for key in (
+            "numberOfStoreys", "numberOfStories", "numberOfFloors",
+            "storeys", "stories", "floors", "levels",
+        ):
+            value = node.get(key)
+            if value in (None, ""):
+                continue
+            clean_value = self._clean_text(str(value))
+            if re.fullmatch(r"\d{1,3}", clean_value):
+                number = int(clean_value)
+                if 1 <= number <= 200:
+                    return str(number)
+            extracted = self._storey_count_from_text(f"{key}: {clean_value}")
+            if extracted:
+                return extracted
+
+        descriptive_text = " ".join(
+            self._clean_text(str(node.get(key, "")))
+            for key in ("description", "keywords", "additionalType")
+        )
+        return self._storey_count_from_text(descriptive_text)
+
     def _classification_from_text(self, text: str) -> str:
         """Extract classification wording that is actually present on the page."""
         clean_text = self._clean_text(text)
@@ -1398,8 +1515,7 @@ class FullSiteScanner:
             if pattern.search(clean_text)
         ]
         labels = list(dict.fromkeys(labels))
-        storey_match = STOREY_RE.search(clean_text)
-        storeys = storey_match.group(1) if storey_match else ""
+        storeys = self._storey_count_from_text(clean_text)
 
         if labels:
             classification = " | ".join(labels)
@@ -1452,6 +1568,13 @@ class FullSiteScanner:
                     phone=prop("telephone"),
                     primary_email=prop("email").replace("mailto:", ""),
                     website=prop("url") or page_url,
+                    number_of_storeys=(
+                        self._storey_count_from_text(
+                            f"number of floors: {prop('numberOfFloors')}"
+                        )
+                        if prop("numberOfFloors")
+                        else self._storey_count_from_text(block.get_text(" ", strip=True))
+                    ),
                     amenities=self._amenities_from_container(block),
                     building_classification=self._classification_from_text(
                         block.get_text(" ", strip=True)
@@ -1495,6 +1618,7 @@ class FullSiteScanner:
                     primary_email=self._first_match(EMAIL_RE, text),
                     website=page_url,
                     number_of_apartments=self._first_group(UNIT_COUNT_RE, local_context),
+                    number_of_storeys=self._storey_count_from_text(local_context),
                     amenities=self._amenities_from_text(local_context),
                     building_classification=self._classification_from_text(local_context),
                     source_url=page_url,
@@ -1544,6 +1668,7 @@ class FullSiteScanner:
                     primary_email=emails[0] if emails else "",
                     website=page_url,
                     number_of_apartments=local_unit_count,
+                    number_of_storeys=self._storey_count_from_text(local_context),
                     amenities=amenities or self._amenities_from_text(local_context),
                     building_classification=self._classification_from_text(local_context),
                     source_url=page_url,
@@ -1571,6 +1696,7 @@ class FullSiteScanner:
         page_phones = list(dict.fromkeys(PHONE_RE.findall(page_text)))
         page_emails = list(dict.fromkeys(EMAIL_RE.findall(page_text)))
         page_unit_count = self._first_group(UNIT_COUNT_RE, page_text)
+        page_storeys = self._storey_count_from_text(page_text)
         page_classification = self._classification_from_text(page_text)
         page_postals = list(dict.fromkeys(POSTAL_RE.findall(page_text)))
 
@@ -1583,6 +1709,8 @@ class FullSiteScanner:
                 record.primary_email = page_emails[0]
             if not record.number_of_apartments and page_unit_count:
                 record.number_of_apartments = page_unit_count
+            if not record.number_of_storeys and page_storeys:
+                record.number_of_storeys = page_storeys
             if not record.amenities and page_amenities:
                 record.amenities = page_amenities
             if not record.building_classification and page_classification:
@@ -1766,7 +1894,7 @@ class FullSiteScanner:
         for field_name in (
             "building_name", "management_owner", "street_address", "address_line_2",
             "city", "province", "postal_code", "country", "phone", "primary_email",
-            "website", "number_of_apartments", "building_classification",
+            "website", "number_of_apartments", "number_of_storeys", "building_classification",
             "source_url", "source_page_title",
             "extraction_method", "evidence", "inventory_evidence", "exclusion_reason",
         ):
