@@ -23,7 +23,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Official Microsite Grouping + Ottawa Scope 2026.07.28-r4"
+SCANNER_BUILD = "Storey-Floor Terminology + Safe Height Evidence 2026.08.07-r5"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -789,21 +789,88 @@ def _classification_for_storey_count(storeys: int) -> str:
     return ""
 
 
+STOREY_TERM_PATTERN = r"(?:storey|storeys|story|stories|floor|floors|level|levels)"
+
+
+def _storey_counts_from_evidence(value) -> list[int]:
+    """Extract building-height counts without mistaking a unit's floor for storeys.
+
+    Accepted wording includes Canadian/US variants such as ``6 storeys``,
+    ``6 stories``, ``6 floors``, ``6 levels``, and hyphenated forms such as
+    ``6-storey``. A plain numeric value is also accepted because the scanner's
+    ``number_of_storeys`` field may already contain a normalized count.
+
+    Wording that only describes where a suite/unit is located, such as
+    ``apartment on the 2nd floor`` or ``suite located on level 3``, is not building
+    height evidence and intentionally returns no count.
+    """
+    raw = _clean_value(value)
+    if not raw:
+        return []
+
+    text = re.sub(r"\s+", " ", raw).strip().lower()
+
+    # A normalized numeric field is safe to treat as a building storey count.
+    if re.fullmatch(r"\d{1,3}", text):
+        number = int(text)
+        return [number] if 1 <= number <= 200 else []
+
+    # Common unit-location wording must not become building height.
+    unit_location_patterns = [
+        rf"\b(?:apartment|apt|suite|unit)\b.{{0,35}}\b(?:on|at|located on|located at)\b.{{0,12}}\b\d{{1,3}}(?:st|nd|rd|th)?\s+{STOREY_TERM_PATTERN}\b",
+        rf"\b(?:apartment|apt|suite|unit)\b.{{0,35}}\b(?:on|at|located on|located at)\b.{{0,12}}\b{STOREY_TERM_PATTERN}\s*#?\s*\d{{1,3}}\b",
+        rf"\b(?:on|at|located on|located at)\s+(?:the\s+)?\d{{1,3}}(?:st|nd|rd|th)?\s+{STOREY_TERM_PATTERN}\b",
+        rf"\b(?:on|at|located on|located at)\s+(?:the\s+)?{STOREY_TERM_PATTERN}\s*#?\s*\d{{1,3}}\b",
+        rf"\b{STOREY_TERM_PATTERN}\s*#?\s*\d{{1,3}}\b.{{0,25}}\b(?:apartment|apt|suite|unit)\b",
+    ]
+    if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in unit_location_patterns):
+        # If the same text separately states an explicit building-height phrase,
+        # keep evaluating instead of rejecting the whole value.
+        explicit_building = re.search(
+            rf"(?:\b(?:building|property|tower|structure)\b.{{0,30}}\b\d{{1,3}}(?:[- ]?{STOREY_TERM_PATTERN})\b"
+            rf"|\b\d{{1,3}}(?:[- ]?{STOREY_TERM_PATTERN})\b.{{0,30}}\b(?:building|property|tower|structure)\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not explicit_building:
+            return []
+
+    counts: list[int] = []
+
+    # Prefer numbers explicitly tied to storey/floor/story/level terminology.
+    explicit_patterns = [
+        rf"\b(\d{{1,3}})\s*[- ]?{STOREY_TERM_PATTERN}\b",
+        rf"\b{STOREY_TERM_PATTERN}\s*[:#-]?\s*(\d{{1,3}})\b",
+    ]
+    for pattern in explicit_patterns:
+        for token in re.findall(pattern, text, flags=re.IGNORECASE):
+            number = int(token)
+            if 1 <= number <= 200 and number not in counts:
+                counts.append(number)
+
+    if counts:
+        return counts
+
+    # Preserve the previous conflict-review behaviour for already-normalized
+    # alternatives such as ``14 / 15`` or ``14 or 15``. Do not apply this fallback
+    # to arbitrary prose because unrelated numbers could be dates, unit numbers, etc.
+    if re.fullmatch(r"\s*\d{1,3}(?:\s*(?:/|or|to|-)\s*\d{1,3})+\s*", text):
+        for token in re.findall(r"\b\d{1,3}\b", text):
+            number = int(token)
+            if 1 <= number <= 200 and number not in counts:
+                counts.append(number)
+
+    return counts
+
+
 def _classification_from_storey_evidence(value) -> str:
-    """Derive classification only when storey evidence supports one band.
+    """Derive classification only from clear building storey/floor evidence.
 
     Multiple reported counts are allowed only when all counts remain in the same
     classification band, e.g. 14 vs 15 -> High-rise. Evidence crossing a band
     boundary, e.g. 11 vs 12, intentionally returns blank for human follow-up.
     """
-    raw = _clean_value(value)
-    if not raw:
-        return ""
-    counts = []
-    for token in re.findall(r"\b\d{1,3}\b", raw):
-        number = int(token)
-        if 1 <= number <= 200 and number not in counts:
-            counts.append(number)
+    counts = _storey_counts_from_evidence(value)
     if not counts:
         return ""
     bands = {_classification_for_storey_count(number) for number in counts}
@@ -1346,7 +1413,7 @@ def render_website_scanner_panel(
     )
     st.markdown(
         '<div class="db-guidance"><strong>Storeys drive building classification.</strong>'
-        '<span>The scanner can use storey evidence found on the company website, but it does not replace address-based web research. If storeys are missing, use the Datablix AI research prompt with the verified full Ottawa street address to search for the number of storeys/floors, then let Datablix derive Low-rise (1–4), Mid-rise (5–11), or High-rise (12+).</span></div>',
+        '<span>The scanner can use storey evidence found on the company website, but it does not replace address-based web research. If building height is missing, use the Datablix AI research prompt with the verified full Ottawa street address to search reliable evidence for storeys, stories, floors, or levels. Treat those terms as equivalent only when they clearly describe the building height—not the floor where a particular apartment or suite is located. Then let Datablix derive Low-rise (1–4), Mid-rise (5–11), or High-rise (12+).</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -2154,9 +2221,11 @@ def render_website_scanner_panel(
             "number_of_storeys": st.column_config.TextColumn(
                 "Storeys",
                 help=(
-                    "Enter verified storey evidence. If the company website does not state it, "
-                    "use the Datablix AI research prompt to search the verified full Ottawa address "
-                    "for the number of storeys/floors. Datablix derives Low-rise for 1–4, "
+                    "Enter verified building-height evidence. Storey/storeys, story/stories, floor/floors, "
+                    "and level/levels may be treated as equivalent only when they clearly describe the "
+                    "whole building, not the location of a particular apartment or suite. If the company "
+                    "website does not state it, use the Datablix AI research prompt with the verified full "
+                    "Ottawa address. Datablix derives Low-rise for 1–4, "
                     "Mid-rise for 5–11, and High-rise for 12+. If sources disagree but "
                     "stay in one band (for example 14 / 15), the shared classification "
                     "is allowed; 11 / 12 remains unclassified."
@@ -2165,8 +2234,9 @@ def render_website_scanner_panel(
             "building_classification": st.column_config.TextColumn(
                 "Building Classification",
                 help=(
-                    "Derived from Storeys only: Low-rise 1–4, Mid-rise 5–11, "
-                    "High-rise 12+. Marketing labels and visual appearance are not evidence."
+                    "Derived only from verified building-height evidence: Low-rise 1–4, Mid-rise 5–11, "
+                    "High-rise 12+. Storeys/stories/floors/levels are accepted when they describe the "
+                    "whole building. Unit-floor location, marketing labels, and visual appearance are not evidence."
                 ),
             ),
             "source_url": st.column_config.LinkColumn("Official Source URL", width="large"),
