@@ -23,7 +23,7 @@ from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_we
 # st.session_state name.
 WORKING_DATA_KEY = "working_df"
 
-SCANNER_BUILD = "Targeted Unit-Count Recovery + PDF Evidence 2026.08.07-r7"
+SCANNER_BUILD = "Safer Unit-Count Recovery + PDF Evidence 2026.08.07-r8"
 CHECKPOINT_DIRECTORY = Path(
     os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
 )
@@ -262,6 +262,20 @@ def _is_blank_value(value) -> bool:
     except (TypeError, ValueError):
         pass
     return not str(value).strip()
+
+
+APARTMENT_PROVENANCE_PLACEHOLDERS = {"", "not checked"}
+
+
+def _apartment_provenance_is_placeholder(value) -> bool:
+    return _clean_value(value).lower() in APARTMENT_PROVENANCE_PLACEHOLDERS
+
+
+def _normalized_apartment_count(value) -> str:
+    text = _clean_value(value).replace(",", "")
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return str(int(float(text)))
+    return text.lower()
 
 
 def _append_unique_text(existing, addition, separator: str = " | ") -> str:
@@ -1314,11 +1328,87 @@ def _merge_into_working_data(
             continue
 
         duplicates += 1
+        apartment_provenance_columns = {
+            "Apartment Count Search Status", "Apartment Count Source URL",
+            "Apartment Count Evidence", "Apartment Count Confidence",
+        }
         for column in fill_if_blank_columns:
-            if column not in existing.columns:
+            if column not in existing.columns or column in apartment_provenance_columns:
                 continue
             if _is_blank_value(existing.at[existing_index, column]) and not _is_blank_value(incoming.get(column)):
                 existing.at[existing_index, column] = incoming.get(column)
+
+        # Merge apartment-count provenance as one evidence bundle. A scanner result can
+        # replace placeholder values such as ``Not Checked``. A different resolved
+        # total is never silently written over an existing total; it becomes a review
+        # conflict instead.
+        existing_count = _clean_value(existing.at[existing_index, "Number of Apartments"]) if "Number of Apartments" in existing.columns else ""
+        incoming_count = _clean_value(incoming.get("Number of Apartments"))
+        existing_normalized = _normalized_apartment_count(existing_count)
+        incoming_normalized = _normalized_apartment_count(incoming_count)
+
+        if incoming_count and not existing_count and "Number of Apartments" in existing.columns:
+            existing.at[existing_index, "Number of Apartments"] = incoming_count
+            existing_count = incoming_count
+            existing_normalized = incoming_normalized
+
+        counts_conflict = bool(
+            existing_normalized and incoming_normalized
+            and existing_normalized != incoming_normalized
+        )
+        if counts_conflict:
+            if "Apartment Count Search Status" in existing.columns:
+                existing.at[existing_index, "Apartment Count Search Status"] = "Conflict — Needs Review"
+            if "Apartment Count Confidence" in existing.columns:
+                existing.at[existing_index, "Apartment Count Confidence"] = "Low"
+            incoming_apartment_source = _clean_value(incoming.get("Apartment Count Source URL"))
+            if (
+                "Apartment Count Source URL" in existing.columns
+                and _is_blank_value(existing.at[existing_index, "Apartment Count Source URL"])
+                and incoming_apartment_source
+            ):
+                existing.at[existing_index, "Apartment Count Source URL"] = incoming_apartment_source
+            if "Apartment Count Evidence" in existing.columns:
+                source_note = f" Scanner source: {incoming_apartment_source}." if incoming_apartment_source else ""
+                conflict_note = (
+                    f"Scanner found {incoming_count} apartments while the existing record has "
+                    f"{existing_count}. Verify both sources before changing the total." + source_note
+                )
+                merged_evidence = _append_unique_text(
+                    existing.at[existing_index, "Apartment Count Evidence"],
+                    incoming.get("Apartment Count Evidence"),
+                )
+                existing.at[existing_index, "Apartment Count Evidence"] = _append_unique_text(
+                    merged_evidence, conflict_note
+                )
+        elif incoming_count and incoming_normalized == existing_normalized:
+            for column in apartment_provenance_columns:
+                if column not in existing.columns:
+                    continue
+                incoming_value = incoming.get(column)
+                current_value = existing.at[existing_index, column]
+                if not _is_blank_value(incoming_value) and (
+                    _is_blank_value(current_value)
+                    or _apartment_provenance_is_placeholder(current_value)
+                ):
+                    existing.at[existing_index, column] = incoming_value
+        elif not incoming_count:
+            # A completed unsuccessful search can still improve a placeholder status
+            # when no apartment total exists yet.
+            incoming_status = incoming.get("Apartment Count Search Status")
+            if (
+                "Apartment Count Search Status" in existing.columns
+                and not _is_blank_value(incoming_status)
+                and _apartment_provenance_is_placeholder(
+                    existing.at[existing_index, "Apartment Count Search Status"]
+                )
+            ):
+                for column in apartment_provenance_columns:
+                    if column not in existing.columns:
+                        continue
+                    incoming_value = incoming.get(column)
+                    if not _is_blank_value(incoming_value):
+                        existing.at[existing_index, column] = incoming_value
 
         incoming_property = _clean_value(incoming.get("Property Website"))
         current_property = _clean_value(existing.at[existing_index, "Property Website"]) if "Property Website" in existing.columns else ""
