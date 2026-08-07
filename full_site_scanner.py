@@ -35,7 +35,7 @@ RenderMode = Literal["html", "auto", "javascript"]
 ProgressCallback = Callable[[dict], None]
 CheckpointCallback = Callable[["ScanReport"], None]
 
-USER_AGENT = "DatablixResearchScanner/3.1 (+human-reviewed research tool)"
+USER_AGENT = "DatablixResearchScanner/3.2 (+human-reviewed research tool)"
 DEFAULT_TIMEOUT = 20
 MAX_HTML_BYTES = 8_000_000
 MAX_SITEMAP_BYTES = 12_000_000
@@ -72,8 +72,9 @@ LOW_PRIORITY_PATH_WORDS = {
 
 HIGH_PRIORITY_WORDS = {
     "apartment", "apartments", "building", "buildings", "communities",
-    "community", "contact", "location", "locations", "portfolio", "properties",
-    "property", "rental", "rentals", "residence", "residences", "suite", "suites",
+    "community", "contact", "details", "location", "locations", "portfolio",
+    "properties", "property", "rental", "rentals", "residence", "residences",
+    "residential", "suite", "suites", "unit", "units", "brochure",
 }
 
 STREET_SUFFIX_PATTERN = (
@@ -93,8 +94,59 @@ PHONE_RE = re.compile(
     r"(?<!\d)(?:\+?1[ .\-]?)?(?:\(?\d{3}\)?[ .\-]?)\d{3}[ .\-]?\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?(?!\d)",
     re.IGNORECASE,
 )
+# Apartment/unit-count wording varies widely across Canadian property sources.
+# Keep several evidence patterns rather than relying on only "176 units".
+UNIT_TERM_PATTERN = (
+    r"(?:(?:residential|rental)\s+)?(?:apartments?|units?|suites?|residences?|homes?)"
+    r"|dwelling\s+units?|housing\s+units?|doors?"
+)
+UNIT_TERM_PATTERN = rf"(?:{UNIT_TERM_PATTERN})"
+UNIT_NUMBER_PATTERN = r"(?:\d{1,3}(?:,\d{3})+|\d{1,5})"
+
+# Number-first wording: "176 units", "176-unit building", "176 rental suites".
 UNIT_COUNT_RE = re.compile(
-    r"\b(\d{1,5})\s+(?:rental\s+)?(?:apartments?|residential\s+units?|units?|suites?)\b",
+    rf"\b({UNIT_NUMBER_PATTERN})\s*(?:[-–]\s*)?{UNIT_TERM_PATTERN}\b",
+    re.IGNORECASE,
+)
+
+# Label-first wording: "Number of units: 176", "Unit count = 176",
+# "Total suites — 176". The delimiter/relationship requirement prevents ordinary
+# phrases such as "unit 176" from being treated as a building total.
+UNIT_COUNT_LABEL_RE = re.compile(
+    rf"\b(?:total\s+)?(?:number\s+of\s+)?{UNIT_TERM_PATTERN}\s*"
+    rf"(?:count\s*)?(?:[:=#–—-]|\bis\b|\bare\b)\s*({UNIT_NUMBER_PATTERN})\b",
+    re.IGNORECASE,
+)
+
+# Flattened cards/tables often lose punctuation: "Number of units 176". Require
+# an explicit total/number-of label before accepting bare whitespace separation.
+UNIT_COUNT_EXPLICIT_LABEL_RE = re.compile(
+    rf"\b(?:number\s+of|total)\s+{UNIT_TERM_PATTERN}\s*"
+    rf"(?:count\s*)?(?:[:=#–—-]\s*)?({UNIT_NUMBER_PATTERN})\b",
+    re.IGNORECASE,
+)
+
+# Narrative wording frequently used in acquisition releases, planning pages, and
+# brochures: "the property comprises 176 suites".
+UNIT_COUNT_NARRATIVE_RE = re.compile(
+    rf"\b(?:contains?|comprises?|comprised\s+of|includes?|features?|offers?|"
+    rf"consists?\s+of|houses?|has)\s+(?:a\s+)?(?:total\s+of\s+)?"
+    rf"({UNIT_NUMBER_PATTERN})\s*(?:[-–]\s*)?{UNIT_TERM_PATTERN}\b",
+    re.IGNORECASE,
+)
+
+# Availability is not total inventory. Reject matches such as "12 units available"
+# while retaining a true total elsewhere on the same page.
+UNIT_COUNT_AVAILABILITY_BEFORE_RE = re.compile(
+    rf"(?:"
+    rf"(?:available|vacant|currently\s+available|currently\s+vacant|remaining)\s+"
+    rf"{UNIT_TERM_PATTERN}\s*(?:[:=#–—-]\s*)?"
+    rf"|(?:available|vacant|currently\s+available|currently\s+vacant|remaining)\s*"
+    rf")$",
+    re.IGNORECASE,
+)
+UNIT_COUNT_AVAILABILITY_AFTER_RE = re.compile(
+    r"^\s*(?:are\s+)?(?:currently\s+)?(?:available|vacant|remaining|left)\b",
     re.IGNORECASE,
 )
 STOREY_TERM_PATTERN = r"(?:storey|storeys|story|stories|floor|floors|level|levels)"
@@ -1398,14 +1450,78 @@ class FullSiteScanner:
             return {str(item).rsplit("/", 1)[-1] for item in value}
         return set()
 
+    def _unit_count_from_text(self, text: str) -> str:
+        """Return a supported TOTAL residential unit count from source wording.
+
+        Accept common synonyms and both number-first and label-first wording, but
+        reject vacancy/availability counts. If several distinct totals are stated,
+        preserve them with `` or `` so a human reviewer can resolve the conflict.
+        """
+        clean_text = self._clean_text(text)
+        if not clean_text:
+            return ""
+
+        matches: list[tuple[int, int, str]] = []
+        for pattern in (UNIT_COUNT_EXPLICIT_LABEL_RE, UNIT_COUNT_LABEL_RE, UNIT_COUNT_NARRATIVE_RE, UNIT_COUNT_RE):
+            for match in pattern.finditer(clean_text):
+                raw_number = match.group(1).replace(",", "")
+                if not raw_number.isdigit():
+                    continue
+                number = int(raw_number)
+                if not 1 <= number <= 50_000:
+                    continue
+
+                before = clean_text[max(0, match.start() - 90):match.start()]
+                after = clean_text[match.end():match.end() + 90]
+                if UNIT_COUNT_AVAILABILITY_BEFORE_RE.search(before):
+                    continue
+                if UNIT_COUNT_AVAILABILITY_AFTER_RE.search(after):
+                    continue
+
+                matches.append((match.start(), match.end(), str(number)))
+
+        values: list[str] = []
+        seen_spans: set[tuple[int, int]] = set()
+        for start, end, value in sorted(matches):
+            if (start, end) in seen_spans:
+                continue
+            seen_spans.add((start, end))
+            if value not in values:
+                values.append(value)
+        return " or ".join(values)
+
     def _unit_count_from_node(self, node: dict) -> str:
-        for key in ("numberOfRooms", "numberOfUnits", "numberOfAccommodationUnits"):
+        """Prefer explicit structured TOTAL-unit fields, then descriptive evidence."""
+        for key in (
+            "numberOfUnits", "numberOfAccommodationUnits", "numberOfApartments",
+            "numberOfResidentialUnits", "numberOfDwellings", "unitCount", "totalUnits",
+        ):
             value = node.get(key)
-            if value not in (None, ""):
-                return self._clean_text(str(value))
-        description = self._clean_text(node.get("description"))
-        match = UNIT_COUNT_RE.search(description)
-        return match.group(1) if match else ""
+            if value in (None, ""):
+                continue
+            clean_value = self._clean_text(str(value))
+            extracted = self._unit_count_from_text(f"number of units: {clean_value}")
+            if extracted:
+                return extracted
+
+        # Schema.org frequently stores custom facts in additionalProperty.
+        additional = node.get("additionalProperty")
+        properties = additional if isinstance(additional, list) else [additional]
+        for item in properties:
+            if not isinstance(item, dict):
+                continue
+            label = self._clean_text(str(item.get("name") or item.get("propertyID") or ""))
+            value = self._clean_text(str(item.get("value") or item.get("valueReference") or ""))
+            if re.search(r"\b(?:unit|suite|apartment|residence|door)s?\b", label, re.IGNORECASE):
+                extracted = self._unit_count_from_text(f"{label}: {value}")
+                if extracted:
+                    return extracted
+
+        descriptive_text = " ".join(
+            self._clean_text(str(node.get(key, "")))
+            for key in ("description", "keywords", "additionalType", "name")
+        )
+        return self._unit_count_from_text(descriptive_text)
 
     def _storey_count_from_text(self, text: str) -> str:
         """Return supported building-height evidence normalized as a storey count.
@@ -1568,6 +1684,13 @@ class FullSiteScanner:
                     phone=prop("telephone"),
                     primary_email=prop("email").replace("mailto:", ""),
                     website=prop("url") or page_url,
+                    number_of_apartments=(
+                        self._unit_count_from_text(
+                            f"number of units: {prop('numberOfUnits')}"
+                        )
+                        if prop("numberOfUnits")
+                        else self._unit_count_from_text(block.get_text(" ", strip=True))
+                    ),
                     number_of_storeys=(
                         self._storey_count_from_text(
                             f"number of floors: {prop('numberOfFloors')}"
@@ -1617,7 +1740,7 @@ class FullSiteScanner:
                     phone=self._first_match(PHONE_RE, text),
                     primary_email=self._first_match(EMAIL_RE, text),
                     website=page_url,
-                    number_of_apartments=self._first_group(UNIT_COUNT_RE, local_context),
+                    number_of_apartments=self._unit_count_from_text(local_context),
                     number_of_storeys=self._storey_count_from_text(local_context),
                     amenities=self._amenities_from_text(local_context),
                     building_classification=self._classification_from_text(local_context),
@@ -1642,19 +1765,22 @@ class FullSiteScanner:
         page_text = self._visible_text(soup)
         phones = list(dict.fromkeys(PHONE_RE.findall(page_text)))
         emails = list(dict.fromkeys(EMAIL_RE.findall(page_text)))
-        unit_count = self._first_group(UNIT_COUNT_RE, page_text)
+        address_matches = list(ADDRESS_LINE_RE.finditer(page_text))
+        # A page-wide total is safe only for a single-address property page. On a
+        # portfolio page, each count must be recovered from the address-local context.
+        page_unit_count = self._unit_count_from_text(page_text) if len(address_matches) == 1 else ""
         amenities = self._amenities_from_container(soup) or self._amenities_from_text(page_text)
 
         seen_addresses: set[str] = set()
-        for match in ADDRESS_LINE_RE.finditer(page_text):
+        for match in address_matches:
             raw_address = self._clean_text(match.group(0))
             key = self._record_key("", raw_address)
             if not raw_address or key in seen_addresses:
                 continue
             seen_addresses.add(key)
             street, city, province, postal = self._split_address(raw_address)
-            local_context = page_text[max(0, match.start() - 600):match.end() + 600]
-            local_unit_count = self._first_group(UNIT_COUNT_RE, local_context) or unit_count
+            local_context = page_text[max(0, match.start() - 1400):match.end() + 1400]
+            local_unit_count = self._unit_count_from_text(local_context) or page_unit_count
             output.append(
                 RecordCandidate(
                     building_name=page_heading,
@@ -1675,7 +1801,7 @@ class FullSiteScanner:
                     source_page_title=page_title,
                     extraction_method="Visible-text pattern",
                     confidence=0.62 if postal else 0.52,
-                    evidence=raw_address[:700],
+                    evidence=self._clean_text(local_context)[:700],
                 )
             )
         return output
@@ -1695,7 +1821,8 @@ class FullSiteScanner:
         page_amenities = self._amenities_from_container(soup) or self._amenities_from_text(page_text)
         page_phones = list(dict.fromkeys(PHONE_RE.findall(page_text)))
         page_emails = list(dict.fromkeys(EMAIL_RE.findall(page_text)))
-        page_unit_count = self._first_group(UNIT_COUNT_RE, page_text)
+        # Never broadcast one page-level unit count across several property records.
+        page_unit_count = self._unit_count_from_text(page_text) if len(records) == 1 else ""
         page_storeys = self._storey_count_from_text(page_text)
         page_classification = self._classification_from_text(page_text)
         page_postals = list(dict.fromkeys(POSTAL_RE.findall(page_text)))
@@ -1707,8 +1834,16 @@ class FullSiteScanner:
                 record.phone = page_phones[0]
             if not record.primary_email and page_emails:
                 record.primary_email = page_emails[0]
-            if not record.number_of_apartments and page_unit_count:
-                record.number_of_apartments = page_unit_count
+            if not record.number_of_apartments:
+                local_unit_count = ""
+                street = self._clean_text(record.street_address)
+                if street:
+                    lowered = page_text.lower()
+                    position = lowered.find(street.lower())
+                    if position >= 0:
+                        local_context = page_text[max(0, position - 1400):position + len(street) + 1400]
+                        local_unit_count = self._unit_count_from_text(local_context)
+                record.number_of_apartments = local_unit_count or page_unit_count
             if not record.number_of_storeys and page_storeys:
                 record.number_of_storeys = page_storeys
             if not record.amenities and page_amenities:
