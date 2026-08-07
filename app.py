@@ -5,10 +5,12 @@ import json
 import os
 import pickle
 import re
+import unicodedata
 import uuid
 import zipfile
 from html import escape
 from datetime import date, datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -26,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Unit-Count Recovery + Ottawa Residential Scope 2026.08.07-v68"
+DATABLIX_BUILD = "Source Reconciliation + Field Change Review 2026.08.07-v70"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -3741,6 +3743,571 @@ def company_source_records_for_research(
 
     # Starting Data can legitimately contain blanks. Export them as blank cells.
     return matched.replace({pd.NA: ""}).fillna("")
+
+
+def company_source_presence_reconciliation(
+    source_records: pd.DataFrame,
+    research_records: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compare one company's Starting Data with every returned research row.
+
+    This is a presence/reconciliation view for human review, not an automatic
+    inventory decision.  Strong matches use the same >=88 threshold as Datablix
+    discovery classification; scores from 72-87 remain Possible match unless a
+    reviewer has already manually accepted that research row as an Existing Source
+    Record.  Removed/excluded research rows still count as rediscovered because the
+    purpose here is to show whether a Starting Data record appeared anywhere in the
+    returned research, not whether it remains active inventory.
+    """
+    columns = [
+        "Starting Source Position",
+        "Matched Research Position",
+        "Starting Record ID",
+        "Starting Record",
+        "Street Address",
+        "City",
+        "Postal Code",
+        "Starting Source URL",
+        "Reconciliation",
+        "Best Match Score",
+        "Match Reason",
+        "Matched Research Record",
+        "Research Result State",
+    ]
+    if not isinstance(source_records, pd.DataFrame) or source_records.empty:
+        return pd.DataFrame(columns=columns)
+
+    source = coalesce_duplicate_columns(source_records.copy()).reset_index(drop=True)
+    research = (
+        coalesce_duplicate_columns(research_records.copy()).reset_index(drop=True)
+        if isinstance(research_records, pd.DataFrame)
+        else pd.DataFrame()
+    )
+
+    source_identities, source_indexes = _build_discovery_source_index(source)
+    best_matches = {
+        position: {"score": 0, "reason": "no credible source match", "research_position": None}
+        for position in range(len(source))
+    }
+    research_rows = research.to_dict(orient="records") if not research.empty else []
+
+    for research_position, research_row in enumerate(research_rows):
+        research_identity = _row_identity(research_row)
+        candidate_positions = _candidate_source_positions(
+            research_identity, source_indexes
+        )
+        for source_position in candidate_positions:
+            score, reason = _source_match_score_from_identities(
+                research_identity, source_identities[source_position]
+            )
+            if score > best_matches[source_position]["score"]:
+                best_matches[source_position] = {
+                    "score": int(score),
+                    "reason": reason,
+                    "research_position": research_position,
+                }
+
+    rows = []
+    for source_position, source_row in enumerate(source.to_dict(orient="records")):
+        match = best_matches[source_position]
+        matched_row = (
+            research_rows[match["research_position"]]
+            if match["research_position"] is not None
+            else {}
+        )
+        score = int(match["score"] or 0)
+        manual_existing = bool(
+            matched_row
+            and safe_text(matched_row.get("Discovery Status Source", "")) == "Manual"
+            and safe_text(matched_row.get("Directory Discovery Status", ""))
+            == "Existing Source Record"
+        )
+
+        excluded_match = bool(
+            matched_row
+            and (
+                safe_text(matched_row.get("Record Decision", "")) == "Remove"
+                or safe_text(matched_row.get("Directory Discovery Status", ""))
+                == "Excluded / Not Current"
+                or safe_text(matched_row.get("Current Inventory Status", "")).lower().startswith("excluded")
+            )
+        )
+
+        if score >= 88 or (manual_existing and score >= 72):
+            reconciliation = (
+                "Rediscovered — excluded/not current"
+                if excluded_match
+                else "Rediscovered"
+            )
+        elif score >= 72:
+            reconciliation = "Possible match"
+        else:
+            reconciliation = "Not rediscovered"
+
+        source_label = (
+            safe_text(source_row.get("Building Name", ""))
+            or safe_text(source_row.get("Street Address", ""))
+            or safe_text(source_row.get("Record ID", ""))
+            or "Unlabelled source record"
+        )
+        matched_label = (
+            safe_text(matched_row.get("Working Record Label", ""))
+            or safe_text(matched_row.get("Building Name", ""))
+            or safe_text(matched_row.get("Street Address", ""))
+            or safe_text(matched_row.get("Record ID", ""))
+        )
+        starting_url = (
+            safe_text(source_row.get("Property Website", ""))
+            or safe_text(source_row.get("Website", ""))
+            or safe_text(source_row.get("Source URL", ""))
+        )
+        result_state_parts = [
+            safe_text(matched_row.get("Current Inventory Status", "")),
+            safe_text(matched_row.get("Directory Discovery Status", "")),
+            safe_text(matched_row.get("Record Decision", "")),
+        ]
+        result_state = " · ".join(
+            dict.fromkeys(part for part in result_state_parts if part)
+        )
+
+        rows.append({
+            "Starting Source Position": source_position,
+            "Matched Research Position": match["research_position"] if match["research_position"] is not None else pd.NA,
+            "Starting Record ID": safe_text(source_row.get("Record ID", "")),
+            "Starting Record": source_label,
+            "Street Address": safe_text(source_row.get("Street Address", "")),
+            "City": safe_text(source_row.get("City", "")),
+            "Postal Code": safe_text(source_row.get("Postal Code", "")),
+            "Starting Source URL": starting_url,
+            "Reconciliation": reconciliation,
+            "Best Match Score": score,
+            "Match Reason": match["reason"],
+            "Matched Research Record": matched_label,
+            "Research Result State": result_state,
+        })
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+
+def _comparison_ascii_key(value) -> str:
+    """Return a punctuation-insensitive ASCII key for review-only comparisons."""
+    text = unicodedata.normalize("NFKD", safe_text(value))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def _comparison_number(value) -> str:
+    """Normalize ordinary integer-like counts without inventing a value."""
+    text = safe_text(value)
+    if not text:
+        return ""
+    compact = text.replace(",", "").strip()
+    if re.fullmatch(r"\d+(?:\.0+)?", compact):
+        return str(int(float(compact)))
+    numbers = re.findall(r"(?<!\d)(\d{1,6})(?!\d)", compact)
+    return numbers[0] if len(numbers) == 1 else ""
+
+
+def _comparison_province(value) -> str:
+    key = _comparison_ascii_key(value)
+    aliases = {
+        "on": "ontario",
+        "ont": "ontario",
+        "ontario": "ontario",
+        "qc": "quebec",
+        "pq": "quebec",
+        "quebec": "quebec",
+    }
+    return aliases.get(key, key)
+
+
+def _comparison_classification(value) -> str:
+    if not safe_text(value):
+        return ""
+    parts = _classification_parts(value)
+    return "|".join(sorted(_comparison_ascii_key(part) for part in parts if safe_text(part)))
+
+
+def _comparison_field_key(field: str, value) -> str:
+    """Normalize a field only enough to identify formatting-equivalent values."""
+    text = safe_text(value)
+    if not text:
+        return ""
+    if field == "Street Address":
+        signature = _address_signature(text)
+        if signature["full"]:
+            return signature["full"]
+        return _comparison_ascii_key(text)
+    if field == "City":
+        return _canonical_city(text)
+    if field == "Province":
+        return _comparison_province(text)
+    if field == "Postal Code":
+        return _canonical_postal(text)
+    if field == "Phone":
+        return _canonical_phone(text)
+    if field == "Primary Email":
+        return text.lower().replace(" ", "")
+    if field in {"Website", "Property Website", "Source URL"}:
+        return _canonical_url(text)
+    if field in {"Number of Storeys", "Number of Apartments"}:
+        return _comparison_number(text)
+    if field == "Building Classification":
+        return _comparison_classification(text)
+    return _comparison_ascii_key(text)
+
+
+def _comparison_text_similarity(first, second) -> float:
+    first_key = _comparison_ascii_key(first)
+    second_key = _comparison_ascii_key(second)
+    if not first_key or not second_key:
+        return 0.0
+    return SequenceMatcher(None, first_key, second_key).ratio()
+
+
+def _classify_field_difference(field: str, source_value, research_value) -> tuple[str, str]:
+    """Classify one Starting Data vs research value without choosing a winner."""
+    source_text = safe_text(source_value)
+    research_text = safe_text(research_value)
+
+    if not source_text and not research_text:
+        return "Same", "Both blank"
+    if not source_text and research_text:
+        return "Added in research", "Research filled a field that was blank in Starting Data"
+    if source_text and not research_text:
+        return "Missing from research", "Starting Data had a value but the matched research row is blank"
+    if source_text == research_text:
+        return "Same", "Exact match"
+
+    source_key = _comparison_field_key(field, source_text)
+    research_key = _comparison_field_key(field, research_text)
+    if source_key and research_key and source_key == research_key:
+        return "Formatting only", "Same normalized value; spelling, punctuation, abbreviation, accents, or formatting differ"
+
+    if field in {"Building Name", "Street Address", "Management/Owner", "City"}:
+        similarity = _comparison_text_similarity(source_text, research_text)
+        if similarity >= 0.87:
+            return "Possible typo / minor text change", f"Very similar text ({similarity:.0%}); verify the preferred wording"
+
+    return "Changed — verify", "Values differ materially; Datablix does not choose which one is correct"
+
+
+def company_source_field_comparison(
+    source_records: pd.DataFrame,
+    research_records: pd.DataFrame,
+    reconciliation: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Return field-level differences for strongly rediscovered Starting Data rows.
+
+    The comparison is retroactive and read-only: it operates on whatever research
+    records are already saved in the project and never mutates Starting Data or the
+    working research dataframe.
+    """
+    columns = [
+        "Starting Record",
+        "Matched Research Record",
+        "Field",
+        "Starting Data",
+        "Research Result",
+        "Comparison",
+        "Comparison Note",
+        "Best Match Score",
+        "Match Reason",
+    ]
+    if not isinstance(source_records, pd.DataFrame) or source_records.empty:
+        return pd.DataFrame(columns=columns)
+    if not isinstance(research_records, pd.DataFrame) or research_records.empty:
+        return pd.DataFrame(columns=columns)
+
+    source = coalesce_duplicate_columns(source_records.copy()).reset_index(drop=True)
+    research = coalesce_duplicate_columns(research_records.copy()).reset_index(drop=True)
+    if reconciliation is None:
+        reconciliation = company_source_presence_reconciliation(source, research)
+    if not isinstance(reconciliation, pd.DataFrame) or reconciliation.empty:
+        return pd.DataFrame(columns=columns)
+
+    compare_fields = [
+        "Building Name",
+        "Street Address",
+        "Address Line 2",
+        "City",
+        "Province",
+        "Postal Code",
+        "Building Classification",
+        "Number of Storeys",
+        "Number of Apartments",
+        "Management/Owner",
+        "Phone",
+        "Primary Email",
+        "Website",
+        "Property Website",
+        "Source URL",
+    ]
+
+    rows = []
+    strong = reconciliation["Reconciliation"].astype(str).str.startswith("Rediscovered")
+    for _, link in reconciliation.loc[strong].iterrows():
+        try:
+            source_position = int(link["Starting Source Position"])
+            research_position = int(link["Matched Research Position"])
+        except (TypeError, ValueError):
+            continue
+        if source_position not in source.index or research_position not in research.index:
+            continue
+
+        source_row = source.loc[source_position]
+        research_row = research.loc[research_position]
+        source_label = safe_text(link.get("Starting Record", ""))
+        research_label = safe_text(link.get("Matched Research Record", ""))
+
+        for field in compare_fields:
+            source_value = source_row.get(field, "")
+            research_value = research_row.get(field, "")
+            comparison, note = _classify_field_difference(field, source_value, research_value)
+            if comparison == "Same":
+                continue
+            rows.append({
+                "Starting Record": source_label,
+                "Matched Research Record": research_label,
+                "Field": field,
+                "Starting Data": safe_text(source_value),
+                "Research Result": safe_text(research_value),
+                "Comparison": comparison,
+                "Comparison Note": note,
+                "Best Match Score": int(link.get("Best Match Score", 0) or 0),
+                "Match Reason": safe_text(link.get("Match Reason", "")),
+            })
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _render_company_source_field_comparison(
+    company_source: pd.DataFrame,
+    research_records: pd.DataFrame,
+    reconciliation: pd.DataFrame,
+) -> None:
+    """Render retroactive Starting Data vs saved-research differences."""
+    differences = company_source_field_comparison(
+        company_source,
+        research_records,
+        reconciliation=reconciliation,
+    )
+    if differences.empty:
+        rediscovered = int(
+            reconciliation["Reconciliation"].astype(str).str.startswith("Rediscovered").sum()
+        )
+        if rediscovered:
+            st.success("Rediscovered records have no field-level differences in the compared Starting Data fields.")
+        return
+
+    material_labels = {
+        "Changed — verify",
+        "Possible typo / minor text change",
+        "Added in research",
+        "Missing from research",
+    }
+    material = differences.loc[differences["Comparison"].isin(material_labels)].copy()
+    formatting = differences.loc[differences["Comparison"].eq("Formatting only")].copy()
+
+    changed_records = int(material["Starting Record"].nunique()) if not material.empty else 0
+    changed_fields = len(material)
+    formatting_fields = len(formatting)
+    newly_filled = int(material["Comparison"].eq("Added in research").sum()) if not material.empty else 0
+
+    st.markdown("#### Starting Data vs research changes")
+    st.caption(
+        "This comparison also works for research completed before this feature was added. "
+        "It reads the saved research records and current Starting Data at review time; neither dataset is overwritten automatically."
+    )
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Records with differences", f"{changed_records:,}")
+    metric_columns[1].metric("Fields to review", f"{changed_fields:,}")
+    metric_columns[2].metric("Newly filled", f"{newly_filled:,}")
+    metric_columns[3].metric("Formatting-only", f"{formatting_fields:,}")
+
+    if not material.empty:
+        priority_order = {
+            "Changed — verify": 0,
+            "Possible typo / minor text change": 1,
+            "Missing from research": 2,
+            "Added in research": 3,
+        }
+        material["_priority"] = material["Comparison"].map(priority_order).fillna(9)
+        material = material.sort_values(
+            ["_priority", "Starting Record", "Field"], kind="stable"
+        ).drop(columns=["_priority"])
+        with smart_expander(
+            "Field changes to review",
+            count=len(material),
+            status="source vs research",
+            expanded=True,
+        ):
+            st.caption(
+                "Changed values are review flags, not automatic corrections. 'Added in research' can be a legitimate update; 'Missing from research' means the matched research row left that field blank."
+            )
+            st.dataframe(
+                material[[
+                    "Starting Record", "Matched Research Record", "Field",
+                    "Starting Data", "Research Result", "Comparison", "Comparison Note",
+                ]],
+                width="stretch",
+                hide_index=True,
+            )
+
+    if not formatting.empty:
+        with smart_expander(
+            "Formatting and equivalent wording differences",
+            count=len(formatting),
+            status="usually no factual conflict",
+            expanded=False,
+        ):
+            st.caption(
+                "These values normalize to the same underlying value, such as St vs Street, phone formatting, URL formatting, accents, or equivalent classification wording."
+            )
+            st.dataframe(
+                formatting[[
+                    "Starting Record", "Matched Research Record", "Field",
+                    "Starting Data", "Research Result", "Comparison Note",
+                ]],
+                width="stretch",
+                hide_index=True,
+            )
+
+
+def render_company_source_presence_reconciliation(
+    company_id: str,
+    research_records: pd.DataFrame,
+) -> None:
+    """Show Starting Data records absent or ambiguous in one company's research."""
+    company_id = safe_text(company_id)
+    if not company_id:
+        return
+
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    company_name = ""
+    if not registry.empty:
+        exact = registry.loc[registry["Company ID"].astype(str).eq(company_id)]
+        if not exact.empty:
+            company_name = safe_text(exact.iloc[0].get("Management/Owner", ""))
+    if not company_name and isinstance(research_records, pd.DataFrame) and not research_records.empty:
+        owner_values = research_records.get("Management/Owner", pd.Series(dtype="object"))
+        owner_values = owner_values.apply(safe_text)
+        owner_values = owner_values.loc[owner_values.ne("")]
+        if not owner_values.empty:
+            company_name = owner_values.iloc[0]
+
+    starting_data = current_starting_source_records()
+    company_source = company_source_records_for_research(
+        starting_data,
+        company_id=company_id,
+        company_name=company_name,
+    )
+    if company_source.empty:
+        return
+
+    reconciliation = company_source_presence_reconciliation(
+        company_source, research_records
+    )
+    if reconciliation.empty:
+        return
+
+    rediscovered_mask = reconciliation["Reconciliation"].str.startswith("Rediscovered")
+    possible_mask = reconciliation["Reconciliation"].eq("Possible match")
+    missing_mask = reconciliation["Reconciliation"].eq("Not rediscovered")
+    rediscovered_count = int(rediscovered_mask.sum())
+    possible_count = int(possible_mask.sum())
+    missing_count = int(missing_mask.sum())
+
+    st.divider()
+    st.markdown("### Starting Data reconciliation")
+    st.caption(
+        "This reverse check asks whether every Starting Data record for the selected company appeared anywhere in the returned research. "
+        "It does not automatically delete, restore, or change inventory status."
+    )
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Starting source", f"{len(reconciliation):,}")
+    metric_columns[1].metric("Rediscovered", f"{rediscovered_count:,}")
+    metric_columns[2].metric("Possible match", f"{possible_count:,}")
+    metric_columns[3].metric("Not rediscovered", f"{missing_count:,}")
+
+    if missing_count:
+        st.warning(
+            f"{missing_count:,} Starting Data record(s) were not rediscovered in the current research for {company_name or 'this company'}. "
+            "Not rediscovered does not mean the property is no longer managed or inactive; it means no credible matching research row was returned."
+        )
+        with smart_expander(
+            "Starting records not rediscovered",
+            count=missing_count,
+            status="review against source",
+            expanded=True,
+        ):
+            missing = reconciliation.loc[missing_mask, [
+                "Starting Record ID", "Starting Record", "Street Address",
+                "City", "Postal Code", "Starting Source URL",
+            ]].copy()
+            st.dataframe(
+                missing,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Starting Source URL": st.column_config.LinkColumn(
+                        "Starting Source", display_text="Open source"
+                    ),
+                },
+            )
+    elif possible_count:
+        st.info(
+            "No Starting Data record is completely unmatched, but one or more possible matches still need manual confirmation before Datablix treats the reconciliation as complete."
+        )
+    else:
+        st.success(
+            "Every Starting Data record for this company has a strong or reviewer-accepted match somewhere in the current research results."
+        )
+
+    if possible_count:
+        with smart_expander(
+            "Possible source matches",
+            count=possible_count,
+            status="manual comparison needed",
+            expanded=False,
+        ):
+            possible = reconciliation.loc[possible_mask, [
+                "Starting Record", "Street Address", "Postal Code",
+                "Matched Research Record", "Best Match Score", "Match Reason",
+            ]].copy()
+            st.caption(
+                "These rows have credible similarities but are below Datablix's strong-match threshold. Confirm them manually before treating them as rediscovered."
+            )
+            st.dataframe(possible, width="stretch", hide_index=True)
+
+    excluded_matches = reconciliation.loc[
+        reconciliation["Reconciliation"].eq("Rediscovered — excluded/not current")
+    ].copy()
+    if not excluded_matches.empty:
+        with smart_expander(
+            "Rediscovered but excluded / not current",
+            count=len(excluded_matches),
+            status="present in research",
+            expanded=False,
+        ):
+            st.caption(
+                "These Starting Data records did appear in the returned research, but the research currently marks them excluded, not current, or removed. They are therefore not counted as missing from the research result."
+            )
+            st.dataframe(
+                excluded_matches[[
+                    "Starting Record", "Street Address", "Matched Research Record",
+                    "Research Result State", "Best Match Score", "Match Reason",
+                ]],
+                width="stretch",
+                hide_index=True,
+            )
+
+    _render_company_source_field_comparison(
+        company_source,
+        research_records,
+        reconciliation,
+    )
 
 
 def build_research_package_bytes(
@@ -11646,6 +12213,11 @@ elif section == "Review records":
             st.info(
                 f"{needs_origin_now:,} record(s) still need discovery classification because Datablix could not safely determine whether they were in the starting source building list."
             )
+
+        render_company_source_presence_reconciliation(
+            str(review_company_id),
+            review_scope_qa,
+        )
 
         search_col, focus_col = st.columns([2, 1])
         search_text = search_col.text_input(
