@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Reporting Snapshot 2026.08.09-v83"
+DATABLIX_BUILD = "Deliverables Generator + Corrected Research Population 2026.08.09-v84"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -5992,6 +5992,63 @@ def closeout_research_population(qa_frame: pd.DataFrame) -> pd.DataFrame:
     return out.loc[mask].copy()
 
 
+def deliverable_research_population(qa_frame: pd.DataFrame) -> pd.DataFrame:
+    """Return the full valid/current researched inventory used by project deliverables.
+
+    Deliverable inclusion is intentionally broader than Approved for Export.
+    Existing researched records must not disappear simply because they have not
+    been marked Keep for an external-entry workflow.
+    """
+    population = closeout_research_population(qa_frame)
+    if population.empty:
+        return population.copy()
+    sort_fields = [
+        field for field in ["Management/Owner", "Building Name", "Street Address"]
+        if field in population.columns
+    ]
+    if sort_fields:
+        population = population.sort_values(sort_fields, kind="stable")
+    return population.copy()
+
+
+def deliverable_needs_review_mask(qa_frame: pd.DataFrame) -> pd.Series:
+    """Return genuine unresolved review items without using export approval as a proxy.
+
+    An existing record can be fully researched and verified while still lacking
+    Record Decision = Keep. That is an export-workflow state, not automatically
+    a research-quality problem.
+    """
+    if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
+        return pd.Series(False, index=getattr(qa_frame, "index", pd.Index([])), dtype=bool)
+
+    mask = pd.Series(False, index=qa_frame.index, dtype=bool)
+
+    if "Verification Status" in qa_frame.columns:
+        mask |= ~qa_frame["Verification Status"].astype(str).eq("Verified")
+
+    if "QA Status" in qa_frame.columns:
+        mask |= qa_frame["QA Status"].astype(str).eq("Critical")
+
+    if "Research Status" in qa_frame.columns:
+        mask |= qa_frame["Research Status"].astype(str).isin({
+            "Imported - Needs Review", "Not Started", "In Progress",
+            "Needs Follow-up", "Ready for Review",
+        })
+
+    if "Directory Discovery Status" in qa_frame.columns:
+        mask |= qa_frame["Directory Discovery Status"].astype(str).isin({
+            "Needs Classification", "Possible Duplicate",
+        })
+
+    if "Geographic Scope Status" in qa_frame.columns:
+        mask |= qa_frame["Geographic Scope Status"].astype(str).eq("Needs Geographic Review")
+
+    # Removed / excluded / confirmed out-of-scope records are audit records,
+    # not unresolved active directory records.
+    active_indices = deliverable_research_population(qa_frame).index
+    return mask & qa_frame.index.to_series().isin(active_indices)
+
+
 def _closeout_field_available_mask(frame: pd.DataFrame, spec: dict) -> pd.Series:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return pd.Series(False, index=getattr(frame, "index", pd.Index([])), dtype=bool)
@@ -6217,7 +6274,7 @@ def closeout_research_coverage_matrix(qa_frame: pd.DataFrame, registry=None, bas
             group.get("Directory Discovery Status", pd.Series("", index=group.index)).astype(str).eq("Newly Discovered")
             & group.get("Directory Entry Status", pd.Series("", index=group.index)).astype(str).eq("Entered")
         ).sum()) if not group.empty else 0
-        needs_review = int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()) if not group.empty else 0
+        needs_review = int(deliverable_needs_review_mask(group).sum()) if not group.empty else 0
         changed = int(change_counts.get(company_id, 0))
         rows.append({
             "Company": company_name,
@@ -6275,11 +6332,6 @@ def verification_followup_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
             "Possible duplicates",
             discovery.eq("Possible Duplicate"),
             "Possible duplicates should be reconciled before reporting discovery counts or preparing final directory entries.",
-        )
-        add(
-            "Records not yet approved for export",
-            ~approved_for_export_mask(population),
-            "These records still require some combination of research completion, human verification, a final record decision, or resolution of critical data blockers.",
         )
     return pd.DataFrame(rows)
 
@@ -6420,7 +6472,7 @@ def draft_profiles_table(qa_frame: pd.DataFrame) -> pd.DataFrame:
             "Record ID", "Building Name", "Management/Owner", "Street Address",
             "Verification Status", "Profile Draft",
         ])
-    candidates = qa_frame.loc[~qa_frame["Record Decision"].eq("Remove")].copy()
+    candidates = deliverable_research_population(qa_frame)
     if candidates.empty:
         return pd.DataFrame(columns=[
             "Record ID", "Building Name", "Management/Owner", "Street Address",
@@ -6459,12 +6511,14 @@ def final_project_data_matrix(
         else 0
     )
     total = len(qa_frame) if isinstance(qa_frame, pd.DataFrame) else 0
+    eligible_population = deliverable_research_population(qa_frame)
+    eligible_total = len(eligible_population)
     existing = int(qa_frame["Directory Discovery Status"].eq("Existing Source Record").sum()) if total and "Directory Discovery Status" in qa_frame.columns else 0
     discoveries = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if total and "Directory Discovery Status" in qa_frame.columns else 0
     changed = int(coverage_matrix["Changed Existing Records"].sum()) if not coverage_matrix.empty else 0
     approved = int(approved_for_export_mask(qa_frame).sum()) if total else 0
     verified = int(qa_frame["Verification Status"].eq("Verified").sum()) if total and "Verification Status" in qa_frame.columns else 0
-    needs_review = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum()) if total else 0
+    needs_review = int(deliverable_needs_review_mask(qa_frame).sum()) if total else 0
     submitted = int((
         qa_frame.get("Directory Discovery Status", pd.Series("", index=qa_frame.index)).astype(str).eq("Newly Discovered")
         & qa_frame.get("Directory Entry Status", pd.Series("", index=qa_frame.index)).astype(str).eq("Entered")
@@ -6472,14 +6526,15 @@ def final_project_data_matrix(
 
     rows = [
         {"Matrix Area": "Project Scope", "Data Point": "Companies researched", "Result": company_count, "Denominator / Scope": "", "Rate %": "", "Assessment": "Coverage", "What the Data Shows": f"{company_count:,} organization workspace(s) represented in {scope_label}.", "Deliverable Use": "Research summary"},
-        {"Matrix Area": "Project Scope", "Data Point": "Research properties", "Result": total, "Denominator / Scope": "", "Rate %": "", "Assessment": "Coverage", "What the Data Shows": f"{total:,} researched property record(s) are represented.", "Deliverable Use": "Research dataset"},
+        {"Matrix Area": "Project Scope", "Data Point": "Research properties", "Result": total, "Denominator / Scope": "", "Rate %": "", "Assessment": "Coverage", "What the Data Shows": f"{total:,} researched property record(s) are represented.", "Deliverable Use": "Research scope"},
+        {"Matrix Area": "Project Scope", "Data Point": "Valid/current directory records", "Result": eligible_total, "Denominator / Scope": total, "Rate %": round(eligible_total / total * 100, 1) if total else 0.0, "Assessment": "Included", "What the Data Shows": f"{eligible_total:,} researched record(s) are valid/current and in scope for the Research Dataset.", "Deliverable Use": "Research dataset"},
         {"Matrix Area": "Source Reconciliation", "Data Point": "Existing source matches", "Result": existing, "Denominator / Scope": total, "Rate %": round(existing / total * 100, 1) if total else 0.0, "Assessment": "Matched", "What the Data Shows": f"{existing:,} record(s) matched the Starting Data.", "Deliverable Use": "Research summary"},
         {"Matrix Area": "Source Reconciliation", "Data Point": "New discoveries", "Result": discoveries, "Denominator / Scope": total, "Rate %": round(discoveries / total * 100, 1) if total else 0.0, "Assessment": "New", "What the Data Shows": f"{discoveries:,} record(s) are classified as newly discovered relative to Starting Data.", "Deliverable Use": "Research summary"},
         {"Matrix Area": "Source Reconciliation", "Data Point": "Changed existing records", "Result": changed, "Denominator / Scope": existing, "Rate %": round(changed / existing * 100, 1) if existing else 0.0, "Assessment": "Changed", "What the Data Shows": f"{changed:,} matched record(s) contain material researched differences.", "Deliverable Use": "Research summary"},
         {"Matrix Area": "External Submission", "Data Point": "Discoveries submitted", "Result": submitted, "Denominator / Scope": discoveries, "Rate %": round(submitted / discoveries * 100, 1) if discoveries else 0.0, "Assessment": "Submitted", "What the Data Shows": f"{submitted:,} discovery/discoveries are recorded as externally submitted.", "Deliverable Use": "Submission tracking"},
         {"Matrix Area": "Review & Verification", "Data Point": "Human verified", "Result": verified, "Denominator / Scope": total, "Rate %": round(verified / total * 100, 1) if total else 0.0, "Assessment": "Verified", "What the Data Shows": f"{verified:,} record(s) are marked Verified.", "Deliverable Use": "Verification tracker"},
-        {"Matrix Area": "Review & Verification", "Data Point": "Approved for Export", "Result": approved, "Denominator / Scope": total, "Rate %": round(approved / total * 100, 1) if total else 0.0, "Assessment": "Approved", "What the Data Shows": f"{approved:,} record(s) meet the current export approval rule.", "Deliverable Use": "Research dataset"},
-        {"Matrix Area": "Review & Verification", "Data Point": "Needs review", "Result": needs_review, "Denominator / Scope": total, "Rate %": round(needs_review / total * 100, 1) if total else 0.0, "Assessment": "Open", "What the Data Shows": f"{needs_review:,} active record(s) still require review or follow-up.", "Deliverable Use": "Verification tracker"},
+        {"Matrix Area": "Review & Verification", "Data Point": "Approved for Export", "Result": approved, "Denominator / Scope": total, "Rate %": round(approved / total * 100, 1) if total else 0.0, "Assessment": "Workflow", "What the Data Shows": f"{approved:,} record(s) meet the stricter optional export-approval rule.", "Deliverable Use": "Export workflow"},
+        {"Matrix Area": "Review & Verification", "Data Point": "Needs review", "Result": needs_review, "Denominator / Scope": total, "Rate %": round(needs_review / total * 100, 1) if total else 0.0, "Assessment": "Open", "What the Data Shows": f"{needs_review:,} active record(s) have genuine unresolved review or verification items.", "Deliverable Use": "Verification tracker"},
     ]
 
     for _, row in field_summary.iterrows():
@@ -6497,11 +6552,44 @@ def final_project_data_matrix(
 
 
 def deliverable_research_dataset(qa_frame: pd.DataFrame) -> pd.DataFrame:
-    """Return approved listing rows for the research dataset deliverable."""
+    """Return the full valid/current researched inventory for Deliverable 1."""
     if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
         return listing_export(qa_frame.iloc[0:0].copy()) if isinstance(qa_frame, pd.DataFrame) else pd.DataFrame()
-    approved = qa_frame.loc[approved_for_export_mask(qa_frame)].copy()
-    return listing_export(approved)
+    population = deliverable_research_population(qa_frame)
+    return listing_export(population)
+
+
+def research_dataset_workbook(qa_frame: pd.DataFrame) -> bytes:
+    """Create an editable Deliverable 1 workbook with a clean view and full detail."""
+    dataset = deliverable_research_dataset(qa_frame)
+
+    preferred = [
+        "Apartment Building Name",
+        "Street Address",
+        "City and Postal Code",
+        "Building Classification",
+        "Storeys",
+        "Number of Apartments",
+        "Apartment Building Management/Owner",
+        "Phone Number",
+        "Email Contact",
+        "WebSite",
+        "Rental Rate Range",
+        "Suite Types",
+        "Amenities",
+        "Rental Availability Status",
+        "Directory Discovery Status",
+        "Verification Status",
+        "Official Source URL",
+        "Date Researched",
+    ]
+    clean_columns = [column for column in preferred if column in dataset.columns]
+    directory_view = dataset[clean_columns].copy() if clean_columns else dataset.copy()
+
+    return excel_bytes({
+        "Directory Database": directory_view,
+        "Research Detail": dataset,
+    })
 
 
 def organization_research_summary_workbook(
@@ -6572,6 +6660,10 @@ def deliverables_package_bytes(
     )
     package = io.BytesIO()
     with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "01_Research_Dataset.xlsx",
+            research_dataset_workbook(qa_frame),
+        )
         archive.writestr("01_Research_Dataset.csv", csv_bytes(dataset))
         archive.writestr(
             "02_Organization_Research_Summary.xlsx",
@@ -6605,7 +6697,10 @@ def deliverables_package_bytes(
                 f"Project: {project_name}\n"
                 f"Scope: {scope_label}\n"
                 f"Generated: {datetime.now().astimezone().isoformat(timespec='seconds')}\n\n"
+                f"Research records in scope: {len(qa_frame):,}\n"
+                f"Valid/current records in Deliverable 1: {len(deliverable_research_population(qa_frame)):,}\n\n"
                 "Each file is generated from the same Datablix reporting state so the figures remain aligned.\n"
+                "Deliverable 1 uses the full valid/current researched inventory; Approved for Export remains a separate optional workflow status.\n"
             ).encode("utf-8"),
         )
     return package.getvalue()
@@ -6853,7 +6948,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
         },
         {
             "Section": "Verification method",
-            "Report Text": "Imported AI/scanner findings remain candidates until a person completes research, verifies the record, records supporting evidence, and chooses a final record decision.",
+            "Report Text": "Imported AI/scanner findings remain candidates until a person completes research, verifies the record, records supporting evidence, and resolves any required review decisions.",
         },
         {
             "Section": "Missing information",
@@ -6886,7 +6981,7 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
         & qa_frame.get("Directory Entry Status", pd.Series("", index=qa_frame.index)).astype(str).eq("Entered")
     ).sum()) if not qa_frame.empty else 0
     needs_correction = int(qa_frame["Directory Entry Status"].eq("Needs Correction").sum()) if "Directory Entry Status" in qa_frame.columns else 0
-    still_review = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
+    still_review = int(deliverable_needs_review_mask(qa_frame).sum())
     existing = int(qa_frame["Directory Discovery Status"].eq("Existing Source Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     discovered = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     needs_classification = int(qa_frame["Directory Discovery Status"].eq("Needs Classification").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
@@ -6931,7 +7026,7 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
 - Approved for Export: {approved}
 - Newly discovered records marked Submitted Externally: {submitted}
 - Directory-entry records needing correction: {needs_correction}
-- Still in review or follow-up: {still_review}
+- Records with genuine unresolved review items: {still_review}
 
 ## Current quality position
 - Records with critical issues: {critical}
@@ -6967,7 +7062,7 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
 def project_deliverables_table():
     """Map each reusable deliverable to its Datablix generator."""
     return pd.DataFrame([
-        {"Deliverable": "1. Research Dataset", "Datablix Location": "Deliverables → Research dataset", "Generated Output": "Approved listing records", "Export": "CSV"},
+        {"Deliverable": "1. Research Dataset", "Datablix Location": "Deliverables → Research dataset", "Generated Output": "Full valid/current researched inventory", "Export": "Excel + CSV"},
         {"Deliverable": "2. Organization Research Summary", "Datablix Location": "Deliverables → Research coverage", "Generated Output": "Company coverage + discoveries", "Export": "Excel"},
         {"Deliverable": "3. Source & Verification Tracker", "Datablix Location": "Deliverables → Verification", "Generated Output": "Record-level source/verification tracker + follow-up summary", "Export": "Excel"},
         {"Deliverable": "4. Draft Record Profiles", "Datablix Location": "Deliverables → Profiles", "Generated Output": "Copy-ready draft profiles", "Export": "HTML"},
@@ -6988,7 +7083,7 @@ def report_summary(qa_frame, registry=None, scope_label="All companies", baselin
         & qa_frame.get("Directory Entry Status", pd.Series("", index=qa_frame.index)).astype(str).eq("Entered")
     ).sum()) if not qa_frame.empty else 0
     issue_count = int(qa_frame["QA Flag Count"].sum())
-    unresolved_count = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum())
+    unresolved_count = int(deliverable_needs_review_mask(qa_frame).sum())
     cities = sorted(set(resolved(qa_frame["City"]).dropna().astype(str).str.strip()))
     existing_count = int(qa_frame["Directory Discovery Status"].eq("Existing Source Record").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     discovered_count = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
@@ -7003,8 +7098,8 @@ def report_summary(qa_frame, registry=None, scope_label="All companies", baselin
         {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Research property records analysed: {len(qa_frame):,}."},
         {"Section": "Research contribution", "Report Text": f"The current scope contains {existing_count:,} existing Starting Data match(es), {discovered_count:,} newly discovered record(s), and {changed_count:,} existing record(s) with material researched differences. {needs_classification_count:,} record(s) still need discovery classification, {duplicate_count:,} are possible duplicate(s), and {excluded_count:,} are excluded/not-current."},
         {"Section": "External submission tracking", "Report Text": f"{submitted_count:,} newly discovered record(s) are currently marked as externally submitted. Datablix records the submission workflow but does not independently verify separately maintained external datasets."},
-        {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {verified_count:,} record(s) are human verified, {approved_count:,} are Approved for Export, and {unresolved_count:,} still require correction, verification, a decision, or documented follow-up."},
-        {"Section": "Method", "Report Text": "Companies were researched separately using an inventory-first public-source method. Structured research results were imported into Datablix, compared with Starting Data, and reviewed by a person before approval."},
+        {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {verified_count:,} record(s) are human verified, {approved_count:,} are Approved for Export, and {unresolved_count:,} have genuine unresolved review or verification items."},
+        {"Section": "Method", "Report Text": "Companies were researched separately using an inventory-first public-source method. Structured research results were imported into Datablix, compared with Starting Data, and reviewed by a person before final use."},
         {"Section": "Assumptions", "Report Text": "A loading property URL is not proof of current inventory; website inventory presence is not the same as current rental availability; unavailable information is documented rather than invented; and official company/property sources are primary evidence."},
         {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, blocked, duplicated, JavaScript-dependent, or inconsistent. Datablix reports only datasets available within the workspace and does not claim totals for separately maintained external datasets."},
         {"Section": "Recommended next actions", "Report Text": "Resolve high-priority follow-ups, use the field-availability matrix to prioritize reliable search and filter options, flag high-value fields with weak public coverage for further data collection, and use the downloadable project data matrix to support final project outputs."},
@@ -13804,10 +13899,7 @@ elif section == "Analysis & report":
     existing_metric = int(analysis_qa["Directory Discovery Status"].eq("Existing Source Record").sum())
     discovered_metric = int(analysis_qa["Directory Discovery Status"].eq("Newly Discovered").sum())
     changed_metric = int(coverage_matrix["Changed Existing Records"].sum()) if not coverage_matrix.empty else 0
-    needs_review_metric = int((
-        ~approved_for_export_mask(analysis_qa)
-        & ~analysis_qa["Record Decision"].eq("Remove")
-    ).sum())
+    needs_review_metric = int(deliverable_needs_review_mask(analysis_qa).sum())
 
     metric_row = st.columns(5)
     metric_row[0].metric("Companies", f"{company_count_metric:,}")
@@ -13843,9 +13935,9 @@ elif section == "Analysis & report":
     analysis_tabs = st.tabs([
         "Research dataset",
         "Research coverage",
-        "Recommendations",
         "Verification",
         "Profiles",
+        "Recommendations",
         "Methodology",
         "Final matrix",
     ])
@@ -13854,20 +13946,34 @@ elif section == "Analysis & report":
         st.subheader("1. Research Dataset")
         dataset = deliverable_research_dataset(analysis_qa)
         st.caption(
-            "This output contains the records currently Approved for Export and the standard listing fields."
+            "This deliverable contains the full valid/current researched inventory in scope. "
+            "Approved for Export is tracked separately and does not remove verified existing records from this dataset."
         )
         if dataset.empty:
-            st.info("No records in this reporting state are currently Approved for Export.")
+            st.info("No valid/current researched records are available in this reporting state.")
         else:
             st.dataframe(dataset, width="stretch", hide_index=True, height=560)
-        st.download_button(
-            "Download Research Dataset — CSV",
-            data=csv_bytes(dataset),
-            file_name=f"{project_slug}_{scope_slug}_01_research_dataset.csv",
-            mime="text/csv",
-            width="stretch",
-            key="db_deliverable_01_dataset",
-        )
+
+        d1_export_cols = st.columns(2)
+        with d1_export_cols[0]:
+            st.download_button(
+                "Download Research Dataset — Excel",
+                data=research_dataset_workbook(analysis_qa),
+                file_name=f"{project_slug}_{scope_slug}_01_research_dataset.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+                type="primary",
+                key="db_deliverable_01_dataset_xlsx",
+            )
+        with d1_export_cols[1]:
+            st.download_button(
+                "Download Research Dataset — CSV",
+                data=csv_bytes(dataset),
+                file_name=f"{project_slug}_{scope_slug}_01_research_dataset.csv",
+                mime="text/csv",
+                width="stretch",
+                key="db_deliverable_01_dataset_csv",
+            )
 
     with analysis_tabs[1]:
         st.subheader("2. Organization Research Summary")
@@ -13897,7 +14003,7 @@ elif section == "Analysis & report":
             key="db_deliverable_02_research_summary",
         )
 
-    with analysis_tabs[2]:
+    with analysis_tabs[4]:
         st.subheader("5. Structure & Search Recommendations")
         availability_matrix = field_availability_matrix(analysis_qa, analysis_registry)
         field_findings = field_availability_summary(analysis_qa)
@@ -13924,7 +14030,7 @@ elif section == "Analysis & report":
             key="db_deliverable_05_recommendations",
         )
 
-    with analysis_tabs[3]:
+    with analysis_tabs[2]:
         st.subheader("3. Source & Verification Tracker")
         followup = verification_followup_summary(analysis_qa)
         tracker = source_verification_tracker(analysis_qa)
@@ -13948,7 +14054,7 @@ elif section == "Analysis & report":
             key="db_deliverable_03_verification",
         )
 
-    with analysis_tabs[4]:
+    with analysis_tabs[3]:
         st.subheader("4. Draft Record Profiles")
         profiles = draft_profiles_table(analysis_qa)
         st.caption(
