@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Project Close-Out + Evidence-Based Directory Recommendations 2026.08.09-v81"
+DATABLIX_BUILD = "Deliverables + Data-Informed Recommendations 2026.08.09-v82"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -5814,10 +5814,10 @@ def field_coverage(df):
 
 
 # =========================================================
-# Project close-out analytics
+# Project deliverables analytics
 # =========================================================
 
-# These are candidate Fifty-Five Plus directory fields that Datablix can evaluate
+# These are candidate listing and search fields that Datablix can evaluate
 # from the evidence actually collected during research.  The matrix is deliberately
 # evidence-first: coverage is calculated before any recommendation is shown.
 CLOSEOUT_FIELD_SPECS = [
@@ -5826,7 +5826,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Street Address", "City", "Postal Code"],
         "Mode": "all",
         "Directory Use": "Profile + Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Priority",
         "Rationale": "Location is fundamental when households compare areas and proximity to services, transportation, family support, and familiar neighbourhoods.",
     },
@@ -5835,7 +5835,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Rental Rate Range"],
         "Mode": "all",
         "Directory Use": "Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Priority",
         "Rationale": "Housing cost is a primary decision factor, so reliable rent information provides direct comparison value.",
     },
@@ -5844,7 +5844,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Suite Types"],
         "Mode": "all",
         "Directory Use": "Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Priority",
         "Rationale": "Studio, one-bedroom, two-bedroom, and other suite configurations help users match housing to household size and space needs.",
     },
@@ -5853,7 +5853,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Building Classification"],
         "Mode": "all",
         "Directory Use": "Category + Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Priority",
         "Rationale": "The research includes different housing forms and building heights, so a controlled category helps users distinguish the kind of rental community they are considering.",
     },
@@ -5862,7 +5862,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Rental Availability Status"],
         "Mode": "availability_status",
         "Directory Use": "Filter + Freshness Date",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Use with Last Verified date",
         "Rationale": "Availability is useful but time-sensitive. A current property page can remain online after a unit is rented, so the status should be paired with a verification date and clear wording.",
     },
@@ -5871,25 +5871,25 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Elevator"],
         "Mode": "all",
         "Directory Use": "Filter",
-        "Senior Relevance": "Very High",
+        "Decision Value": "Very High",
         "Base Recommendation": "Recommended",
-        "Rationale": "Elevator access can materially affect suitability for older adults and people with mobility limitations.",
+        "Rationale": "Elevator access can materially affect usability and suitability for people with different mobility needs.",
     },
     {
         "Field": "Accessibility",
         "Source Fields": ["Accessibility"],
         "Mode": "all",
         "Directory Use": "Future Filter",
-        "Senior Relevance": "Very High",
+        "Decision Value": "Very High",
         "Base Recommendation": "Recommended",
-        "Rationale": "Accessibility is highly relevant to a senior-focused directory, but a reliable filter requires sufficiently complete and consistently defined data.",
+        "Rationale": "Accessibility has high decision value, but a reliable filter requires sufficiently complete and consistently defined data.",
     },
     {
         "Field": "Parking",
         "Source Fields": ["Parking"],
         "Mode": "all",
         "Directory Use": "Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Recommended",
         "Rationale": "Parking can matter to residents, caregivers, family visitors, and service providers, making it a practical comparison field.",
     },
@@ -5898,7 +5898,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Laundry"],
         "Mode": "all",
         "Directory Use": "Field + Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Recommended",
         "Rationale": "In-suite versus shared laundry can affect convenience and day-to-day independence, so variation across properties is useful to surface.",
     },
@@ -5907,7 +5907,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Utilities"],
         "Mode": "all",
         "Directory Use": "Field + Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Recommended",
         "Rationale": "Utilities affect the real monthly housing cost, so they add affordability context beyond the advertised rent alone.",
     },
@@ -5916,7 +5916,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Pet Policy"],
         "Mode": "all",
         "Directory Use": "Optional Filter",
-        "Senior Relevance": "Medium",
+        "Decision Value": "Medium",
         "Base Recommendation": "Useful",
         "Rationale": "Pet ownership can determine whether a property is suitable for some households, although it is less universal than cost, location, or accessibility.",
     },
@@ -5925,7 +5925,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Smoke-Free"],
         "Mode": "all",
         "Directory Use": "Optional Filter",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Useful",
         "Rationale": "Smoke-free policies can influence comfort and health-related housing preferences and may be useful when the information is consistently available.",
     },
@@ -5934,7 +5934,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Number of Apartments"],
         "Mode": "all",
         "Directory Use": "Profile Field",
-        "Senior Relevance": "Medium",
+        "Decision Value": "Medium",
         "Base Recommendation": "Profile only",
         "Rationale": "Unit count helps describe the scale of a rental community but is less likely to be a primary search criterion than location, price, or accessibility.",
     },
@@ -5943,7 +5943,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Phone"],
         "Mode": "all",
         "Directory Use": "Profile Field",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Profile only",
         "Rationale": "A direct contact number supports follow-up and verification but is better presented as profile information than as a search filter.",
     },
@@ -5952,7 +5952,7 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Property Website", "Website", "Company Website"],
         "Mode": "any",
         "Directory Use": "Profile Link",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Profile only",
         "Rationale": "A verified official webpage gives users a direct path to current property details and contact information, but it is not itself a meaningful filter.",
     },
@@ -5961,9 +5961,9 @@ CLOSEOUT_FIELD_SPECS = [
         "Source Fields": ["Date Researched"],
         "Mode": "all",
         "Directory Use": "Freshness / Trust Field",
-        "Senior Relevance": "High",
+        "Decision Value": "High",
         "Base Recommendation": "Recommended",
-        "Rationale": "Public rental information changes over time, so a visible or internally maintained verification date helps Coyle communicate and manage data freshness.",
+        "Rationale": "Public rental information changes over time, so a visible or internally maintained verification date helps users assess and manage data freshness.",
     },
 ]
 
@@ -6063,11 +6063,6 @@ def field_availability_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
         else:
             finding = "No usable information was confirmed for this field in the current research scope."
 
-        evidence_sentence = (
-            f"Datablix found usable {spec['Field'].lower()} information for {found:,} of {total:,} "
-            f"eligible researched properties ({coverage:.1f}% coverage)."
-        )
-        strong_justification = f"{evidence_sentence} {spec['Rationale']}"
         rows.append({
             "Field": spec["Field"],
             "Found": found,
@@ -6075,10 +6070,10 @@ def field_availability_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
             "Coverage %": round(coverage, 1),
             "Availability Assessment": assessment,
             "Research Finding": finding,
-            "Senior Relevance": spec["Senior Relevance"],
+            "Decision Value": spec["Decision Value"],
             "Suggested Directory Use": spec["Directory Use"],
             "Recommendation": recommendation,
-            "Strong Justification": strong_justification,
+            "Rationale": spec["Rationale"],
         })
     return pd.DataFrame(rows)
 
@@ -6124,11 +6119,11 @@ def field_availability_matrix(qa_frame: pd.DataFrame, registry=None) -> pd.DataF
 
 
 def discovery_submission_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
-    """Show research discoveries and the researcher's client-entry tracking state."""
+    """Show research discoveries and recorded external-submission status."""
     if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty or "Directory Discovery Status" not in qa_frame.columns:
         return pd.DataFrame(columns=[
             "Building Name", "Management/Owner", "Street Address", "City",
-            "Client Submission Status", "Verification Status", "Strong Justification",
+            "External Submission Status", "Verification Status",
         ])
     discoveries = qa_frame.loc[
         qa_frame["Directory Discovery Status"].astype(str).eq("Newly Discovered")
@@ -6136,26 +6131,19 @@ def discovery_submission_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
     if discoveries.empty:
         return pd.DataFrame(columns=[
             "Building Name", "Management/Owner", "Street Address", "City",
-            "Client Submission Status", "Verification Status", "Strong Justification",
+            "External Submission Status", "Verification Status",
         ])
     status_map = {
-        "Entered": "Submitted to Client",
+        "Entered": "Submitted Externally",
         "Needs Correction": "Needs Correction",
         "Not Entered": "Not Recorded",
     }
-    discoveries["Client Submission Status"] = discoveries.get(
+    discoveries["External Submission Status"] = discoveries.get(
         "Directory Entry Status", pd.Series("Not Entered", index=discoveries.index)
     ).astype(str).map(status_map).fillna("Not Recorded")
-    discoveries["Strong Justification"] = discoveries.apply(
-        lambda row: (
-            "Datablix classifies this property as Newly Discovered relative to the Starting Data available for comparison. "
-            f"Client-entry tracking is recorded as {row.get('Client Submission Status', 'Not Recorded')}."
-        ),
-        axis=1,
-    )
     columns = [
         "Building Name", "Management/Owner", "Street Address", "City",
-        "Client Submission Status", "Verification Status", "Strong Justification",
+        "External Submission Status", "Verification Status",
     ]
     return discoveries[[column for column in columns if column in discoveries.columns]].reset_index(drop=True)
 
@@ -6203,7 +6191,7 @@ def _project_material_change_counts(qa_frame: pd.DataFrame, registry=None) -> di
 
 
 def closeout_research_coverage_matrix(qa_frame: pd.DataFrame, registry=None) -> pd.DataFrame:
-    """Create the project close-out company matrix with evidence-based interpretation."""
+    """Create the project deliverables company matrix with evidence-based interpretation."""
     registry = normalize_company_registry(registry)
     baseline = current_starting_source_records()
     change_counts = _project_material_change_counts(qa_frame, registry)
@@ -6228,11 +6216,6 @@ def closeout_research_coverage_matrix(qa_frame: pd.DataFrame, registry=None) -> 
         ).sum()) if not group.empty else 0
         needs_review = int((~approved_for_export_mask(group) & ~group["Record Decision"].eq("Remove")).sum()) if not group.empty else 0
         changed = int(change_counts.get(company_id, 0))
-        justification = (
-            f"{len(group):,} research record(s) were reviewed against {len(source):,} Starting Data record(s): "
-            f"{existing:,} existing match(es), {discoveries:,} new discovery/discoveries, and {changed:,} existing record(s) with material field differences. "
-            f"{submitted:,} discovery/discoveries are recorded as submitted to the client; {needs_review:,} record(s) remain outside the approved-for-export state."
-        )
         rows.append({
             "Company": company_name,
             "Source Records": len(source),
@@ -6242,14 +6225,13 @@ def closeout_research_coverage_matrix(qa_frame: pd.DataFrame, registry=None) -> 
             "Changed Existing Records": changed,
             "Discoveries Submitted": submitted,
             "Needs Review": needs_review,
-            "Strong Justification": justification,
         })
 
     return pd.DataFrame(rows)
 
 
 def verification_followup_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate the most useful project close-out verification gaps."""
+    """Aggregate the most useful project deliverables verification gaps."""
     population = closeout_research_population(qa_frame)
     total = len(population)
     rows = []
@@ -6260,7 +6242,6 @@ def verification_followup_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
             "Verification / Follow-Up Item": issue,
             "Affected Records": count,
             "Share of Eligible Records": f"{(count / total * 100):.1f}%" if total else "0.0%",
-            "Strong Justification": why,
         })
 
     if total:
@@ -6319,7 +6300,7 @@ def project_closeout_report_html(qa_frame: pd.DataFrame, registry=None, scope_la
 
     generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     html = f"""<!doctype html>
-<html><head><meta charset=\"utf-8\"><title>{escape(project_name)} — Datablix Close-Out</title>
+<html><head><meta charset=\"utf-8\"><title>{escape(project_name)} — Datablix Deliverables</title>
 <style>
 body{{font-family:Arial,Helvetica,sans-serif;max-width:1200px;margin:36px auto;padding:0 24px;color:#111827;line-height:1.45}}
 h1{{margin-bottom:.2rem}} h2{{margin-top:2rem;border-bottom:1px solid #d1d5db;padding-bottom:.35rem}}
@@ -6330,16 +6311,16 @@ h1{{margin-bottom:.2rem}} h2{{margin-top:2rem;border-bottom:1px solid #d1d5db;pa
 .small{{color:#4b5563;font-size:12px}}
 </style></head><body>
 <h1>{escape(project_name)}</h1>
-<p><strong>Datablix Project Close-Out Evidence Report</strong><br><span class=\"small\">Scope: {escape(scope_label)} · Generated {escape(generated)}</span></p>
-<div class=\"note\"><strong>Reporting boundary:</strong> This report summarizes the research dataset, Starting Data comparison, review status, and the researcher's client-entry tracking. It does not claim a final Coyle directory total because the post-submission client master directory is not directly accessible in Datablix.</div>
+<p><strong>Datablix Final Project Data Matrix</strong><br><span class=\"small\">Scope: {escape(scope_label)} · Generated {escape(generated)}</span></p>
+<div class=\"note\"><strong>Reporting boundary:</strong> This report summarizes the research dataset, source comparison, review status, and recorded external-submission tracking. It does not claim totals for separately maintained datasets that are not directly accessible in Datablix.</div>
 <h2>1. Project Overview</h2>{table(summary_table)}
 <h2>2. Research Coverage Matrix</h2>{table(coverage_matrix)}
-<h2>3. New Discoveries and Client Submission Tracking</h2>{table(discoveries)}
+<h2>3. New Discoveries and External Submission Tracking</h2>{table(discoveries)}
 <h2>4. Field Availability Matrix</h2>{table(field_matrix)}
-<h2>5. Research Findings and Directory Recommendations</h2>{table(findings)}
+<h2>5. Research Findings and Data-Informed Recommendations</h2>{table(findings)}
 <h2>6. Verification and Follow-Up</h2>{table(followup)}
 <h2>7. Research Methodology and Limitations</h2>{table(methodology_table)}
-<p class=\"small\">Generated by Datablix from the current reviewed project state. Read through generated interpretations before using them in the final stakeholder report or presentation.</p>
+<p class=\"small\">Generated by Datablix from the current reviewed project state. Review generated interpretations before using them in final project outputs.</p>
 </body></html>"""
     return html.encode("utf-8")
 
@@ -6539,16 +6520,16 @@ def community_profile_text(row) -> str:
 
 
 def directory_recommendations_with_coverage(qa_frame):
-    """Return evidence-first Fifty-Five Plus directory recommendations.
+    """Return evidence-first structure and search recommendations.
 
     Every recommendation is tied to observed field availability in the current
-    research scope and includes a strong justification column.
+    research scope and includes a concise rationale.
     """
     findings = field_availability_summary(qa_frame)
     columns = [
         "Field", "Found", "Missing", "Coverage %", "Availability Assessment",
-        "Research Finding", "Senior Relevance", "Suggested Directory Use",
-        "Recommendation", "Strong Justification",
+        "Research Finding", "Decision Value", "Suggested Directory Use",
+        "Recommendation", "Rationale",
     ]
     return findings[[column for column in columns if column in findings.columns]].copy()
 
@@ -6566,7 +6547,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
     return pd.DataFrame([
         {
             "Section": "Research scope",
-            "Report Text": f"Scope analysed: {scope_label}. Datablix treats each company as a separate research workspace and aggregates the saved research evidence for project-level close-out reporting.",
+            "Report Text": f"Scope analysed: {scope_label}. Datablix treats each company as a separate research workspace and aggregates saved research evidence for project-level deliverables.",
         },
         {
             "Section": "Research method",
@@ -6581,7 +6562,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
             "Report Text": f"Records are compared against the Starting Data using normalized address, postal-code, city, and building-name evidence. {new_records:,} current record(s) in this scope are classified as newly discovered relative to the Starting Data available to Datablix.",
         },
         {
-            "Section": "Client submission tracking",
+            "Section": "External submission tracking",
             "Report Text": f"Datablix records whether discoveries were marked Entered through the client-provided directory-entry process. {submitted:,} newly discovered record(s) in this scope are currently recorded as submitted to the client. This is research workflow tracking, not independent confirmation of the client's final consolidated directory.",
         },
         {
@@ -6597,8 +6578,8 @@ def methodology_and_limitations_report(qa_frame, scope_label):
             "Report Text": f"Public websites may be incomplete, stale, blocked, JavaScript-dependent, or inconsistent. This scope currently contains {unavailable_sources:,} record(s) with unavailable sources, {missing_source:,} record(s) without a recorded source URL, and {excluded:,} excluded/not-current record(s).",
         },
         {
-            "Section": "Client master-directory limitation",
-            "Report Text": "The researcher does not have direct access to the post-submission Coyle master directory. Datablix therefore reports researched records, Starting Data matches, discoveries, changes, and submission tracking, but it does not claim a final Coyle directory record count.",
+            "Section": "External data-access boundary",
+            "Report Text": "Datablix reports only datasets available within the workspace. Research records, source matches, discoveries, changes, and recorded submissions are summarized without claiming totals for separately maintained external datasets.",
         },
         {
             "Section": "Assumptions",
@@ -6606,7 +6587,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
         },
         {
             "Section": "Recommended next steps",
-            "Report Text": "Resolve high-priority follow-ups, confirm remaining source evidence, review possible duplicates, document employer-only information where public confirmation is impossible, preserve Datablix as the research evidence trail, and let the client-controlled directory remain the authoritative post-submission master.",
+            "Report Text": "Resolve high-priority follow-ups, confirm remaining source evidence, review possible duplicates, document information that cannot be publicly confirmed, preserve Datablix as the research evidence trail, and follow the applicable governance process for any separately maintained external dataset.",
         },
     ])
 
@@ -6648,7 +6629,7 @@ def presentation_summary_text(qa_frame, registry, scope_label) -> str:
         for _, row in weakest.iterrows()
     ]
 
-    return f"""# Project Close-Out Summary — {scope_label}
+    return f"""# Deliverables Summary — {scope_label}
 
 ## Scope and research coverage
 - Companies represented: {company_count}
@@ -6660,9 +6641,9 @@ def presentation_summary_text(qa_frame, registry, scope_label) -> str:
 - Possible duplicates flagged: {duplicates}
 - Excluded / not-current records: {excluded}
 
-## Review and client-submission tracking
+## Review and external-submission tracking
 - Approved for Export: {approved}
-- Newly discovered records marked Submitted to Client: {submitted}
+- Newly discovered records marked Submitted Externally: {submitted}
 - Directory-entry records needing correction: {needs_correction}
 - Still in review or follow-up: {still_review}
 
@@ -6684,29 +6665,29 @@ def presentation_summary_text(qa_frame, registry, scope_label) -> str:
 - Starting Data comparison performed inside Datablix after research import.
 - Missing information documented rather than inferred.
 - Website inventory presence kept separate from current rental availability.
-- Human verification retained before export or client-entry tracking.
+- Human verification retained before export or external-submission tracking.
 
 ## Reporting boundary
-- Datablix reports the research dataset and the researcher's submission tracking.
-- It does not claim a final Coyle directory total because the post-submission client master directory is not directly accessible.
+- Datablix reports the research dataset and recorded submission tracking.
+- Datablix does not claim totals for any external master dataset that is not directly accessible.
 
 ## Recommended next steps
 - Resolve remaining high-priority follow-ups and possible duplicates.
-- Use the field-availability evidence to prioritize Fifty-Five Plus filters and identify data-collection gaps.
-- Preserve Datablix as the research evidence trail and use the client-controlled directory as the authoritative post-submission master.
+- Use field-availability evidence to prioritize reliable search/filter options and identify data-collection gaps.
+- Preserve Datablix as the research evidence trail and treat any separately maintained external dataset according to its own governance process.
 """
 
 
 def project_deliverables_table():
-    """Map each formal project deliverable to the Datablix workflow."""
+    """Map reusable project outputs to the Datablix workflow."""
     return pd.DataFrame([
-        {"Project Deliverable": "1. Apartment Directory Database", "Datablix Location": "Export", "How Datablix supports it": "Exports reviewed research rows and selected directory fields. Coyle retains the authoritative post-submission master directory."},
-        {"Project Deliverable": "2. Owner and Management Company Research List", "Datablix Location": "Close-Out → Research coverage", "How Datablix supports it": "Company-by-company source counts, research records, matches, discoveries, changes, submission tracking, review items, and evidence-based justification."},
-        {"Project Deliverable": "3. Draft Apartment Community Profiles", "Datablix Location": "Close-Out → Profiles", "How Datablix supports it": "Copy-ready profile draft assembled only from information already stored in the reviewed record."},
-        {"Project Deliverable": "4. Data Source and Verification Tracker", "Datablix Location": "Close-Out → Verification", "How Datablix supports it": "Source URL, research date, verification, missing information, reviewer notes, follow-up priority, and record decision."},
-        {"Project Deliverable": "5. Directory Structure and Searchability Recommendations", "Datablix Location": "Close-Out → Field availability + Recommendations", "How Datablix supports it": "Company-by-field availability matrix, overall coverage, research finding, suggested platform use, recommendation, and strong justification."},
-        {"Project Deliverable": "6. Research Methodology and Limitations Report", "Datablix Location": "Close-Out → Methodology", "How Datablix supports it": "Dynamic methodology, assumptions, limitations, client-master access boundary, and next steps."},
-        {"Project Deliverable": "7. Final Directory Summary Presentation", "Datablix Location": "Close-Out → Final report", "How Datablix supports it": "Copy-ready project metrics, strongest findings, data gaps, methodology, recommendations, and one downloadable close-out evidence report."},
+        {"Deliverable": "Research Dataset", "Datablix Location": "Export", "How Datablix supports it": "Exports reviewed records and selected listing fields."},
+        {"Deliverable": "Organization Research Summary", "Datablix Location": "Deliverables → Research coverage", "How Datablix supports it": "Company-by-company source counts, research records, matches, discoveries, changes, submission tracking, and review items."},
+        {"Deliverable": "Draft Record Profiles", "Datablix Location": "Deliverables → Profiles", "How Datablix supports it": "Builds a copy-ready profile from information already stored in a reviewed record."},
+        {"Deliverable": "Source & Verification Tracker", "Datablix Location": "Deliverables → Verification", "How Datablix supports it": "Shows source URLs, research dates, verification status, missing information, reviewer notes, follow-up priority, and record decisions."},
+        {"Deliverable": "Structure & Search Recommendations", "Datablix Location": "Deliverables → Field availability + Recommendations", "How Datablix supports it": "Uses observed field availability, decision value, suggested use, recommendation, and concise rationale."},
+        {"Deliverable": "Methodology & Limitations", "Datablix Location": "Deliverables → Methodology", "How Datablix supports it": "Summarizes workflow, assumptions, limitations, data-access boundaries, and next steps."},
+        {"Deliverable": "Final Project Data Matrix", "Datablix Location": "Deliverables → Final report", "How Datablix supports it": "Combines project metrics, findings, data gaps, recommendations, verification status, and reusable exports."},
     ])
 
 
@@ -6735,12 +6716,12 @@ def report_summary(qa_frame, registry=None, scope_label="All companies"):
     rows = [
         {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Research property records analysed: {len(qa_frame):,}."},
         {"Section": "Research contribution", "Report Text": f"The current scope contains {existing_count:,} existing Starting Data match(es), {discovered_count:,} newly discovered record(s), and {changed_count:,} existing record(s) with material researched differences. {needs_classification_count:,} record(s) still need discovery classification, {duplicate_count:,} are possible duplicate(s), and {excluded_count:,} are excluded/not-current."},
-        {"Section": "Client submission tracking", "Report Text": f"{submitted_count:,} newly discovered record(s) are currently marked as submitted through the client-provided directory-entry process. Datablix tracks the researcher's submission workflow but cannot independently verify the client's post-submission master directory."},
+        {"Section": "External submission tracking", "Report Text": f"{submitted_count:,} newly discovered record(s) are currently marked as submitted through the client-provided directory-entry process. Datablix tracks the researcher's submission workflow but cannot independently verify the client's post-submission master directory."},
         {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {verified_count:,} record(s) are human verified, {approved_count:,} are Approved for Export, and {unresolved_count:,} still require correction, verification, a decision, or documented follow-up."},
         {"Section": "Method", "Report Text": "Companies were researched separately using an inventory-first public-source method. Structured research results were imported into Datablix, compared with Starting Data, and reviewed by a person before approval."},
         {"Section": "Assumptions", "Report Text": "A loading property URL is not proof of current inventory; website inventory presence is not the same as current rental availability; unavailable information is documented rather than invented; and official company/property sources are primary evidence."},
-        {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, blocked, duplicated, JavaScript-dependent, or inconsistent. The researcher does not have direct access to Coyle's post-submission master directory, so Datablix does not report a final client directory total."},
-        {"Section": "Recommended next actions", "Report Text": "Resolve high-priority follow-ups, use the field-availability matrix to prioritize reliable Fifty-Five Plus filters, flag high-value fields with weak public coverage for direct data collection, and use the downloadable close-out evidence report to prepare the final stakeholder report and presentation."},
+        {"Section": "Limitations", "Report Text": "Public information may be incomplete, outdated, blocked, duplicated, JavaScript-dependent, or inconsistent. Datablix reports only datasets available within the workspace and does not claim totals for separately maintained external datasets."},
+        {"Section": "Recommended next actions", "Report Text": "Resolve high-priority follow-ups, use the field-availability matrix to prioritize reliable search and filter options, flag high-value fields with weak public coverage for further data collection, and use the downloadable project data matrix to support final project outputs."},
     ]
     return pd.DataFrame(rows)
 
@@ -11540,7 +11521,7 @@ if S_WORKING not in st.session_state:
                 with st.form("db_landing_manual_project_form"):
                     landing_manual_project = st.text_input(
                         "Project name",
-                        placeholder="Example: Ontario Senior Living Directory — Stage 3",
+                        placeholder="Example: Rental Property Research Project",
                     )
                     landing_manual_company = st.text_input(
                         "First company or owner (optional)",
@@ -11648,7 +11629,7 @@ NAV_LABELS = {
     "Research projects & companies": "Project",
     "Website scanner": "Research",
     "Review records": "Review",
-    "Analysis & report": "Close-Out",
+    "Analysis & report": "Deliverables",
     "Downloads": "Export",
 }
 PRIMARY_ACTIVE_SECTION = {section_name: section_name for section_name in all_sections}
@@ -12795,7 +12776,7 @@ elif section == "Website scanner":
             value=PROJECT_GEOGRAPHIC_SCOPE,
             key=f"db_prompt_scope_{company_id}",
             disabled=True,
-            help="Fixed project scope: current Ottawa residential rentals, including apartments/condos, townhomes, duplexes, and garden homes; detached homes remain visible for scope review.",
+            help="Fixed project scope: current residential rentals within the configured geographic boundary and property-type rules.",
         )
         prompt_left.caption(
             "Project-wide rule: include only physical properties inside the City of Ottawa municipal boundary; exclude all independent nearby municipalities."
@@ -12809,7 +12790,7 @@ elif section == "Website scanner":
             height=180,
             key=f"db_prompt_sources_{company_id}",
             disabled=True,
-            help="Project-wide guardrail: City of Ottawa-only scanning, exhaustive PO Box research, exact-address geocoding, Postal Code recovery, total-unit-count recovery, and storey/classification evidence.",
+            help="Project-wide guardrails apply the configured geographic scope, source requirements, address validation, postal-code recovery, unit-count research, and storey/classification evidence rules.",
         )
         priority_notes = prompt_right.text_area(
             "Company-specific priorities or exclusions",
@@ -13118,7 +13099,7 @@ elif section == "Review records":
                 "Validate Ottawa geography",
                 key=f"db_validate_geo_{review_company_id or 'project'}",
                 width="stretch",
-                help="Geocode unresolved physical addresses and check City of Ottawa municipal scope. PO Box fields are never used.",
+                help="Geocode unresolved physical addresses and check the configured geographic scope. PO Box fields are never used.",
             )
         with geo_help_col:
             boundary_mode = (
@@ -13417,7 +13398,7 @@ elif section == "Review records":
                             "Directory Entry Status",
                             options=DIRECTORY_ENTRY_STATUSES,
                             required=True,
-                            help="Track whether this approved listing has been entered into the final directory.",
+                            help="Track whether this approved listing has been submitted through the external entry process.",
                         ),
                     },
                     key=(
@@ -13449,15 +13430,15 @@ elif section == "Review records":
 # -----------------------------
 elif section == "Analysis & report":
     render_page_heading(
-        "PROJECT CLOSE-OUT",
-        "Turn completed research into final deliverables",
-        "Aggregate the saved company research, show what information was actually available, derive evidence-based Fifty-Five Plus directory recommendations, document follow-up gaps, and export one close-out evidence report.",
+        "DELIVERABLES",
+        "Turn reviewed research into reusable project outputs",
+        "Aggregate saved research, measure data availability, surface data-informed findings and recommendations, document unresolved gaps, and export reusable project outputs.",
     )
     st.caption(f"Workspace build: {DATABLIX_BUILD}")
 
     registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
     scope_mode = st.radio(
-        "Close-out scope",
+        "Deliverables scope",
         ["All companies", "One company"],
         horizontal=True,
         key="db_analysis_scope",
@@ -13521,11 +13502,11 @@ elif section == "Analysis & report":
     metric_row2[2].metric("Needs review", f"{needs_review_metric:,}")
 
     st.info(
-        "Datablix reports the research dataset, Starting Data comparison, and your client-entry tracking. "
-        "It does not claim a final Coyle directory total because the post-submission client master directory is not directly accessible here."
+        "Datablix reports the research dataset, source comparison, and recorded external-submission tracking. "
+        "It does not claim totals for separately maintained external datasets that are not directly accessible here."
     )
 
-    with smart_expander("Project deliverables map", expanded=False):
+    with smart_expander("Deliverables map", expanded=False):
         st.dataframe(
             project_deliverables_table(),
             width="stretch",
@@ -13545,7 +13526,7 @@ elif section == "Analysis & report":
     with analysis_tabs[0]:
         st.subheader("Research coverage matrix")
         st.caption(
-            "One row per company. Source Records come from the Starting Data available to Datablix; Research Records are the saved research results. Strong Justification explains the numbers rather than leaving the matrix as raw counts."
+            "One row per company. Source Records come from the Starting Data available to Datablix; Research Records are the saved research results."
         )
         st.dataframe(
             coverage_matrix,
@@ -13554,20 +13535,20 @@ elif section == "Analysis & report":
             height=min(700, 90 + 36 * max(len(coverage_matrix), 1)),
         )
 
-        st.markdown("#### New discoveries and client submission tracking")
+        st.markdown("#### New discoveries and external submission tracking")
         discoveries = discovery_submission_summary(analysis_qa)
         if discoveries.empty:
             st.info("No records in this scope are currently classified as Newly Discovered.")
         else:
             st.dataframe(discoveries, width="stretch", hide_index=True, height=420)
             st.caption(
-                "Submitted to Client is derived from the existing Directory Entry Status = Entered field. The internal field name is preserved for compatibility with saved projects."
+                "Submitted Externally is derived from the existing Directory Entry Status = Entered field. The internal field name is preserved for compatibility with saved projects."
             )
 
     with analysis_tabs[1]:
         st.subheader("Field availability matrix")
         st.caption(
-            "This matrix answers the evidence-first question: during the research, was this information actually available? Percentages are calculated from eligible researched properties; removed, excluded, and confirmed out-of-Ottawa records do not lower directory-field coverage."
+            "This matrix answers the evidence-first question: during the research, was this information actually available? Percentages are calculated from eligible researched records; removed, excluded, and confirmed out-of-scope records do not lower field coverage."
         )
         availability_matrix = field_availability_matrix(analysis_qa, analysis_registry)
         st.dataframe(
@@ -13583,7 +13564,7 @@ elif section == "Analysis & report":
         st.dataframe(
             field_findings[[
                 "Field", "Found", "Missing", "Coverage %", "Availability Assessment",
-                "Research Finding", "Strong Justification",
+                "Research Finding",
             ]],
             width="stretch",
             hide_index=True,
@@ -13591,9 +13572,9 @@ elif section == "Analysis & report":
         )
 
     with analysis_tabs[2]:
-        st.subheader("Findings → Fifty-Five Plus directory recommendations")
+        st.subheader("Findings → data-informed recommendations")
         st.caption(
-            "Recommendations are shown only after Datablix calculates observed coverage. The Strong Justification column combines the actual research result with why the field matters for the directory."
+            "Recommendations are shown only after Datablix calculates observed coverage. A concise rationale explains why each suggested use follows from the available evidence."
         )
         recommendations = directory_recommendations_with_coverage(analysis_qa)
         st.dataframe(
@@ -13607,7 +13588,7 @@ elif section == "Analysis & report":
         )
 
     with analysis_tabs[3]:
-        st.subheader("Verification and client follow-up")
+        st.subheader("Verification and follow-up")
         followup = verification_followup_summary(analysis_qa)
         st.dataframe(followup, width="stretch", hide_index=True)
 
@@ -13639,7 +13620,7 @@ elif section == "Analysis & report":
         )
 
     with analysis_tabs[4]:
-        st.subheader("Draft apartment community profiles")
+        st.subheader("Draft record profiles")
         st.caption(
             "Select a reviewed building to assemble a copy-ready draft profile from information already stored in Datablix."
         )
@@ -13717,11 +13698,11 @@ elif section == "Analysis & report":
         )
         st.dataframe(method_report, width="stretch", hide_index=True)
         st.caption(
-            "These sections are generated from the current Datablix workflow and dataset. Read through them before placing them in the final stakeholder report."
+            "These sections are generated from the current Datablix workflow and dataset. Review them before using them in final project outputs."
         )
 
     with analysis_tabs[6]:
-        st.subheader("Final close-out evidence report")
+        st.subheader("Final Project Data Matrix")
         report = report_summary(
             analysis_qa,
             analysis_registry,
@@ -13741,7 +13722,7 @@ elif section == "Analysis & report":
 
         st.markdown("#### Export report")
         st.caption(
-            "Download one evidence-rich HTML report containing the project summary, company research matrix, discoveries, field-availability matrix, justified recommendations, verification gaps, and methodology. Use it as the factual source for your final written report and presentation."
+            "Download one evidence-rich HTML output containing the project summary, research coverage, discoveries, field availability, recommendations, verification gaps, and methodology. Use it as a factual source for final project outputs."
         )
         closeout_bytes = project_closeout_report_html(
             analysis_qa,
@@ -13749,10 +13730,10 @@ elif section == "Analysis & report":
             scope_label=scope_label,
         )
         closeout_name = safe_filename(
-            f"{st.session_state.get(S_PROJECT_NAME, 'Datablix project')}_{scope_label}_closeout_report"
+            f"{st.session_state.get(S_PROJECT_NAME, 'Datablix project')}_{scope_label}_final_project_data_matrix"
         ) + ".html"
         st.download_button(
-            "Download Project Close-Out Report — HTML",
+            "Download Final Project Data Matrix — HTML",
             data=closeout_bytes,
             file_name=closeout_name,
             mime="text/html",
@@ -13761,7 +13742,7 @@ elif section == "Analysis & report":
             key="db_download_closeout_report",
         )
         st.caption(
-            "This report intentionally avoids a final Coyle directory total because Datablix cannot see the client's post-submission master directory."
+            "This output reports only data available within Datablix and does not claim totals for separately maintained external datasets."
         )
 
 # -----------------------------
@@ -13976,19 +13957,19 @@ elif section == "Downloads":
         remaining_count = max(len(assistant_records) - entered_count, 0)
 
         with smart_expander(
-            "Directory Entry Assistant",
+            "External Submission Assistant",
             count=remaining_count,
             status="remaining",
             expanded=remaining_count > 0,
         ):
             st.caption(
-                "Use this after review. Copy each field into the final directory form, "
+                "Use this after review. Copy each field into the external submission form, "
                 "submit the building, then mark the record Entered so Datablix tracks what remains."
             )
 
             if assistant_records.empty:
                 st.info(
-                    "No approved records are available for directory entry in this scope yet."
+                    "No approved records are available for external submission in this scope yet."
                 )
             else:
                 entry_metrics = st.columns(4)
