@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Focused Change Review + Safer Apartment Count Prompt 2026.08.07-v79"
+DATABLIX_BUILD = "Rental Availability Validation + Active Inventory Safety 2026.08.09-v80"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -107,6 +107,8 @@ INTERNAL_COLUMNS = [
     "Parking", "Laundry", "Utilities", "Elevator", "Accessibility",
     "Pet Policy", "Smoke-Free", "Building Classification",
     "Current Inventory Status", "Inventory Evidence",
+    "Rental Availability Status", "Rental Availability Detail",
+    "Rental Availability Evidence",
     "Found on City/Portfolio Page", "Found on HTML Sitemap",
     "Found on XML Sitemap", "Inventory Exclusion Reason",
     "Directory Discovery Status", "Discovery Status Source", "Directory Entry Status", "Source URL", "Date Researched", "Researcher", "Research Status",
@@ -178,6 +180,9 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Smoke-Free", "Smoke-Free"),
     ("Current Inventory Status", "Current Inventory Status"),
     ("Inventory Evidence", "Inventory Evidence"),
+    ("Rental Availability Status", "Rental Availability Status"),
+    ("Rental Availability Detail", "Rental Availability Detail"),
+    ("Rental Availability Evidence", "Rental Availability Evidence"),
     ("Found on City/Portfolio Page", "Found on City/Portfolio Page"),
     ("Found on HTML Sitemap", "Found on HTML Sitemap"),
     ("Found on XML Sitemap", "Found on XML Sitemap"),
@@ -276,6 +281,18 @@ ALIASES = {
     "Building Classification": ["Building Classification", "Verified Building Classification", "Category", "Building Type"],
     "Current Inventory Status": ["Current Inventory Status", "Inventory Status", "Portfolio Status"],
     "Inventory Evidence": ["Inventory Evidence", "Current Inventory Evidence"],
+    "Rental Availability Status": [
+        "Rental Availability Status", "Rental Status", "Current Rental Status",
+        "Availability Status", "Leasing Status",
+    ],
+    "Rental Availability Detail": [
+        "Rental Availability Detail", "Availability Detail", "Availability Date",
+        "Available From", "Rental Availability Date",
+    ],
+    "Rental Availability Evidence": [
+        "Rental Availability Evidence", "Rental Status Evidence",
+        "Availability Evidence", "Leasing Status Evidence",
+    ],
     "Found on City/Portfolio Page": ["Found on City/Portfolio Page", "On City Page", "On Portfolio Page"],
     "Found on HTML Sitemap": ["Found on HTML Sitemap", "On HTML Sitemap"],
     "Found on XML Sitemap": ["Found on XML Sitemap", "On XML Sitemap"],
@@ -340,6 +357,32 @@ GEOGRAPHIC_SCOPE_STATUSES = [
     "Not Checked", "Inside City of Ottawa", "Outside City of Ottawa",
     "Needs Geographic Review",
 ]
+RENTAL_AVAILABILITY_STATUSES = [
+    "Not Checked",
+    "Available Now",
+    "Available Future",
+    "Rented",
+    "Status Unclear — Needs Review",
+]
+RENTAL_AVAILABILITY_ALIASES = {
+    "available": "Available Now",
+    "available now": "Available Now",
+    "for rent": "Available Now",
+    "for-rent": "Available Now",
+    "vacant": "Available Now",
+    "available future": "Available Future",
+    "future availability": "Available Future",
+    "upcoming": "Available Future",
+    "rented": "Rented",
+    "leased": "Rented",
+    "taken": "Rented",
+    "no longer available": "Rented",
+    "not available": "Rented",
+    "review": "Status Unclear — Needs Review",
+    "unclear": "Status Unclear — Needs Review",
+    "status unclear": "Status Unclear — Needs Review",
+    "needs review": "Status Unclear — Needs Review",
+}
 
 COMPANY_STATUSES = [
     "Not started", "Researching", "Needs follow-up", "Ready for QA",
@@ -1739,6 +1782,12 @@ def normalize_workflow(df):
         EVIDENCE_CONFIDENCE_LEVELS,
         "Not Checked",
     )
+    out["Rental Availability Status"] = normalize_choice(
+        out["Rental Availability Status"],
+        RENTAL_AVAILABILITY_STATUSES,
+        "Not Checked",
+        RENTAL_AVAILABILITY_ALIASES,
+    )
     out["PO Box Province"] = out["PO Box Province"].apply(canonical_province)
     out["PO Box Postal Code"] = out["PO Box Postal Code"].apply(postal_code)
     out = synchronize_missing_information(out)
@@ -2281,6 +2330,7 @@ def classify_discovery_status(df, original=None):
     for idx, row in out.iterrows():
         decision = safe_text(row.get("Record Decision", ""))
         inventory_status = safe_text(row.get("Current Inventory Status", "")).lower()
+        rental_status = safe_text(row.get("Rental Availability Status", "")).lower()
         verification_status = safe_text(row.get("Verification Status", ""))
         discovery_source = safe_text(row.get("Discovery Status Source", "Automatic"))
         current_discovery_status = safe_text(row.get("Directory Discovery Status", ""))
@@ -2290,7 +2340,11 @@ def classify_discovery_status(df, original=None):
             out.at[idx, "Directory Discovery Status"] = "Possible Duplicate"
             out.at[idx, "Discovery Status Source"] = "Automatic"
             continue
-        if decision == "Remove" or inventory_status.startswith("excluded"):
+        if (
+            decision == "Remove"
+            or inventory_status.startswith("excluded")
+            or rental_status == "rented"
+        ):
             out.at[idx, "Directory Discovery Status"] = "Excluded / Not Current"
             out.at[idx, "Discovery Status Source"] = "Automatic"
             continue
@@ -2338,12 +2392,15 @@ def classify_discovery_status(df, original=None):
         ) or bool(research_identity["property_url"]) or bool(
             research_identity["name"] and research_identity["postal"]
         )
+        active_rental_status = rental_status in {"available now", "available future"}
+        legacy_status_not_checked = rental_status in {"", "not checked"}
         current_evidence = (
             inventory_status.startswith("current")
-            or (
-                verification_status == "Verified"
-                and decision in {"Keep", "Update"}
-            )
+            and (active_rental_status or legacy_status_not_checked)
+        ) or (
+            verification_status == "Verified"
+            and decision in {"Keep", "Update"}
+            and rental_status != "rented"
         )
         out.at[idx, "Directory Discovery Status"] = (
             "Newly Discovered"
@@ -3696,6 +3753,8 @@ AI_RESEARCH_DELIVERABLE_COLUMNS = [
     "Laundry", "Utilities", "Elevator", "Accessibility", "Pet Policy",
     "Smoke-Free",
     "Current Inventory Status", "Inventory Evidence",
+    "Rental Availability Status", "Rental Availability Detail",
+    "Rental Availability Evidence",
     "Found on City/Portfolio Page", "Found on HTML Sitemap",
     "Found on XML Sitemap", "Inventory Exclusion Reason",
     "Supporting Evidence", "Confidence", "Missing Information",
@@ -3846,6 +3905,9 @@ def company_source_presence_reconciliation(
             == "Existing Source Record"
         )
 
+        matched_rental_status = safe_text(
+            matched_row.get("Rental Availability Status", "")
+        ).lower()
         excluded_match = bool(
             matched_row
             and (
@@ -3853,15 +3915,17 @@ def company_source_presence_reconciliation(
                 or safe_text(matched_row.get("Directory Discovery Status", ""))
                 == "Excluded / Not Current"
                 or safe_text(matched_row.get("Current Inventory Status", "")).lower().startswith("excluded")
+                or matched_rental_status == "rented"
             )
         )
 
         if score >= 88 or (manual_existing and score >= 72):
-            reconciliation = (
-                "Rediscovered — excluded/not current"
-                if excluded_match
-                else "Rediscovered"
-            )
+            if matched_rental_status == "rented":
+                reconciliation = "Rediscovered — rented"
+            elif excluded_match:
+                reconciliation = "Rediscovered — excluded/not current"
+            else:
+                reconciliation = "Rediscovered"
         elif score >= 72:
             reconciliation = "Possible match"
         else:
@@ -3886,6 +3950,8 @@ def company_source_presence_reconciliation(
         )
         result_state_parts = [
             safe_text(matched_row.get("Current Inventory Status", "")),
+            safe_text(matched_row.get("Rental Availability Status", "")),
+            safe_text(matched_row.get("Rental Availability Detail", "")),
             safe_text(matched_row.get("Directory Discovery Status", "")),
             safe_text(matched_row.get("Record Decision", "")),
         ]
@@ -4631,16 +4697,16 @@ def build_research_package_bytes(
         f"Company-specific source matches detected: {company_match_count:,}",
         "",
         "HOW TO USE THIS PACKAGE",
-        "1. Upload the research prompt AND the original project source file to your AI research tool.",
-        "2. The source file belongs to the entire project and must be considered for every company.",
-        f"3. For {company_name}, identify relevant source entries using company/owner names, aliases, addresses, postal codes, property names, URLs, and other identity evidence.",
-        "4. Do not assume a source entry is current merely because it appears in the source.",
-        "5. Reconcile relevant source entries first.",
-        "6. Then search current authoritative sources for additional legitimate properties missing from the project source.",
+        "1. Upload the research prompt to your AI research tool. Use the blank research template only if the tool needs a schema reference.",
+        "2. Do NOT give the AI Starting Data for company comparison. Website research must be independent; Datablix performs source reconciliation after import.",
+        f"3. For {company_name}, establish the current official website/listing inventory from authoritative company pages.",
+        "4. For every current listing, separately verify rental availability. A property can remain on a For Rent page after it has been rented.",
+        "5. Record explicit statuses such as FOR RENT, AVAILABLE SEP/OCT 2026, RENTED, LEASED, or NO LONGER AVAILABLE in Rental Availability Status/Detail/Evidence.",
+        "6. Do not treat page existence, a displayed rent, or placement on a For Rent page as proof that a listing is currently rentable.",
         "7. Return exactly ONE completed research CSV using the required headings.",
-        "8. Keep Current, Review, and identifiable Excluded/legacy properties in that same CSV; use status and evidence fields to distinguish them.",
-        "9. Do not create separate active, excluded, legacy, duplicate, or reconciliation CSV files.",
-        "10. Import that one consolidated CSV back into Datablix for human review.",
+        "8. Keep explicit Rented rows when they are still identifiable on a current official inventory page so Datablix can reconcile and remove them from the active directory.",
+        "9. Do not create separate active, rented, legacy, duplicate, or reconciliation CSV files.",
+        "10. Import that one consolidated CSV back into Datablix for source comparison and human review.",
         "",
         "FILES",
         f"- {prompt_name}: company-specific research instructions.",
@@ -4777,7 +4843,7 @@ IMPORTANT WORKFLOW BOUNDARY:
 {official_entry_points_section}
 {special_notes_section}
 ## Non-negotiable property-type scope
-Research the company's current residential rental inventory—not only conventional apartment towers.
+Research the company's current official residential listing inventory—not only conventional apartment towers. Website inventory presence and rental availability are separate facts and must be recorded separately.
 
 - Include current apartment buildings and apartment units, condominium rentals, townhomes, duplexes, and garden homes.
 - Do not exclude a current property solely because it is a townhome, duplex, garden home, condominium unit, or another low-density rental form recognized by the project Starting Data.
@@ -4797,7 +4863,14 @@ Return only in-scope residential rental properties whose PHYSICAL LOCATION is wi
 - Properties confirmed outside the City of Ottawa must be omitted from the final CSV. Do not keep them merely because they appear on an Ottawa-area portfolio page.
 
 ## Core inventory principle
-Do not begin by collecting every URL that exists. First establish the company's CURRENT City of Ottawa inventory from its strongest official inventory/navigation evidence. A dedicated property URL that loads is not, by itself, proof that the property is current.
+Do not begin by collecting every URL that exists. First establish the company's CURRENT City of Ottawa website/listing inventory from its strongest official inventory/navigation evidence. A dedicated property URL that loads is not, by itself, proof that the property is current.
+
+CRITICAL AVAILABILITY DISTINCTION:
+- `Current Inventory Status` answers: Is this property/listing currently supported as part of the company's official website or managed listing inventory?
+- `Rental Availability Status` answers: Can a renter currently pursue this listing, is it becoming available later, or has it already been rented?
+- A property may legitimately have `Current Inventory Status = Current` and `Rental Availability Status = Rented`.
+- A page title, navigation label, or collection called `For Rent` is NOT proof that every listing displayed there is available.
+- Page existence, a displayed rental price, a contact form, or a working property URL is NOT proof of current rental availability.
 
 ## Official company, subdomain, and property-page hierarchy
 Treat the organization and its official property pages as a hierarchy, not as separate companies.
@@ -4823,14 +4896,40 @@ Prioritize:
 Use XML sitemaps only as discovery evidence. They may contain stale, orphaned, archived, or legacy URLs.
 
 Use these inventory values:
-- Current — supported by current official inventory evidence.
-- Review — current status is uncertain because evidence is incomplete, conflicting, blocked, or unavailable.
-- Excluded — an identifiable website property is no longer supported as current inventory.
+- Current — supported as part of the company's current official website/listing inventory, regardless of whether it is presently rentable.
+- Review — current website/inventory status is uncertain because evidence is incomplete, conflicting, blocked, or unavailable.
+- Excluded — an identifiable website property is no longer supported as part of the current official inventory.
 
 Do not create a property row for an orphan, empty, generic, redirected, placeholder, or template-only page with no meaningful property evidence. A sparse property page must still be retained when current official inventory evidence confirms the property.
 
-### Phase 2 — Research every Current Ottawa property deeply
-Inspect the complete relevant official content, including property overview, physical location, contact information, floor plans, rates, amenities, parking, laundry, utilities, accessibility, elevator, policies, official PDFs, brochures, leasing pages, JavaScript-rendered content, footer details, and linked official property websites.
+### Phase 1B — Mandatory rental-availability validation
+For EVERY identifiable Current or Review property, inspect the most current official property card, listing page, property page, leasing page, and any visible status badge/label before deciding whether it is actively rentable.
+
+Normalize Rental Availability Status to exactly one of:
+- `Available Now` — explicitly shown as FOR RENT, AVAILABLE, AVAILABLE NOW, or equivalent with no future availability period.
+- `Available Future` — explicitly available from a stated future date or period, such as `AVAILABLE SEP 2026`, `AVAILABLE OCT 2026`, or `Available September 1, 2026`.
+- `Rented` — explicitly marked RENTED, LEASED, TAKEN, NO LONGER AVAILABLE, or equivalent.
+- `Status Unclear — Needs Review` — the property is identifiable/current on the website but reliable current rental availability cannot be established or current official signals conflict.
+
+Rental Availability Detail:
+- Preserve the site's useful human-readable detail, for example `AVAILABLE OCT 2026`, `Available September 1, 2026`, or `RENTED`.
+- Do not invent an exact day when the website gives only a month or general future period.
+
+Rental Availability Evidence:
+- Record the exact official status wording/context and the page/card URL where it was observed.
+- Prefer the most current property-specific status evidence.
+- If a current portfolio/card and exact property page conflict and the conflict cannot be resolved by a clearly newer date/status, set `Status Unclear — Needs Review` and preserve both signals.
+
+NON-NEGOTIABLE STATUS RULES:
+- A listing on a page named `For Rent` can still be `Rented`.
+- An explicit `Rented`/`Leased`/`No Longer Available` status overrides any assumption based only on page location, a displayed price, or a still-working URL.
+- Do not infer `Available Now` merely because a rent amount or application/showing button is present.
+- Do not infer `Rented` merely because no current unit is visible; use `Status Unclear — Needs Review` when there is no explicit reliable status.
+- Keep an explicitly Rented row in the research CSV when it is still an identifiable listing on a current official inventory/For Rent page. Datablix needs that row for source reconciliation, but it must not count as active rental inventory or as a Newly Discovered active property.
+- Historical sitemap-only/orphaned rows that are not supported by current official inventory evidence remain Excluded/omitted under the existing inventory rules; do not revive them merely to populate Rented records.
+
+### Phase 2 — Research every Current or Review Ottawa property deeply
+Inspect the complete relevant official content, including property overview, physical location, contact information, floor plans, rates, amenities, parking, laundry, utilities, accessibility, elevator, policies, official PDFs, brochures, leasing pages, JavaScript-rendered content, footer details, linked official property websites, and rental-availability evidence.
 
 For Number of Apartments, actively search the official property/company material for equivalent total-inventory wording such as apartments, units, residential units, rental units, dwelling units, suites, residences, homes, doors, unit count, suite count, and total units. Do not stop merely because the exact phrase `Number of Apartments` is absent.
 
@@ -4948,8 +5047,11 @@ Field requirements:
 - Company Website: the selected company's root or canonical corporate/management website, not a property subdomain.
 - Property Website: the exact official building/community page or official property microsite.
 - Source URL: the strongest exact page supporting the row; place additional official URLs in Supporting Evidence.
-- Current Inventory Status: Current, Review, or Excluded — not in current website inventory. Property form alone does not determine this status.
-- Inventory Evidence: official website evidence supporting that status.
+- Current Inventory Status: Current, Review, or Excluded — not in current website inventory. This field describes current website/inventory presence, NOT whether the property is presently rentable. Property form alone does not determine this status.
+- Inventory Evidence: official website evidence supporting Current/Review/Excluded inventory presence.
+- Rental Availability Status: required for every Current or Review completed row; use Available Now, Available Future, Rented, or Status Unclear — Needs Review. Do not equate presence on a For Rent page with availability.
+- Rental Availability Detail: preserve the useful official status/date wording, such as `AVAILABLE OCT 2026`, `Available September 1, 2026`, or `RENTED`; blank only when the status has no additional detail.
+- Rental Availability Evidence: concise exact official wording/context plus the property/card URL supporting the rental status. Preserve conflicts rather than guessing.
 - Number of Apartments: total residential inventory only. Recognize units/suites/residences and equivalent total-count wording; never substitute available/vacant listings. Use the dedicated exact-address recovery hierarchy when the official property page is silent.
 - Apartment Count Search Status: required for every completed row; use Official page, Official document, Public record, Reputable property source, Not Found after Search, or Conflict — Needs Review.
 - Apartment Count Source URL: the exact page/document supporting the total; blank only when no count was confirmed.
@@ -4981,9 +5083,12 @@ Field requirements:
 14. Prefer transparent blanks over unsupported completeness.
 15. Never exclude a current townhome, duplex, or garden home merely because it is not a conventional apartment building.
 16. Keep detached single-family homes visible for human scope review unless a project or company rule explicitly resolves them.
+17. Never use the title `For Rent`, page existence, displayed rent, or a working URL as a substitute for explicit rental-availability verification.
+18. A Current website listing marked Rented is not active rental inventory. Preserve `Current Inventory Status = Current` when supported, set `Rental Availability Status = Rented`, and retain the row for Datablix reconciliation when it appears in current official inventory.
+19. Available Now and Available Future are the only statuses that count as active/upcoming rental inventory. Status Unclear requires human review and Rented must never be counted as an active/new rental discovery.
 
 ## Priority or company-specific instructions
-The City of Ottawa municipal boundary, residential property-type scope, physical-vs-mailing address separation, exhaustive PO Box search, exact-address geographic verification, postal-code recovery, and storey/classification rules are project-wide. Company notes may refine priorities but must not broaden the project to nearby municipalities or weaken these rules.
+The City of Ottawa municipal boundary, residential property-type scope, mandatory rental-availability validation, physical-vs-mailing address separation, exhaustive PO Box search, exact-address geographic verification, postal-code recovery, and storey/classification rules are project-wide. Company notes may refine priorities but must not broaden the project to nearby municipalities, treat `For Rent` page placement as availability proof, or weaken these rules.
 
 {priority_notes or 'No additional priorities were provided.'}
 
@@ -4991,7 +5096,7 @@ The City of Ottawa municipal boundary, residential property-type scope, physical
 Create exactly one downloadable CSV file named clearly, for example:
 `company_name_ottawa_website_research_results.csv`
 
-The file must contain one unique researched City of Ottawa property per row, use the exact headings above, preserve evidence and blanks, and remain directly importable into Datablix. This includes identifiable Current, Review, and Excluded/legacy properties when they are relevant to the company inventory research; use the status and evidence fields to distinguish them. Do not return Excel, Google Sheets, JSON, PDF, Word, Markdown tables, ZIP files, or multiple research files.
+The file must contain one unique researched City of Ottawa property/listing per row, use the exact headings above, preserve evidence and blanks, and remain directly importable into Datablix. Keep Current and Review website inventory records, including listings explicitly marked Rented when they are still identifiable on a current official inventory/For Rent page, so Datablix can reconcile them against Starting Data after import. Do not count Rented rows as active inventory or newly discovered active rentals. Do not bulk-import stale sitemap-only/orphaned legacy rows that lack current official inventory support. Use Current Inventory Status and Rental Availability Status together to distinguish website presence from actual rental availability. Do not return Excel, Google Sheets, JSON, PDF, Word, Markdown tables, ZIP files, or multiple research files.
 
 When the platform cannot create a downloadable file, return that one CSV as raw RFC-style CSV text in a fenced csv code block with only a one-line limitation notice.
 
@@ -5313,6 +5418,18 @@ def qa_checks(df):
     flag(~unresolved_mask(out["Phone"]) & ~phone.str.len().isin([10, 11]), "Warning", "Phone number does not contain 10 or 11 digits")
     pc = out["Postal Code"].astype("string").fillna("").str.upper().str.strip()
     flag(~unresolved_mask(out["Postal Code"]) & ~pc.str.match(r"^[A-Z]\d[A-Z][ -]?\d[A-Z]\d$", na=False), "Warning", "Invalid Canadian postal code format")
+
+    rental_status = out["Rental Availability Status"].astype("string").fillna("").str.strip()
+    flag(
+        rental_status.eq("Rented"),
+        "Warning",
+        "Rental listing is explicitly marked Rented; keep for reconciliation but exclude from active rental inventory",
+    )
+    flag(
+        rental_status.eq("Status Unclear — Needs Review"),
+        "Warning",
+        "Rental availability is unclear and requires human review before active-directory inclusion",
+    )
 
     # City of Ottawa project checks. Text labels are useful, but geocoded
     # coordinates and a configured municipal-boundary polygon are stronger.
@@ -12100,7 +12217,8 @@ elif section == "Website scanner":
     default_scope = PROJECT_GEOGRAPHIC_SCOPE
     default_source_policy = (
         "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use the selected company's official website first, including confirmed official property pages, subdomains, and microsites under the same registrable root domain. Treat them as one company and do not create a company per hostname. "
-        "The project includes current residential rental properties inside the City of Ottawa municipal boundary, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Do not exclude these recognized property forms merely because they are not conventional apartment buildings. Retain current detached single-family homes for human scope review and identify them clearly in Reviewer Notes. Company labels such as Ottawa Region or National Capital Region are not geographic proof. "
+        "The project includes current official residential listings inside the City of Ottawa municipal boundary, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Website inventory presence and rental availability are separate facts. Do not exclude these recognized property forms merely because they are not conventional apartment buildings. Retain current detached single-family homes for human scope review and identify them clearly in Reviewer Notes. Company labels such as Ottawa Region or National Capital Region are not geographic proof. "
+        "RENTAL AVAILABILITY: inspect every current property card/listing for an explicit status. Normalize to Available Now, Available Future, Rented, or Status Unclear — Needs Review. A listing can remain on a For Rent page after it is rented; page placement, page existence, a displayed rent, or a working URL is not availability proof. Keep explicit Rented rows when they remain on a current official inventory page so Datablix can reconcile them, but never count them as active/new rental inventory. "
         "PROPERTY FORM: use official website or source evidence for apartment/condominium, townhome, duplex, garden-home, or detached-home labels. Preserve a supported property-form label together with the height band in Building Classification, separated by |. Do not infer property form from appearance. "
         "PO BOX / MAILING ADDRESS: search official Contact, Corporate, Legal, Privacy, Accessibility, footer, tenant-document, payment, PDF, and form pages. If still missing, Google/search engines may locate reliable underlying evidence. Keep mailing and PO Box information separate from the physical property address and record the source, evidence, and confidence. "
         "GEOGRAPHIC POSITION: after an official-site candidate is identified, Google Maps/geocoding and a City of Ottawa boundary check may verify latitude, longitude, municipality, and scope. Never geocode a PO Box to establish property location. "
@@ -12108,18 +12226,19 @@ elif section == "Website scanner":
         "NUMBER OF APARTMENTS: actively recognize total apartments, units, residential/rental/dwelling units, suites, residences, rental homes, doors, unit count, suite count, total units, and total suites. Never use available/vacant listings as the total. When the official property page is silent, use this exact-address hierarchy: official property/company documents first (including PDFs, brochures, reports, filings and development/acquisition pages), then municipal/planning/public records, then a reputable exact-match property/database source. Leave blank if still unconfirmed and record supporting URLs/evidence. "
         "BUILDING CLASSIFICATION: external exact-address research is allowed for Number of Storeys and the 1–4 / 5–11 / 12+ height band. "
         "Treat storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when the source clearly states the building total; normalize that evidence to Number of Storeys. Exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless the source explicitly counts them as storeys, and never use an apartment's floor location as the building storey count. "
-        "Search snippets alone are not evidence; open the underlying source. External evidence must not discover extra properties or override official current-inventory evidence."
+        "Search snippets alone are not evidence; open the underlying source. External evidence must not discover extra properties, override official current-inventory evidence, or override explicit official rental-status evidence."
     )
     default_priority_notes = (
-        "Scan the selected company's official website for CURRENT residential rental listings physically located within the City of Ottawa only, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Do not exclude a current recognized property form merely because it is not a conventional apartment building. Retain current detached single-family homes for human scope review and identify them in Reviewer Notes. Follow confirmed official property subdomains and microsites that share the company's registrable root domain; keep them under the selected company and store them as Property Website sources. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
+        "Scan the selected company's official website for CURRENT residential listing inventory physically located within the City of Ottawa only, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Do not exclude a current recognized property form merely because it is not a conventional apartment building. Retain current detached single-family homes for human scope review and identify them in Reviewer Notes. Follow confirmed official property subdomains and microsites that share the company's registrable root domain; keep them under the selected company and store them as Property Website sources. Exclude Carleton Place and every other independent municipality even when grouped under an Ottawa-area page. "
+        "For every current listing, perform a mandatory rental-status pass. Explicitly capture FOR RENT/AVAILABLE as Available Now, future dated/month availability as Available Future, RENTED/LEASED/NO LONGER AVAILABLE as Rented, and unresolved/conflicting signals as Status Unclear — Needs Review. Preserve the site's wording in Rental Availability Detail and the exact official context/URL in Rental Availability Evidence. A For Rent page can contain Rented listings; never use page placement, a displayed rent, or a live URL as availability proof. "
         "For every candidate, verify the exact physical address and geographic position. Record Latitude, Longitude, Geocoded Municipality, Geographic Scope Status, evidence, and confidence. "
         "Conduct an exhaustive PO Box/mailing-address search across official contact, corporate, legal, privacy, accessibility, footer, PDF, form, rent-payment, and tenant-document pages. If official sources remain incomplete, use Google to locate reliable underlying evidence. Never place a PO Box or corporate mailing address in Street Address. "
         "Recover missing Postal Code only from an exact civic-address match. For Number of Apartments, search total-count synonyms (units, residential units, rental units, dwelling units, suites, residences, homes, doors, unit count, suite count) and distinguish total inventory from available/vacant listings. If the property page is silent, search official company documents/PDFs first, then municipal/planning/public records, then reputable exact-address property databases; leave blank if unresolved and preserve every supporting URL. Research Number of Storeys by exact address. Accept storey/storeys, story/stories, floor/floors, and level/levels only when they clearly describe the building total, normalize the result to Number of Storeys, and exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless explicitly counted by the source. Do not mistake an apartment's floor location for the building storey count. Derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
     )
     default_output_notes = (
         "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record—not one row per URL—and keep the exact requested headings in the exact requested order. Keep the root/corporate URL in Company Website, the exact property page or official subdomain in Property Website, and the strongest evidence page in Source URL. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
-        "Preserve blanks for genuinely unknown values. Keep Current, Review, and meaningful identifiable Excluded website records in the same CSV when applicable. "
-        "Do not create any CSV row for orphan/empty/generic pages that lack meaningful property-specific evidence. "
+        "Preserve blanks for genuinely unknown values. Keep Current and Review website inventory records in the same CSV, including explicit Rented listings that still appear on a current official inventory/For Rent page so Datablix can reconcile them. Use Rental Availability Status to distinguish active/upcoming listings from Rented listings. Do not count Rented rows as active/new rental discoveries. "
+        "Do not create any CSV row for orphan/empty/generic or stale sitemap-only pages that lack meaningful current property-specific evidence. "
         "Do not return Excel, Google Sheets, JSON, PDF, Markdown tables, or a narrative instead of the CSV. The CSV must be ready for direct Datablix import."
     )
 
