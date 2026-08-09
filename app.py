@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables + Data-Informed Recommendations 2026.08.09-v82"
+DATABLIX_BUILD = "Deliverables Generator + Reporting Snapshot 2026.08.09-v83"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -477,6 +477,7 @@ S_SOURCE_BASELINE_META = "db_source_baseline_meta"
 S_SOURCE_VERSIONS = "db_source_versions"
 S_CLASSIFICATION_RULES = "db_classification_rules"
 S_COMPANY_LINK_REPAIR_VERSION = "db_company_link_repair_version"
+S_REPORTING_SNAPSHOT = "db_reporting_snapshot"
 
 AUTOSAVE_DIRECTORY = Path(
     os.environ.get("DATABLIX_AUTOSAVE_DIRECTORY", "/tmp/datablix_autosave")
@@ -494,7 +495,7 @@ AUTOSAVE_STATE_KEYS = [
     S_PROJECT_NAME, S_COMPANIES, S_ACTIVE_COMPANY,
     S_PROJECT_LOADED, S_SCAN_HISTORY, S_SCAN_CANDIDATES, S_SCAN_PAGES,
     S_SOURCE_BASELINE_META, S_SOURCE_VERSIONS, S_CLASSIFICATION_RULES,
-    S_COMPANY_LINK_REPAIR_VERSION,
+    S_COMPANY_LINK_REPAIR_VERSION, S_REPORTING_SNAPSHOT,
     S_CLOUD_PROJECT_ID, "db_section",
 ]
 
@@ -6148,10 +6149,11 @@ def discovery_submission_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
     return discoveries[[column for column in columns if column in discoveries.columns]].reset_index(drop=True)
 
 
-def _project_material_change_counts(qa_frame: pd.DataFrame, registry=None) -> dict:
+def _project_material_change_counts(qa_frame: pd.DataFrame, registry=None, baseline=None) -> dict:
     """Count research records with material Starting Data differences by company."""
     registry = normalize_company_registry(registry)
-    baseline = current_starting_source_records()
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = current_starting_source_records()
     counts = {}
     if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
         return counts
@@ -6190,11 +6192,12 @@ def _project_material_change_counts(qa_frame: pd.DataFrame, registry=None) -> di
     return counts
 
 
-def closeout_research_coverage_matrix(qa_frame: pd.DataFrame, registry=None) -> pd.DataFrame:
-    """Create the project deliverables company matrix with evidence-based interpretation."""
+def closeout_research_coverage_matrix(qa_frame: pd.DataFrame, registry=None, baseline=None) -> pd.DataFrame:
+    """Create the project deliverables company matrix."""
     registry = normalize_company_registry(registry)
-    baseline = current_starting_source_records()
-    change_counts = _project_material_change_counts(qa_frame, registry)
+    if not isinstance(baseline, pd.DataFrame):
+        baseline = current_starting_source_records()
+    change_counts = _project_material_change_counts(qa_frame, registry, baseline=baseline)
     rows = []
     represented = set()
 
@@ -6281,17 +6284,19 @@ def verification_followup_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def project_closeout_report_html(qa_frame: pd.DataFrame, registry=None, scope_label="All companies") -> bytes:
-    """Create one portable HTML evidence report for final report/presentation drafting."""
+def project_closeout_report_html(qa_frame: pd.DataFrame, registry=None, scope_label="All companies", baseline=None) -> bytes:
+    """Create one portable HTML evidence report for final project drafting."""
     registry = normalize_company_registry(registry)
     project_name = safe_text(st.session_state.get(S_PROJECT_NAME, "Datablix project")) or "Datablix project"
-    coverage_matrix = closeout_research_coverage_matrix(qa_frame, registry)
+    coverage_matrix = closeout_research_coverage_matrix(qa_frame, registry, baseline=baseline)
     field_matrix = field_availability_matrix(qa_frame, registry)
     findings = field_availability_summary(qa_frame)
     discoveries = discovery_submission_summary(qa_frame)
     followup = verification_followup_summary(qa_frame)
     methodology_table = methodology_and_limitations_report(qa_frame, scope_label)
-    summary_table = report_summary(qa_frame, registry, scope_label=scope_label)
+    summary_table = report_summary(qa_frame, registry, scope_label=scope_label, baseline=baseline)
+    final_matrix = final_project_data_matrix(qa_frame, registry, scope_label=scope_label, baseline=baseline)
+    recommendations = directory_recommendations_with_coverage(qa_frame)
 
     def table(frame):
         if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -6313,16 +6318,297 @@ h1{{margin-bottom:.2rem}} h2{{margin-top:2rem;border-bottom:1px solid #d1d5db;pa
 <h1>{escape(project_name)}</h1>
 <p><strong>Datablix Final Project Data Matrix</strong><br><span class=\"small\">Scope: {escape(scope_label)} · Generated {escape(generated)}</span></p>
 <div class=\"note\"><strong>Reporting boundary:</strong> This report summarizes the research dataset, source comparison, review status, and recorded external-submission tracking. It does not claim totals for separately maintained datasets that are not directly accessible in Datablix.</div>
-<h2>1. Project Overview</h2>{table(summary_table)}
-<h2>2. Research Coverage Matrix</h2>{table(coverage_matrix)}
-<h2>3. New Discoveries and External Submission Tracking</h2>{table(discoveries)}
-<h2>4. Field Availability Matrix</h2>{table(field_matrix)}
-<h2>5. Research Findings and Data-Informed Recommendations</h2>{table(findings)}
-<h2>6. Verification and Follow-Up</h2>{table(followup)}
-<h2>7. Research Methodology and Limitations</h2>{table(methodology_table)}
+<h2>1. Final Project Data Matrix</h2>{table(final_matrix)}
+<h2>2. Project Overview</h2>{table(summary_table)}
+<h2>3. Research Coverage Matrix</h2>{table(coverage_matrix)}
+<h2>4. New Discoveries and External Submission Tracking</h2>{table(discoveries)}
+<h2>5. Field Availability Matrix</h2>{table(field_matrix)}
+<h2>6. Findings and Recommendations</h2>{table(recommendations)}
+<h2>7. Verification and Follow-Up</h2>{table(followup)}
+<h2>8. Research Methodology and Limitations</h2>{table(methodology_table)}
 <p class=\"small\">Generated by Datablix from the current reviewed project state. Review generated interpretations before using them in final project outputs.</p>
 </body></html>"""
     return html.encode("utf-8")
+
+
+def freeze_reporting_snapshot() -> dict:
+    """Freeze the current project state used by all deliverable exports."""
+    working = st.session_state.get(S_WORKING)
+    if not isinstance(working, pd.DataFrame):
+        working = pd.DataFrame(columns=INTERNAL_COLUMNS)
+    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    baseline = current_starting_source_records()
+    snapshot = {
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "working": working.copy(deep=True),
+        "registry": registry.copy(deep=True),
+        "baseline": baseline.copy(deep=True) if isinstance(baseline, pd.DataFrame) else pd.DataFrame(),
+    }
+    st.session_state[S_REPORTING_SNAPSHOT] = snapshot
+    autosave_current_project()
+    return snapshot
+
+
+def clear_reporting_snapshot() -> None:
+    """Return Deliverables to the live project state."""
+    st.session_state.pop(S_REPORTING_SNAPSHOT, None)
+    autosave_current_project()
+
+
+def reporting_snapshot_state() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, bool]:
+    """Return QA data, registry, baseline, timestamp label, and whether a frozen snapshot is active."""
+    snapshot = st.session_state.get(S_REPORTING_SNAPSHOT)
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("working"), pd.DataFrame):
+        frozen_working = normalize_workflow(prepare_data(snapshot["working"].copy()))
+        frozen_qa = qa_checks(frozen_working) if not frozen_working.empty else frozen_working.copy()
+        frozen_registry = normalize_company_registry(snapshot.get("registry"))
+        frozen_baseline = snapshot.get("baseline")
+        if not isinstance(frozen_baseline, pd.DataFrame):
+            frozen_baseline = pd.DataFrame()
+        created = safe_text(snapshot.get("created_at", ""))
+        label = created.replace("T", " ")[:16] if created else "Frozen snapshot"
+        return frozen_qa, frozen_registry, frozen_baseline.copy(), label, True
+
+    live_working = st.session_state.get(S_WORKING)
+    if not isinstance(live_working, pd.DataFrame):
+        live_working = pd.DataFrame(columns=INTERNAL_COLUMNS)
+    live_qa = qa_checks(live_working.copy()) if not live_working.empty else live_working.copy()
+    live_registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    live_baseline = current_starting_source_records()
+    return live_qa, live_registry, live_baseline, "Live project state", False
+
+
+def _deliverable_html(title: str, sections: list[tuple[str, object]], note: str = "") -> bytes:
+    """Create a simple portable HTML deliverable from DataFrames or text blocks."""
+    project_name = safe_text(st.session_state.get(S_PROJECT_NAME, "Datablix project")) or "Datablix project"
+
+    def render(value):
+        if isinstance(value, pd.DataFrame):
+            if value.empty:
+                return "<p><em>No rows in this section.</em></p>"
+            return value.to_html(index=False, border=0, classes="db-table", escape=True)
+        return f"<div class='text-block'>{escape(str(value or '')).replace(chr(10), '<br>')}</div>"
+
+    section_html = "\n".join(
+        f"<h2>{escape(str(heading))}</h2>{render(value)}"
+        for heading, value in sections
+    )
+    note_html = f"<div class='note'>{escape(note)}</div>" if note else ""
+    generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{escape(project_name)} — {escape(title)}</title>
+<style>
+body{{font-family:Arial,Helvetica,sans-serif;max-width:1200px;margin:36px auto;padding:0 24px;color:#111827;line-height:1.45}}
+h1{{margin-bottom:.15rem}} h2{{margin-top:1.8rem;border-bottom:1px solid #d1d5db;padding-bottom:.3rem}}
+.small{{color:#4b5563;font-size:12px}} .note{{background:#f3f4f6;padding:12px 14px;border-left:4px solid #6b7280;margin:18px 0}}
+.db-table{{border-collapse:collapse;width:100%;font-size:12px;margin:12px 0 24px}}
+.db-table th,.db-table td{{border:1px solid #d1d5db;padding:7px;vertical-align:top;text-align:left}}
+.db-table th{{background:#111827;color:white}} .text-block{{white-space:normal}}
+</style></head><body>
+<h1>{escape(project_name)}</h1>
+<p><strong>{escape(title)}</strong><br><span class="small">Generated {escape(generated)}</span></p>
+{note_html}
+{section_html}
+</body></html>"""
+    return html.encode("utf-8")
+
+
+def draft_profiles_table(qa_frame: pd.DataFrame) -> pd.DataFrame:
+    """Return one copy-ready profile per non-removed researched record."""
+    if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
+        return pd.DataFrame(columns=[
+            "Record ID", "Building Name", "Management/Owner", "Street Address",
+            "Verification Status", "Profile Draft",
+        ])
+    candidates = qa_frame.loc[~qa_frame["Record Decision"].eq("Remove")].copy()
+    if candidates.empty:
+        return pd.DataFrame(columns=[
+            "Record ID", "Building Name", "Management/Owner", "Street Address",
+            "Verification Status", "Profile Draft",
+        ])
+    rows = []
+    for _, row in candidates.sort_values(
+        ["Management/Owner", "Building Name", "Street Address"], kind="stable"
+    ).iterrows():
+        rows.append({
+            "Record ID": row.get("Record ID", ""),
+            "Building Name": row.get("Building Name", ""),
+            "Management/Owner": row.get("Management/Owner", ""),
+            "Street Address": row.get("Street Address", ""),
+            "Verification Status": row.get("Verification Status", ""),
+            "Profile Draft": community_profile_text(row),
+        })
+    return pd.DataFrame(rows)
+
+
+def final_project_data_matrix(
+    qa_frame: pd.DataFrame,
+    registry=None,
+    scope_label: str = "All companies",
+    baseline=None,
+) -> pd.DataFrame:
+    """Create a matrix-first factual summary for final project reporting."""
+    registry = normalize_company_registry(registry)
+    coverage_matrix = closeout_research_coverage_matrix(
+        qa_frame, registry, baseline=baseline
+    )
+    field_summary = field_availability_summary(qa_frame)
+    company_count = len(registry) if not registry.empty else (
+        int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
+        if isinstance(qa_frame, pd.DataFrame) and not qa_frame.empty and "Company ID" in qa_frame.columns
+        else 0
+    )
+    total = len(qa_frame) if isinstance(qa_frame, pd.DataFrame) else 0
+    existing = int(qa_frame["Directory Discovery Status"].eq("Existing Source Record").sum()) if total and "Directory Discovery Status" in qa_frame.columns else 0
+    discoveries = int(qa_frame["Directory Discovery Status"].eq("Newly Discovered").sum()) if total and "Directory Discovery Status" in qa_frame.columns else 0
+    changed = int(coverage_matrix["Changed Existing Records"].sum()) if not coverage_matrix.empty else 0
+    approved = int(approved_for_export_mask(qa_frame).sum()) if total else 0
+    verified = int(qa_frame["Verification Status"].eq("Verified").sum()) if total and "Verification Status" in qa_frame.columns else 0
+    needs_review = int((~approved_for_export_mask(qa_frame) & ~qa_frame["Record Decision"].eq("Remove")).sum()) if total else 0
+    submitted = int((
+        qa_frame.get("Directory Discovery Status", pd.Series("", index=qa_frame.index)).astype(str).eq("Newly Discovered")
+        & qa_frame.get("Directory Entry Status", pd.Series("", index=qa_frame.index)).astype(str).eq("Entered")
+    ).sum()) if total else 0
+
+    rows = [
+        {"Matrix Area": "Project Scope", "Data Point": "Companies researched", "Result": company_count, "Denominator / Scope": "", "Rate %": "", "Assessment": "Coverage", "What the Data Shows": f"{company_count:,} organization workspace(s) represented in {scope_label}.", "Deliverable Use": "Research summary"},
+        {"Matrix Area": "Project Scope", "Data Point": "Research properties", "Result": total, "Denominator / Scope": "", "Rate %": "", "Assessment": "Coverage", "What the Data Shows": f"{total:,} researched property record(s) are represented.", "Deliverable Use": "Research dataset"},
+        {"Matrix Area": "Source Reconciliation", "Data Point": "Existing source matches", "Result": existing, "Denominator / Scope": total, "Rate %": round(existing / total * 100, 1) if total else 0.0, "Assessment": "Matched", "What the Data Shows": f"{existing:,} record(s) matched the Starting Data.", "Deliverable Use": "Research summary"},
+        {"Matrix Area": "Source Reconciliation", "Data Point": "New discoveries", "Result": discoveries, "Denominator / Scope": total, "Rate %": round(discoveries / total * 100, 1) if total else 0.0, "Assessment": "New", "What the Data Shows": f"{discoveries:,} record(s) are classified as newly discovered relative to Starting Data.", "Deliverable Use": "Research summary"},
+        {"Matrix Area": "Source Reconciliation", "Data Point": "Changed existing records", "Result": changed, "Denominator / Scope": existing, "Rate %": round(changed / existing * 100, 1) if existing else 0.0, "Assessment": "Changed", "What the Data Shows": f"{changed:,} matched record(s) contain material researched differences.", "Deliverable Use": "Research summary"},
+        {"Matrix Area": "External Submission", "Data Point": "Discoveries submitted", "Result": submitted, "Denominator / Scope": discoveries, "Rate %": round(submitted / discoveries * 100, 1) if discoveries else 0.0, "Assessment": "Submitted", "What the Data Shows": f"{submitted:,} discovery/discoveries are recorded as externally submitted.", "Deliverable Use": "Submission tracking"},
+        {"Matrix Area": "Review & Verification", "Data Point": "Human verified", "Result": verified, "Denominator / Scope": total, "Rate %": round(verified / total * 100, 1) if total else 0.0, "Assessment": "Verified", "What the Data Shows": f"{verified:,} record(s) are marked Verified.", "Deliverable Use": "Verification tracker"},
+        {"Matrix Area": "Review & Verification", "Data Point": "Approved for Export", "Result": approved, "Denominator / Scope": total, "Rate %": round(approved / total * 100, 1) if total else 0.0, "Assessment": "Approved", "What the Data Shows": f"{approved:,} record(s) meet the current export approval rule.", "Deliverable Use": "Research dataset"},
+        {"Matrix Area": "Review & Verification", "Data Point": "Needs review", "Result": needs_review, "Denominator / Scope": total, "Rate %": round(needs_review / total * 100, 1) if total else 0.0, "Assessment": "Open", "What the Data Shows": f"{needs_review:,} active record(s) still require review or follow-up.", "Deliverable Use": "Verification tracker"},
+    ]
+
+    for _, row in field_summary.iterrows():
+        rows.append({
+            "Matrix Area": "Field Availability",
+            "Data Point": row["Field"],
+            "Result": int(row["Found"]),
+            "Denominator / Scope": int(row["Found"] + row["Missing"]),
+            "Rate %": float(row["Coverage %"]),
+            "Assessment": row["Availability Assessment"],
+            "What the Data Shows": row["Research Finding"],
+            "Deliverable Use": "Structure & search recommendations",
+        })
+    return pd.DataFrame(rows)
+
+
+def deliverable_research_dataset(qa_frame: pd.DataFrame) -> pd.DataFrame:
+    """Return approved listing rows for the research dataset deliverable."""
+    if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
+        return listing_export(qa_frame.iloc[0:0].copy()) if isinstance(qa_frame, pd.DataFrame) else pd.DataFrame()
+    approved = qa_frame.loc[approved_for_export_mask(qa_frame)].copy()
+    return listing_export(approved)
+
+
+def organization_research_summary_workbook(
+    qa_frame: pd.DataFrame,
+    registry=None,
+    baseline=None,
+) -> bytes:
+    """Export company coverage plus discovery tracking as one workbook."""
+    return excel_bytes({
+        "Research Coverage": closeout_research_coverage_matrix(qa_frame, registry, baseline=baseline),
+        "Discoveries": discovery_submission_summary(qa_frame),
+    })
+
+
+def recommendations_workbook(qa_frame: pd.DataFrame, registry=None) -> bytes:
+    """Export field availability evidence and recommendations."""
+    return excel_bytes({
+        "Field Availability": field_availability_matrix(qa_frame, registry),
+        "Field Findings": field_availability_summary(qa_frame),
+        "Recommendations": directory_recommendations_with_coverage(qa_frame),
+    })
+
+
+def verification_tracker_workbook(qa_frame: pd.DataFrame) -> bytes:
+    """Export source verification records and project-level follow-up counts."""
+    return excel_bytes({
+        "Verification Tracker": source_verification_tracker(qa_frame),
+        "Follow-Up Summary": verification_followup_summary(qa_frame),
+    })
+
+
+def profiles_html(qa_frame: pd.DataFrame) -> bytes:
+    """Export all draft record profiles into one portable HTML file."""
+    profiles = draft_profiles_table(qa_frame)
+    return _deliverable_html(
+        "Draft Record Profiles",
+        [("Profiles", profiles)],
+        "Profiles are assembled from information already stored in reviewed research records.",
+    )
+
+
+def methodology_html(qa_frame: pd.DataFrame, scope_label: str) -> bytes:
+    """Export methodology and limitations as a portable HTML file."""
+    method = methodology_and_limitations_report(qa_frame, scope_label)
+    return _deliverable_html(
+        "Methodology & Limitations",
+        [("Methodology & Limitations", method)],
+        "Review generated methodology text before using it in final project outputs.",
+    )
+
+
+def deliverables_package_bytes(
+    qa_frame: pd.DataFrame,
+    registry=None,
+    scope_label: str = "All companies",
+    baseline=None,
+) -> bytes:
+    """Create one ZIP containing independently reusable project deliverables."""
+    registry = normalize_company_registry(registry)
+    project_name = safe_filename(
+        safe_text(st.session_state.get(S_PROJECT_NAME, "Datablix project")) or "Datablix project"
+    )
+    scope_name = safe_filename(scope_label)
+    dataset = deliverable_research_dataset(qa_frame)
+    matrix = final_project_data_matrix(qa_frame, registry, scope_label, baseline=baseline)
+    presentation = presentation_summary_text(
+        qa_frame, registry, scope_label, baseline=baseline
+    )
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("01_Research_Dataset.csv", csv_bytes(dataset))
+        archive.writestr(
+            "02_Organization_Research_Summary.xlsx",
+            organization_research_summary_workbook(qa_frame, registry, baseline=baseline),
+        )
+        archive.writestr(
+            "03_Source_Verification_Tracker.xlsx",
+            verification_tracker_workbook(qa_frame),
+        )
+        archive.writestr("04_Draft_Record_Profiles.html", profiles_html(qa_frame))
+        archive.writestr(
+            "05_Structure_Search_Recommendations.xlsx",
+            recommendations_workbook(qa_frame, registry),
+        )
+        archive.writestr(
+            "06_Methodology_Limitations.html",
+            methodology_html(qa_frame, scope_label),
+        )
+        archive.writestr(
+            "07_Final_Project_Data_Matrix.html",
+            project_closeout_report_html(
+                qa_frame, registry, scope_label=scope_label, baseline=baseline
+            ),
+        )
+        archive.writestr("07_Final_Project_Data_Matrix.csv", csv_bytes(matrix))
+        archive.writestr("Presentation_Summary.txt", presentation.encode("utf-8"))
+        archive.writestr(
+            "README.txt",
+            (
+                f"Datablix Deliverables Package\n"
+                f"Project: {project_name}\n"
+                f"Scope: {scope_label}\n"
+                f"Generated: {datetime.now().astimezone().isoformat(timespec='seconds')}\n\n"
+                "Each file is generated from the same Datablix reporting state so the figures remain aligned.\n"
+            ).encode("utf-8"),
+        )
+    return package.getvalue()
 
 
 def issue_summary(df):
@@ -6563,7 +6849,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
         },
         {
             "Section": "External submission tracking",
-            "Report Text": f"Datablix records whether discoveries were marked Entered through the client-provided directory-entry process. {submitted:,} newly discovered record(s) in this scope are currently recorded as submitted to the client. This is research workflow tracking, not independent confirmation of the client's final consolidated directory.",
+            "Report Text": f"Datablix records whether discoveries were marked Entered through an external submission process. {submitted:,} newly discovered record(s) in this scope are currently recorded as externally submitted. This is workflow tracking and does not independently confirm separately maintained external datasets.",
         },
         {
             "Section": "Verification method",
@@ -6592,7 +6878,7 @@ def methodology_and_limitations_report(qa_frame, scope_label):
     ])
 
 
-def presentation_summary_text(qa_frame, registry, scope_label) -> str:
+def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) -> str:
     """Create a copy-ready factual summary for the final project presentation."""
     approved = int(approved_for_export_mask(qa_frame).sum())
     submitted = int((
@@ -6614,7 +6900,7 @@ def presentation_summary_text(qa_frame, registry, scope_label) -> str:
     warnings = int(qa_frame["Warning Count"].sum()) if "Warning Count" in qa_frame.columns else 0
     research_gaps = int(qa_frame["Research Gap Count"].sum()) if "Research Gap Count" in qa_frame.columns else 0
     verified = int(qa_frame["Verification Status"].eq("Verified").sum()) if "Verification Status" in qa_frame.columns else 0
-    company_matrix = closeout_research_coverage_matrix(qa_frame, registry)
+    company_matrix = closeout_research_coverage_matrix(qa_frame, registry, baseline=baseline)
     changed = int(company_matrix["Changed Existing Records"].sum()) if not company_matrix.empty else 0
 
     findings = field_availability_summary(qa_frame)
@@ -6679,19 +6965,19 @@ def presentation_summary_text(qa_frame, registry, scope_label) -> str:
 
 
 def project_deliverables_table():
-    """Map reusable project outputs to the Datablix workflow."""
+    """Map each reusable deliverable to its Datablix generator."""
     return pd.DataFrame([
-        {"Deliverable": "Research Dataset", "Datablix Location": "Export", "How Datablix supports it": "Exports reviewed records and selected listing fields."},
-        {"Deliverable": "Organization Research Summary", "Datablix Location": "Deliverables → Research coverage", "How Datablix supports it": "Company-by-company source counts, research records, matches, discoveries, changes, submission tracking, and review items."},
-        {"Deliverable": "Draft Record Profiles", "Datablix Location": "Deliverables → Profiles", "How Datablix supports it": "Builds a copy-ready profile from information already stored in a reviewed record."},
-        {"Deliverable": "Source & Verification Tracker", "Datablix Location": "Deliverables → Verification", "How Datablix supports it": "Shows source URLs, research dates, verification status, missing information, reviewer notes, follow-up priority, and record decisions."},
-        {"Deliverable": "Structure & Search Recommendations", "Datablix Location": "Deliverables → Field availability + Recommendations", "How Datablix supports it": "Uses observed field availability, decision value, suggested use, recommendation, and concise rationale."},
-        {"Deliverable": "Methodology & Limitations", "Datablix Location": "Deliverables → Methodology", "How Datablix supports it": "Summarizes workflow, assumptions, limitations, data-access boundaries, and next steps."},
-        {"Deliverable": "Final Project Data Matrix", "Datablix Location": "Deliverables → Final report", "How Datablix supports it": "Combines project metrics, findings, data gaps, recommendations, verification status, and reusable exports."},
+        {"Deliverable": "1. Research Dataset", "Datablix Location": "Deliverables → Research dataset", "Generated Output": "Approved listing records", "Export": "CSV"},
+        {"Deliverable": "2. Organization Research Summary", "Datablix Location": "Deliverables → Research coverage", "Generated Output": "Company coverage + discoveries", "Export": "Excel"},
+        {"Deliverable": "3. Source & Verification Tracker", "Datablix Location": "Deliverables → Verification", "Generated Output": "Record-level source/verification tracker + follow-up summary", "Export": "Excel"},
+        {"Deliverable": "4. Draft Record Profiles", "Datablix Location": "Deliverables → Profiles", "Generated Output": "Copy-ready draft profiles", "Export": "HTML"},
+        {"Deliverable": "5. Structure & Search Recommendations", "Datablix Location": "Deliverables → Recommendations", "Generated Output": "Field availability + findings + recommendations", "Export": "Excel"},
+        {"Deliverable": "6. Methodology & Limitations", "Datablix Location": "Deliverables → Methodology", "Generated Output": "Methodology, assumptions, limitations, next steps", "Export": "HTML"},
+        {"Deliverable": "7. Final Project Data Matrix", "Datablix Location": "Deliverables → Final matrix", "Generated Output": "Project-level matrix + supporting evidence", "Export": "HTML + CSV"},
     ])
 
 
-def report_summary(qa_frame, registry=None, scope_label="All companies"):
+def report_summary(qa_frame, registry=None, scope_label="All companies", baseline=None):
     registry = normalize_company_registry(registry)
     company_count = int(qa_frame["Company ID"].astype(str).replace("", pd.NA).dropna().nunique())
     if scope_label == "All companies" and not registry.empty:
@@ -6710,13 +6996,13 @@ def report_summary(qa_frame, registry=None, scope_label="All companies"):
     duplicate_count = int(qa_frame["Directory Discovery Status"].eq("Possible Duplicate").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     excluded_count = int(qa_frame["Directory Discovery Status"].eq("Excluded / Not Current").sum()) if "Directory Discovery Status" in qa_frame.columns else 0
     verified_count = int(qa_frame["Verification Status"].eq("Verified").sum()) if "Verification Status" in qa_frame.columns else 0
-    company_matrix = closeout_research_coverage_matrix(qa_frame, registry)
+    company_matrix = closeout_research_coverage_matrix(qa_frame, registry, baseline=baseline)
     changed_count = int(company_matrix["Changed Existing Records"].sum()) if not company_matrix.empty else 0
 
     rows = [
         {"Section": "Scope", "Report Text": f"Analysis scope: {scope_label}. Companies represented or assigned: {company_count:,}. Research property records analysed: {len(qa_frame):,}."},
         {"Section": "Research contribution", "Report Text": f"The current scope contains {existing_count:,} existing Starting Data match(es), {discovered_count:,} newly discovered record(s), and {changed_count:,} existing record(s) with material researched differences. {needs_classification_count:,} record(s) still need discovery classification, {duplicate_count:,} are possible duplicate(s), and {excluded_count:,} are excluded/not-current."},
-        {"Section": "External submission tracking", "Report Text": f"{submitted_count:,} newly discovered record(s) are currently marked as submitted through the client-provided directory-entry process. Datablix tracks the researcher's submission workflow but cannot independently verify the client's post-submission master directory."},
+        {"Section": "External submission tracking", "Report Text": f"{submitted_count:,} newly discovered record(s) are currently marked as externally submitted. Datablix records the submission workflow but does not independently verify separately maintained external datasets."},
         {"Section": "Data quality", "Report Text": f"The current audit contains {issue_count:,} rule-based quality findings. {verified_count:,} record(s) are human verified, {approved_count:,} are Approved for Export, and {unresolved_count:,} still require correction, verification, a decision, or documented follow-up."},
         {"Section": "Method", "Report Text": "Companies were researched separately using an inventory-first public-source method. Structured research results were imported into Datablix, compared with Starting Data, and reviewed by a person before approval."},
         {"Section": "Assumptions", "Report Text": "A loading property URL is not proof of current inventory; website inventory presence is not the same as current rental availability; unavailable information is documented rather than invented; and official company/property sources are primary evidence."},
@@ -13431,12 +13717,44 @@ elif section == "Review records":
 elif section == "Analysis & report":
     render_page_heading(
         "DELIVERABLES",
-        "Turn reviewed research into reusable project outputs",
-        "Aggregate saved research, measure data availability, surface data-informed findings and recommendations, document unresolved gaps, and export reusable project outputs.",
+        "Generate and refine project outputs",
+        "Use one reporting state to produce each deliverable separately, refine them independently, or download the complete package.",
     )
     st.caption(f"Workspace build: {DATABLIX_BUILD}")
 
-    registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
+    deliverable_qa, registry, deliverable_baseline, snapshot_label, snapshot_active = reporting_snapshot_state()
+
+    with st.container(border=True):
+        snap_text, snap_action, snap_clear = st.columns([3, 1, 1], vertical_alignment="center")
+        with snap_text:
+            st.markdown("**Reporting state**")
+            if snapshot_active:
+                st.success(f"Frozen snapshot active — {snapshot_label}")
+                st.caption("All deliverable previews and exports below use this frozen project state.")
+            else:
+                st.info("Using live project state")
+                st.caption("Freeze a reporting snapshot when you want every deliverable to keep exactly the same figures.")
+        with snap_action:
+            if st.button(
+                "Refresh snapshot" if snapshot_active else "Freeze snapshot",
+                type="primary",
+                width="stretch",
+                key="db_freeze_reporting_snapshot",
+            ):
+                freeze_reporting_snapshot()
+                st.session_state[S_FLASH] = "Reporting snapshot saved."
+                st.rerun()
+        with snap_clear:
+            if st.button(
+                "Use live data",
+                width="stretch",
+                disabled=not snapshot_active,
+                key="db_clear_reporting_snapshot",
+            ):
+                clear_reporting_snapshot()
+                st.session_state[S_FLASH] = "Deliverables returned to the live project state."
+                st.rerun()
+
     scope_mode = st.radio(
         "Deliverables scope",
         ["All companies", "One company"],
@@ -13446,17 +13764,15 @@ elif section == "Analysis & report":
 
     selected_company_id = None
     scope_label = "All companies"
-    analysis_qa = qa.copy()
+    analysis_qa = deliverable_qa.copy()
     analysis_registry = registry.copy()
 
     if scope_mode == "One company":
         available = registry.loc[
-            registry["Company ID"].astype(str).isin(set(qa["Company ID"].astype(str)))
+            registry["Company ID"].astype(str).isin(set(deliverable_qa["Company ID"].astype(str)))
         ].copy()
         if available.empty:
-            st.warning(
-                "No company-linked records are available yet. Select an active company before adding approved research findings."
-            )
+            st.warning("No company-linked records are available in this reporting state.")
             st.stop()
         company_ids = available["Company ID"].astype(str).tolist()
         active_id = str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip()
@@ -13472,61 +13788,91 @@ elif section == "Analysis & report":
         )
         company_row = available.loc[available["Company ID"].eq(selected_company_id)].iloc[0]
         scope_label = company_row["Management/Owner"]
-        analysis_qa = qa.loc[qa["Company ID"].astype(str).eq(selected_company_id)].copy()
-        analysis_registry = available.loc[available["Company ID"].astype(str).eq(selected_company_id)].copy()
+        analysis_qa = deliverable_qa.loc[
+            deliverable_qa["Company ID"].astype(str).eq(selected_company_id)
+        ].copy()
+        analysis_registry = available.loc[
+            available["Company ID"].astype(str).eq(selected_company_id)
+        ].copy()
 
-    coverage_matrix = closeout_research_coverage_matrix(analysis_qa, analysis_registry)
+    coverage_matrix = closeout_research_coverage_matrix(
+        analysis_qa, analysis_registry, baseline=deliverable_baseline
+    )
     company_count_metric = len(analysis_registry) if not analysis_registry.empty else int(
         analysis_qa["Company ID"].astype(str).replace("", pd.NA).dropna().nunique()
     )
     existing_metric = int(analysis_qa["Directory Discovery Status"].eq("Existing Source Record").sum())
     discovered_metric = int(analysis_qa["Directory Discovery Status"].eq("Newly Discovered").sum())
     changed_metric = int(coverage_matrix["Changed Existing Records"].sum()) if not coverage_matrix.empty else 0
-    submitted_metric = int((
-        analysis_qa["Directory Discovery Status"].eq("Newly Discovered")
-        & analysis_qa["Directory Entry Status"].eq("Entered")
-    ).sum())
     needs_review_metric = int((
         ~approved_for_export_mask(analysis_qa)
         & ~analysis_qa["Record Decision"].eq("Remove")
     ).sum())
 
-    metric_row1 = st.columns(4)
-    metric_row1[0].metric("Companies researched", f"{company_count_metric:,}")
-    metric_row1[1].metric("Research properties", f"{len(analysis_qa):,}")
-    metric_row1[2].metric("Existing source matches", f"{existing_metric:,}")
-    metric_row1[3].metric("New discoveries", f"{discovered_metric:,}")
-    metric_row2 = st.columns(3)
-    metric_row2[0].metric("Changed existing records", f"{changed_metric:,}")
-    metric_row2[1].metric("Discoveries submitted", f"{submitted_metric:,}")
-    metric_row2[2].metric("Needs review", f"{needs_review_metric:,}")
-
-    st.info(
-        "Datablix reports the research dataset, source comparison, and recorded external-submission tracking. "
-        "It does not claim totals for separately maintained external datasets that are not directly accessible here."
-    )
+    metric_row = st.columns(5)
+    metric_row[0].metric("Companies", f"{company_count_metric:,}")
+    metric_row[1].metric("Research properties", f"{len(analysis_qa):,}")
+    metric_row[2].metric("Existing matches", f"{existing_metric:,}")
+    metric_row[3].metric("New discoveries", f"{discovered_metric:,}")
+    metric_row[4].metric("Needs review", f"{needs_review_metric:,}")
 
     with smart_expander("Deliverables map", expanded=False):
-        st.dataframe(
-            project_deliverables_table(),
-            width="stretch",
-            hide_index=True,
-        )
+        st.dataframe(project_deliverables_table(), width="stretch", hide_index=True)
+
+    project_slug = safe_filename(
+        safe_text(st.session_state.get(S_PROJECT_NAME, "Datablix project")) or "Datablix project"
+    )
+    scope_slug = safe_filename(scope_label)
+    package_bytes = deliverables_package_bytes(
+        analysis_qa,
+        analysis_registry,
+        scope_label=scope_label,
+        baseline=deliverable_baseline,
+    )
+    st.download_button(
+        "Download All Deliverables — ZIP",
+        data=package_bytes,
+        file_name=f"{project_slug}_{scope_slug}_deliverables.zip",
+        mime="application/zip",
+        type="primary",
+        width="stretch",
+        key="db_download_all_deliverables",
+    )
+    st.caption("The ZIP uses the same reporting state as every individual export below.")
 
     analysis_tabs = st.tabs([
+        "Research dataset",
         "Research coverage",
-        "Field availability",
         "Recommendations",
         "Verification",
         "Profiles",
         "Methodology",
-        "Final report",
+        "Final matrix",
     ])
 
     with analysis_tabs[0]:
-        st.subheader("Research coverage matrix")
+        st.subheader("1. Research Dataset")
+        dataset = deliverable_research_dataset(analysis_qa)
         st.caption(
-            "One row per company. Source Records come from the Starting Data available to Datablix; Research Records are the saved research results."
+            "This output contains the records currently Approved for Export and the standard listing fields."
+        )
+        if dataset.empty:
+            st.info("No records in this reporting state are currently Approved for Export.")
+        else:
+            st.dataframe(dataset, width="stretch", hide_index=True, height=560)
+        st.download_button(
+            "Download Research Dataset — CSV",
+            data=csv_bytes(dataset),
+            file_name=f"{project_slug}_{scope_slug}_01_research_dataset.csv",
+            mime="text/csv",
+            width="stretch",
+            key="db_deliverable_01_dataset",
+        )
+
+    with analysis_tabs[1]:
+        st.subheader("2. Organization Research Summary")
+        st.caption(
+            "Company-by-company reconciliation of Starting Data, research records, discoveries, changes, submissions, and review status."
         )
         st.dataframe(
             coverage_matrix,
@@ -13534,215 +13880,170 @@ elif section == "Analysis & report":
             hide_index=True,
             height=min(700, 90 + 36 * max(len(coverage_matrix), 1)),
         )
-
-        st.markdown("#### New discoveries and external submission tracking")
         discoveries = discovery_submission_summary(analysis_qa)
-        if discoveries.empty:
-            st.info("No records in this scope are currently classified as Newly Discovered.")
-        else:
-            st.dataframe(discoveries, width="stretch", hide_index=True, height=420)
-            st.caption(
-                "Submitted Externally is derived from the existing Directory Entry Status = Entered field. The internal field name is preserved for compatibility with saved projects."
-            )
-
-    with analysis_tabs[1]:
-        st.subheader("Field availability matrix")
-        st.caption(
-            "This matrix answers the evidence-first question: during the research, was this information actually available? Percentages are calculated from eligible researched records; removed, excluded, and confirmed out-of-scope records do not lower field coverage."
+        with smart_expander("New discoveries and external submission tracking", count=len(discoveries), expanded=False):
+            if discoveries.empty:
+                st.info("No records in this scope are currently classified as Newly Discovered.")
+            else:
+                st.dataframe(discoveries, width="stretch", hide_index=True, height=420)
+        st.download_button(
+            "Download Organization Research Summary — Excel",
+            data=organization_research_summary_workbook(
+                analysis_qa, analysis_registry, baseline=deliverable_baseline
+            ),
+            file_name=f"{project_slug}_{scope_slug}_02_organization_research_summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+            key="db_deliverable_02_research_summary",
         )
+
+    with analysis_tabs[2]:
+        st.subheader("5. Structure & Search Recommendations")
         availability_matrix = field_availability_matrix(analysis_qa, analysis_registry)
+        field_findings = field_availability_summary(analysis_qa)
+        recommendations = directory_recommendations_with_coverage(analysis_qa)
+
+        st.markdown("#### Field availability")
         st.dataframe(
             availability_matrix,
             width="stretch",
             hide_index=True,
-            height=min(700, 90 + 36 * max(len(availability_matrix), 1)),
+            height=min(620, 90 + 36 * max(len(availability_matrix), 1)),
         )
-        st.caption("Coverage guide: Strong 90–100% · Good 70–89% · Partial 40–69% · Weak 1–39% · Unavailable 0%.")
-
-        st.markdown("#### Field findings summary")
-        field_findings = field_availability_summary(analysis_qa)
-        st.dataframe(
-            field_findings[[
-                "Field", "Found", "Missing", "Coverage %", "Availability Assessment",
-                "Research Finding",
-            ]],
-            width="stretch",
-            hide_index=True,
-            height=620,
-        )
-
-    with analysis_tabs[2]:
-        st.subheader("Findings → data-informed recommendations")
+        st.markdown("#### Findings and recommendations")
+        st.dataframe(recommendations, width="stretch", hide_index=True, height=680)
         st.caption(
-            "Recommendations are shown only after Datablix calculates observed coverage. A concise rationale explains why each suggested use follows from the available evidence."
+            "Recommendations follow observed coverage. The Rationale column can be refined independently without changing the underlying research data."
         )
-        recommendations = directory_recommendations_with_coverage(analysis_qa)
-        st.dataframe(
-            recommendations,
+        st.download_button(
+            "Download Structure & Search Recommendations — Excel",
+            data=recommendations_workbook(analysis_qa, analysis_registry),
+            file_name=f"{project_slug}_{scope_slug}_05_structure_search_recommendations.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
-            hide_index=True,
-            height=680,
-        )
-        st.caption(
-            "A high-value field can still be marked Improve data collection first when public-source coverage is too weak for a dependable filter."
+            key="db_deliverable_05_recommendations",
         )
 
     with analysis_tabs[3]:
-        st.subheader("Verification and follow-up")
+        st.subheader("3. Source & Verification Tracker")
         followup = verification_followup_summary(analysis_qa)
-        st.dataframe(followup, width="stretch", hide_index=True)
-
-        st.markdown("#### Data source and verification tracker")
         tracker = source_verification_tracker(analysis_qa)
-        tracker_focus = st.radio(
-            "Tracker focus",
-            ["Needs follow-up", "All records", "Approved for Export"],
-            horizontal=True,
-            key="db_source_tracker_focus",
-        )
-        if tracker_focus == "Needs follow-up":
-            tracker = tracker.loc[
-                tracker["Follow-up Priority"].astype(str).ne("None")
-                | tracker["Verification Status"].astype(str).ne("Verified")
-            ].copy()
-        elif tracker_focus == "Approved for Export":
-            tracker = tracker.loc[
-                tracker["Export Status"].astype(str).eq("Approved for Export")
-            ].copy()
-        st.dataframe(
-            tracker,
+        st.dataframe(followup, width="stretch", hide_index=True)
+        with smart_expander("Record-level source and verification tracker", count=len(tracker), expanded=True):
+            st.dataframe(
+                tracker,
+                width="stretch",
+                hide_index=True,
+                height=560,
+                column_config={
+                    "Source URL": st.column_config.LinkColumn("Source URL", width="large"),
+                },
+            )
+        st.download_button(
+            "Download Source & Verification Tracker — Excel",
+            data=verification_tracker_workbook(analysis_qa),
+            file_name=f"{project_slug}_{scope_slug}_03_source_verification_tracker.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
-            hide_index=True,
-            height=560,
-            column_config={
-                "Source URL": st.column_config.LinkColumn("Source URL", width="large"),
-            },
+            key="db_deliverable_03_verification",
         )
 
     with analysis_tabs[4]:
-        st.subheader("Draft record profiles")
+        st.subheader("4. Draft Record Profiles")
+        profiles = draft_profiles_table(analysis_qa)
         st.caption(
-            "Select a reviewed building to assemble a copy-ready draft profile from information already stored in Datablix."
+            "Profiles are assembled only from information already stored in the selected reporting state."
         )
-        profile_candidates = analysis_qa.loc[
-            ~analysis_qa["Record Decision"].eq("Remove")
-        ].copy()
-        if profile_candidates.empty:
-            st.info("No building records are available for profile drafting in this scope.")
+        if profiles.empty:
+            st.info("No records are available for profile drafting in this scope.")
         else:
-            profile_candidates["_approved_sort"] = approved_for_export_mask(profile_candidates).astype(int)
-            profile_candidates = profile_candidates.sort_values(
-                ["_approved_sort", "Management/Owner", "Building Name"],
-                ascending=[False, True, True],
-                kind="stable",
-            )
-            profile_ids = profile_candidates["Record ID"].astype(str).tolist()
+            profile_ids = profiles["Record ID"].astype(str).tolist()
             selected_profile_id = st.selectbox(
-                "Building profile",
+                "Preview profile",
                 profile_ids,
                 format_func=lambda record_id: (
-                    f"{profile_candidates.loc[profile_candidates['Record ID'].astype(str).eq(record_id), 'Building Name'].iloc[0]} "
-                    f"— {profile_candidates.loc[profile_candidates['Record ID'].astype(str).eq(record_id), 'Street Address'].iloc[0]}"
+                    f"{profiles.loc[profiles['Record ID'].astype(str).eq(record_id), 'Building Name'].iloc[0]} "
+                    f"— {profiles.loc[profiles['Record ID'].astype(str).eq(record_id), 'Street Address'].iloc[0]}"
                 ),
                 key="db_profile_record_id",
             )
-            profile_row = profile_candidates.loc[
-                profile_candidates["Record ID"].astype(str).eq(selected_profile_id)
+            profile_text = profiles.loc[
+                profiles["Record ID"].astype(str).eq(selected_profile_id), "Profile Draft"
             ].iloc[0]
-            profile_fields = [
-                ("Apartment Building Name", "Building Name"),
-                ("Street Address", "Street Address"),
-                ("City and Postal Code", None),
-                ("Building Classification", "Building Classification"),
-                ("Storeys", "Number of Storeys"),
-                ("Number of Apartments", "Number of Apartments"),
-                ("Apartment Building Management/Owner", "Management/Owner"),
-                ("Phone Number", "Phone"),
-                ("Email Contact", "Primary Email"),
-                ("WebSite", "Website"),
-                ("Rental Rate", "Rental Rate Range"),
-                ("Suite Types", "Suite Types"),
-                ("Amenities", "Amenities"),
-                ("Parking", "Parking"),
-                ("Laundry", "Laundry"),
-                ("Elevator", "Elevator"),
-                ("Accessibility", "Accessibility"),
-                ("Utilities", "Utilities"),
-                ("Pet Policy", "Pet Policy"),
-                ("Rental Availability", "Rental Availability Status"),
-                ("Missing Information", "Missing Information"),
-                ("Source URL", "Source URL"),
-            ]
-            profile_rows = []
-            for label, source_field in profile_fields:
-                value = formatted_location(profile_row) if source_field is None else profile_row.get(source_field, "")
-                profile_rows.append({
-                    "Profile Field": label,
-                    "Value": "" if is_unresolved(value) else str(value).strip(),
-                })
-            with smart_expander(
-                "Profile source fields",
-                count=len(profile_rows),
-                status="fields",
-                expanded=False,
-            ):
-                st.dataframe(pd.DataFrame(profile_rows), width="stretch", hide_index=True)
-            st.markdown("**Copy-ready draft**")
-            st.code(community_profile_text(profile_row), language="markdown")
+            st.code(profile_text, language="markdown")
+        st.download_button(
+            "Download Draft Record Profiles — HTML",
+            data=profiles_html(analysis_qa),
+            file_name=f"{project_slug}_{scope_slug}_04_draft_record_profiles.html",
+            mime="text/html",
+            width="stretch",
+            key="db_deliverable_04_profiles",
+        )
 
     with analysis_tabs[5]:
-        st.subheader("Research methodology and limitations")
-        method_report = methodology_and_limitations_report(
-            analysis_qa,
-            scope_label,
-        )
+        st.subheader("6. Methodology & Limitations")
+        method_report = methodology_and_limitations_report(analysis_qa, scope_label)
         st.dataframe(method_report, width="stretch", hide_index=True)
         st.caption(
-            "These sections are generated from the current Datablix workflow and dataset. Review them before using them in final project outputs."
+            "This is generated from the current reporting state and can be refined as a standalone deliverable."
+        )
+        st.download_button(
+            "Download Methodology & Limitations — HTML",
+            data=methodology_html(analysis_qa, scope_label),
+            file_name=f"{project_slug}_{scope_slug}_06_methodology_limitations.html",
+            mime="text/html",
+            width="stretch",
+            key="db_deliverable_06_methodology",
         )
 
     with analysis_tabs[6]:
-        st.subheader("Final Project Data Matrix")
-        report = report_summary(
+        st.subheader("7. Final Project Data Matrix")
+        final_matrix = final_project_data_matrix(
             analysis_qa,
             analysis_registry,
             scope_label=scope_label,
+            baseline=deliverable_baseline,
         )
-        st.dataframe(report, width="stretch", hide_index=True)
+        st.dataframe(final_matrix, width="stretch", hide_index=True, height=700)
 
-        st.markdown("#### Copy-ready presentation summary")
-        st.code(
-            presentation_summary_text(
-                analysis_qa,
-                analysis_registry,
-                scope_label,
-            ),
-            language="markdown",
-        )
+        with smart_expander("Copy-ready presentation summary", expanded=False):
+            st.code(
+                presentation_summary_text(
+                    analysis_qa,
+                    analysis_registry,
+                    scope_label,
+                    baseline=deliverable_baseline,
+                ),
+                language="markdown",
+            )
 
-        st.markdown("#### Export report")
-        st.caption(
-            "Download one evidence-rich HTML output containing the project summary, research coverage, discoveries, field availability, recommendations, verification gaps, and methodology. Use it as a factual source for final project outputs."
-        )
-        closeout_bytes = project_closeout_report_html(
+        final_html = project_closeout_report_html(
             analysis_qa,
             analysis_registry,
             scope_label=scope_label,
+            baseline=deliverable_baseline,
         )
-        closeout_name = safe_filename(
-            f"{st.session_state.get(S_PROJECT_NAME, 'Datablix project')}_{scope_label}_final_project_data_matrix"
-        ) + ".html"
-        st.download_button(
-            "Download Final Project Data Matrix — HTML",
-            data=closeout_bytes,
-            file_name=closeout_name,
-            mime="text/html",
-            type="primary",
-            width="stretch",
-            key="db_download_closeout_report",
-        )
+        final_export_cols = st.columns(2)
+        with final_export_cols[0]:
+            st.download_button(
+                "Download Final Project Data Matrix — HTML",
+                data=final_html,
+                file_name=f"{project_slug}_{scope_slug}_07_final_project_data_matrix.html",
+                mime="text/html",
+                width="stretch",
+                key="db_deliverable_07_matrix_html",
+            )
+        with final_export_cols[1]:
+            st.download_button(
+                "Download Final Project Data Matrix — CSV",
+                data=csv_bytes(final_matrix),
+                file_name=f"{project_slug}_{scope_slug}_07_final_project_data_matrix.csv",
+                mime="text/csv",
+                width="stretch",
+                key="db_deliverable_07_matrix_csv",
+            )
         st.caption(
-            "This output reports only data available within Datablix and does not claim totals for separately maintained external datasets."
+            "This matrix is factual and matrix-first. Narrative refinement can happen later without changing the underlying evidence."
         )
 
 # -----------------------------
