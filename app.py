@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Corrected Research Population 2026.08.09-v84"
+DATABLIX_BUILD = "Deliverables Generator + Full Research Across Deliverables 2026.08.10-v86"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -6049,6 +6049,101 @@ def deliverable_needs_review_mask(qa_frame: pd.DataFrame) -> pd.Series:
     return mask & qa_frame.index.to_series().isin(active_indices)
 
 
+def full_research_status_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
+    """Summarize every researched row without applying final-directory filters."""
+    if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
+        return pd.DataFrame(columns=["Status Area", "Status", "Records", "Share of Full Research"])
+
+    total = len(qa_frame)
+    rows = []
+
+    def add_area(area: str, column: str):
+        if column not in qa_frame.columns:
+            return
+        values = (
+            qa_frame[column]
+            .astype("string")
+            .fillna("")
+            .str.strip()
+            .replace("", "Blank / Not Recorded")
+        )
+        counts = values.value_counts(dropna=False)
+        for status, count in counts.items():
+            rows.append({
+                "Status Area": area,
+                "Status": str(status),
+                "Records": int(count),
+                "Share of Full Research": f"{(int(count) / total * 100):.1f}%" if total else "0.0%",
+            })
+
+    add_area("Discovery", "Directory Discovery Status")
+    add_area("Inventory", "Current Inventory Status")
+    add_area("Rental Availability", "Rental Availability Status")
+    add_area("Research", "Research Status")
+    add_area("Verification", "Verification Status")
+    add_area("Record Decision", "Record Decision")
+    add_area("Geographic Scope", "Geographic Scope Status")
+    return pd.DataFrame(rows)
+
+
+def full_company_research_summary(qa_frame: pd.DataFrame, registry=None) -> pd.DataFrame:
+    """Summarize all researched records by organization, including excluded/review rows."""
+    registry = normalize_company_registry(registry)
+    if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
+        return pd.DataFrame(columns=[
+            "Company", "All Research Records", "Existing Source Records",
+            "Newly Discovered", "Needs Classification", "Possible Duplicates",
+            "Excluded / Not Current", "Completed", "Verified", "Rented",
+        ])
+
+    rows = []
+    represented = set()
+
+    def summarize(company_name: str, group: pd.DataFrame):
+        discovery = group.get("Directory Discovery Status", pd.Series("", index=group.index)).astype(str)
+        rental = group.get("Rental Availability Status", pd.Series("", index=group.index)).astype(str)
+        research = group.get("Research Status", pd.Series("", index=group.index)).astype(str)
+        verification = group.get("Verification Status", pd.Series("", index=group.index)).astype(str)
+        return {
+            "Company": company_name,
+            "All Research Records": len(group),
+            "Existing Source Records": int(discovery.eq("Existing Source Record").sum()),
+            "Newly Discovered": int(discovery.eq("Newly Discovered").sum()),
+            "Needs Classification": int(discovery.eq("Needs Classification").sum()),
+            "Possible Duplicates": int(discovery.eq("Possible Duplicate").sum()),
+            "Excluded / Not Current": int(discovery.eq("Excluded / Not Current").sum()),
+            "Completed": int(research.eq("Completed").sum()),
+            "Verified": int(verification.eq("Verified").sum()),
+            "Rented": int(rental.eq("Rented").sum()),
+        }
+
+    for _, company in registry.iterrows():
+        company_id = safe_text(company.get("Company ID", ""))
+        company_name = safe_text(company.get("Management/Owner", "")) or company_id or "Unassigned"
+        represented.add(company_id)
+        group = (
+            qa_frame.loc[qa_frame["Company ID"].astype(str).eq(company_id)].copy()
+            if company_id and "Company ID" in qa_frame.columns
+            else qa_frame.iloc[0:0].copy()
+        )
+        rows.append(summarize(company_name, group))
+
+    if "Company ID" in qa_frame.columns:
+        remaining = qa_frame.loc[~qa_frame["Company ID"].astype(str).isin(represented)].copy()
+    else:
+        remaining = qa_frame.copy()
+
+    if not remaining.empty:
+        owners = display_values(
+            remaining.get("Management/Owner", pd.Series("", index=remaining.index)),
+            "Unassigned",
+        )
+        for owner, group in remaining.assign(_owner=owners).groupby("_owner", dropna=False):
+            rows.append(summarize(str(owner), group))
+
+    return pd.DataFrame(rows)
+
+
 def _closeout_field_available_mask(frame: pd.DataFrame, spec: dict) -> pd.Series:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return pd.Series(False, index=getattr(frame, "index", pd.Index([])), dtype=bool)
@@ -6100,9 +6195,9 @@ def _coverage_recommendation(spec: dict, coverage: float) -> str:
     return base
 
 
-def field_availability_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
-    """Summarize what information was actually available in researched records."""
-    population = closeout_research_population(qa_frame)
+def field_availability_summary(qa_frame: pd.DataFrame, include_all: bool = False) -> pd.DataFrame:
+    """Summarize field availability across full research or directory candidates."""
+    population = qa_frame.copy() if include_all else closeout_research_population(qa_frame)
     total = len(population)
     rows = []
     for spec in CLOSEOUT_FIELD_SPECS:
@@ -6136,10 +6231,10 @@ def field_availability_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def field_availability_matrix(qa_frame: pd.DataFrame, registry=None) -> pd.DataFrame:
-    """Return a company x directory-field matrix using actual observed coverage."""
+def field_availability_matrix(qa_frame: pd.DataFrame, registry=None, include_all: bool = False) -> pd.DataFrame:
+    """Return a company x field matrix across full research or directory candidates."""
     registry = normalize_company_registry(registry)
-    population = closeout_research_population(qa_frame)
+    population = qa_frame.copy() if include_all else closeout_research_population(qa_frame)
     rows = []
     represented = set()
 
@@ -6466,31 +6561,45 @@ h1{{margin-bottom:.15rem}} h2{{margin-top:1.8rem;border-bottom:1px solid #d1d5db
 
 
 def draft_profiles_table(qa_frame: pd.DataFrame) -> pd.DataFrame:
-    """Return one copy-ready profile per non-removed researched record."""
+    """Return one draft profile for every researched property row."""
+    columns = [
+        "Record ID", "Building Name", "Management/Owner", "Street Address",
+        "Directory Discovery Status", "Current Inventory Status",
+        "Rental Availability Status", "Verification Status", "Record Decision",
+        "Profile Draft",
+    ]
     if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
-        return pd.DataFrame(columns=[
-            "Record ID", "Building Name", "Management/Owner", "Street Address",
-            "Verification Status", "Profile Draft",
-        ])
-    candidates = deliverable_research_population(qa_frame)
-    if candidates.empty:
-        return pd.DataFrame(columns=[
-            "Record ID", "Building Name", "Management/Owner", "Street Address",
-            "Verification Status", "Profile Draft",
-        ])
+        return pd.DataFrame(columns=columns)
+
+    candidates = qa_frame.copy()
+    sort_fields = [
+        field for field in ["Management/Owner", "Building Name", "Street Address"]
+        if field in candidates.columns
+    ]
+    if sort_fields:
+        candidates = candidates.sort_values(sort_fields, kind="stable")
+
     rows = []
-    for _, row in candidates.sort_values(
-        ["Management/Owner", "Building Name", "Street Address"], kind="stable"
-    ).iterrows():
+    for _, row in candidates.iterrows():
         rows.append({
             "Record ID": row.get("Record ID", ""),
             "Building Name": row.get("Building Name", ""),
             "Management/Owner": row.get("Management/Owner", ""),
             "Street Address": row.get("Street Address", ""),
+            "Directory Discovery Status": row.get("Directory Discovery Status", ""),
+            "Current Inventory Status": row.get("Current Inventory Status", ""),
+            "Rental Availability Status": row.get("Rental Availability Status", ""),
             "Verification Status": row.get("Verification Status", ""),
+            "Record Decision": row.get("Record Decision", ""),
             "Profile Draft": community_profile_text(row),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=columns)
+
+
+def final_profile_candidates_table(qa_frame: pd.DataFrame) -> pd.DataFrame:
+    """Return the separate filtered profile-candidate view."""
+    population = deliverable_research_population(qa_frame)
+    return draft_profiles_table(population)
 
 
 def final_project_data_matrix(
@@ -6524,10 +6633,38 @@ def final_project_data_matrix(
         & qa_frame.get("Directory Entry Status", pd.Series("", index=qa_frame.index)).astype(str).eq("Entered")
     ).sum()) if total else 0
 
+    discovery_status = qa_frame.get(
+        "Directory Discovery Status", pd.Series("", index=qa_frame.index)
+    ).astype(str) if total else pd.Series(dtype=str)
+    inventory_status = qa_frame.get(
+        "Current Inventory Status", pd.Series("", index=qa_frame.index)
+    ).astype(str) if total else pd.Series(dtype=str)
+    rental_status = qa_frame.get(
+        "Rental Availability Status", pd.Series("", index=qa_frame.index)
+    ).astype(str) if total else pd.Series(dtype=str)
+    research_status = qa_frame.get(
+        "Research Status", pd.Series("", index=qa_frame.index)
+    ).astype(str) if total else pd.Series(dtype=str)
+
+    needs_classification = int(discovery_status.eq("Needs Classification").sum()) if total else 0
+    possible_duplicates = int(discovery_status.eq("Possible Duplicate").sum()) if total else 0
+    excluded_not_current = int(discovery_status.eq("Excluded / Not Current").sum()) if total else 0
+    rented = int(rental_status.eq("Rented").sum()) if total else 0
+    current_inventory = int(inventory_status.eq("Current").sum()) if total else 0
+    inventory_review = int(inventory_status.eq("Review").sum()) if total else 0
+    completed = int(research_status.eq("Completed").sum()) if total else 0
+
     rows = [
         {"Matrix Area": "Project Scope", "Data Point": "Companies researched", "Result": company_count, "Denominator / Scope": "", "Rate %": "", "Assessment": "Coverage", "What the Data Shows": f"{company_count:,} organization workspace(s) represented in {scope_label}.", "Deliverable Use": "Research summary"},
         {"Matrix Area": "Project Scope", "Data Point": "Research properties", "Result": total, "Denominator / Scope": "", "Rate %": "", "Assessment": "Coverage", "What the Data Shows": f"{total:,} researched property record(s) are represented.", "Deliverable Use": "Research scope"},
-        {"Matrix Area": "Project Scope", "Data Point": "Valid/current directory records", "Result": eligible_total, "Denominator / Scope": total, "Rate %": round(eligible_total / total * 100, 1) if total else 0.0, "Assessment": "Included", "What the Data Shows": f"{eligible_total:,} researched record(s) are valid/current and in scope for the Research Dataset.", "Deliverable Use": "Research dataset"},
+        {"Matrix Area": "Full Research Status", "Data Point": "Completed research records", "Result": completed, "Denominator / Scope": total, "Rate %": round(completed / total * 100, 1) if total else 0.0, "Assessment": "Research status", "What the Data Shows": f"{completed:,} record(s) are marked Completed.", "Deliverable Use": "Full research"},
+        {"Matrix Area": "Full Research Status", "Data Point": "Current inventory", "Result": current_inventory, "Denominator / Scope": total, "Rate %": round(current_inventory / total * 100, 1) if total else 0.0, "Assessment": "Inventory status", "What the Data Shows": f"{current_inventory:,} record(s) are marked Current inventory.", "Deliverable Use": "Full research"},
+        {"Matrix Area": "Full Research Status", "Data Point": "Inventory review", "Result": inventory_review, "Denominator / Scope": total, "Rate %": round(inventory_review / total * 100, 1) if total else 0.0, "Assessment": "Inventory status", "What the Data Shows": f"{inventory_review:,} record(s) remain in inventory review.", "Deliverable Use": "Full research"},
+        {"Matrix Area": "Full Research Status", "Data Point": "Rented properties", "Result": rented, "Denominator / Scope": total, "Rate %": round(rented / total * 100, 1) if total else 0.0, "Assessment": "Rental availability", "What the Data Shows": f"{rented:,} researched record(s) are marked Rented; this does not erase them from the research history.", "Deliverable Use": "Full research"},
+        {"Matrix Area": "Full Research Status", "Data Point": "Needs discovery classification", "Result": needs_classification, "Denominator / Scope": total, "Rate %": round(needs_classification / total * 100, 1) if total else 0.0, "Assessment": "Discovery status", "What the Data Shows": f"{needs_classification:,} record(s) still need discovery classification.", "Deliverable Use": "Full research"},
+        {"Matrix Area": "Full Research Status", "Data Point": "Possible duplicates", "Result": possible_duplicates, "Denominator / Scope": total, "Rate %": round(possible_duplicates / total * 100, 1) if total else 0.0, "Assessment": "Discovery status", "What the Data Shows": f"{possible_duplicates:,} record(s) are retained as possible duplicates for audit visibility.", "Deliverable Use": "Full research"},
+        {"Matrix Area": "Full Research Status", "Data Point": "Excluded / not current", "Result": excluded_not_current, "Denominator / Scope": total, "Rate %": round(excluded_not_current / total * 100, 1) if total else 0.0, "Assessment": "Discovery status", "What the Data Shows": f"{excluded_not_current:,} record(s) are excluded/not current but remain visible in the full research record.", "Deliverable Use": "Full research"},
+        {"Matrix Area": "Project Scope", "Data Point": "Valid/current directory records", "Result": eligible_total, "Denominator / Scope": total, "Rate %": round(eligible_total / total * 100, 1) if total else 0.0, "Assessment": "Included", "What the Data Shows": f"{eligible_total:,} researched record(s) are valid/current in the filtered directory view.", "Deliverable Use": "Final directory view"},
         {"Matrix Area": "Source Reconciliation", "Data Point": "Existing source matches", "Result": existing, "Denominator / Scope": total, "Rate %": round(existing / total * 100, 1) if total else 0.0, "Assessment": "Matched", "What the Data Shows": f"{existing:,} record(s) matched the Starting Data.", "Deliverable Use": "Research summary"},
         {"Matrix Area": "Source Reconciliation", "Data Point": "New discoveries", "Result": discoveries, "Denominator / Scope": total, "Rate %": round(discoveries / total * 100, 1) if total else 0.0, "Assessment": "New", "What the Data Shows": f"{discoveries:,} record(s) are classified as newly discovered relative to Starting Data.", "Deliverable Use": "Research summary"},
         {"Matrix Area": "Source Reconciliation", "Data Point": "Changed existing records", "Result": changed, "Denominator / Scope": existing, "Rate %": round(changed / existing * 100, 1) if existing else 0.0, "Assessment": "Changed", "What the Data Shows": f"{changed:,} matched record(s) contain material researched differences.", "Deliverable Use": "Research summary"},
@@ -6552,7 +6689,38 @@ def final_project_data_matrix(
 
 
 def deliverable_research_dataset(qa_frame: pd.DataFrame) -> pd.DataFrame:
-    """Return the full valid/current researched inventory for Deliverable 1."""
+    """Return every researched property row for Deliverable 1.
+
+    Deliverable 1 is the complete research record, not a final-directory filter.
+    It therefore preserves existing Starting Data matches, new discoveries,
+    rented records, exclusions, possible duplicates, and review items together
+    with the statuses that explain each record's outcome.
+    """
+    if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
+        return listing_export(qa_frame.iloc[0:0].copy()) if isinstance(qa_frame, pd.DataFrame) else pd.DataFrame()
+
+    population = qa_frame.copy()
+    sort_fields = [
+        field for field in ["Management/Owner", "Building Name", "Street Address"]
+        if field in population.columns
+    ]
+    if sort_fields:
+        population = population.sort_values(sort_fields, kind="stable")
+
+    dataset = listing_export(population)
+    # Preserve workflow/audit fields that explain why a researched record may or
+    # may not appear in the final directory view.
+    for field in [
+        "Research Status", "Source Status", "Record Decision",
+        "Discovery Status Source", "QA Status", "QA Flags",
+    ]:
+        if field in population.columns and field not in dataset.columns:
+            dataset[field] = population[field]
+    return dataset
+
+
+def deliverable_final_directory_dataset(qa_frame: pd.DataFrame) -> pd.DataFrame:
+    """Return the existing valid/current directory-oriented view for Deliverable 1."""
     if not isinstance(qa_frame, pd.DataFrame) or qa_frame.empty:
         return listing_export(qa_frame.iloc[0:0].copy()) if isinstance(qa_frame, pd.DataFrame) else pd.DataFrame()
     population = deliverable_research_population(qa_frame)
@@ -6560,35 +6728,12 @@ def deliverable_research_dataset(qa_frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def research_dataset_workbook(qa_frame: pd.DataFrame) -> bytes:
-    """Create an editable Deliverable 1 workbook with a clean view and full detail."""
-    dataset = deliverable_research_dataset(qa_frame)
-
-    preferred = [
-        "Apartment Building Name",
-        "Street Address",
-        "City and Postal Code",
-        "Building Classification",
-        "Storeys",
-        "Number of Apartments",
-        "Apartment Building Management/Owner",
-        "Phone Number",
-        "Email Contact",
-        "WebSite",
-        "Rental Rate Range",
-        "Suite Types",
-        "Amenities",
-        "Rental Availability Status",
-        "Directory Discovery Status",
-        "Verification Status",
-        "Official Source URL",
-        "Date Researched",
-    ]
-    clean_columns = [column for column in preferred if column in dataset.columns]
-    directory_view = dataset[clean_columns].copy() if clean_columns else dataset.copy()
-
+    """Create a plain editable workbook with full research and a filtered directory view."""
+    full_research = deliverable_research_dataset(qa_frame)
+    final_directory = deliverable_final_directory_dataset(qa_frame)
     return excel_bytes({
-        "Directory Database": directory_view,
-        "Research Detail": dataset,
+        "Full Research": full_research,
+        "Final Directory View": final_directory,
     })
 
 
@@ -6599,16 +6744,19 @@ def organization_research_summary_workbook(
 ) -> bytes:
     """Export company coverage plus discovery tracking as one workbook."""
     return excel_bytes({
+        "All Research by Company": full_company_research_summary(qa_frame, registry),
         "Research Coverage": closeout_research_coverage_matrix(qa_frame, registry, baseline=baseline),
         "Discoveries": discovery_submission_summary(qa_frame),
+        "Research Status Summary": full_research_status_summary(qa_frame),
     })
 
 
 def recommendations_workbook(qa_frame: pd.DataFrame, registry=None) -> bytes:
     """Export field availability evidence and recommendations."""
     return excel_bytes({
-        "Field Availability": field_availability_matrix(qa_frame, registry),
-        "Field Findings": field_availability_summary(qa_frame),
+        "Full Research Availability": field_availability_matrix(qa_frame, registry, include_all=True),
+        "Full Research Findings": field_availability_summary(qa_frame, include_all=True),
+        "Directory Candidate Findings": field_availability_summary(qa_frame),
         "Recommendations": directory_recommendations_with_coverage(qa_frame),
     })
 
@@ -6616,18 +6764,23 @@ def recommendations_workbook(qa_frame: pd.DataFrame, registry=None) -> bytes:
 def verification_tracker_workbook(qa_frame: pd.DataFrame) -> bytes:
     """Export source verification records and project-level follow-up counts."""
     return excel_bytes({
-        "Verification Tracker": source_verification_tracker(qa_frame),
-        "Follow-Up Summary": verification_followup_summary(qa_frame),
+        "Full Verification Tracker": source_verification_tracker(qa_frame),
+        "Research Status Summary": full_research_status_summary(qa_frame),
+        "Active Follow-Up Summary": verification_followup_summary(qa_frame),
     })
 
 
 def profiles_html(qa_frame: pd.DataFrame) -> bytes:
     """Export all draft record profiles into one portable HTML file."""
     profiles = draft_profiles_table(qa_frame)
+    final_candidates = final_profile_candidates_table(qa_frame)
     return _deliverable_html(
         "Draft Record Profiles",
-        [("Profiles", profiles)],
-        "Profiles are assembled from information already stored in reviewed research records.",
+        [
+            ("Full Research Profiles", profiles),
+            ("Filtered Final Profile Candidates", final_candidates),
+        ],
+        "Full Research Profiles preserves every researched property. The filtered candidate section is secondary and does not remove records from the research history.",
     )
 
 
@@ -6636,8 +6789,11 @@ def methodology_html(qa_frame: pd.DataFrame, scope_label: str) -> bytes:
     method = methodology_and_limitations_report(qa_frame, scope_label)
     return _deliverable_html(
         "Methodology & Limitations",
-        [("Methodology & Limitations", method)],
-        "Review generated methodology text before using it in final project outputs.",
+        [
+            ("Full Research Status Summary", full_research_status_summary(qa_frame)),
+            ("Methodology & Limitations", method),
+        ],
+        "The methodology report is grounded in the complete research state. Any final-directory filtering is treated as a separate downstream use.",
     )
 
 
@@ -6698,9 +6854,12 @@ def deliverables_package_bytes(
                 f"Scope: {scope_label}\n"
                 f"Generated: {datetime.now().astimezone().isoformat(timespec='seconds')}\n\n"
                 f"Research records in scope: {len(qa_frame):,}\n"
-                f"Valid/current records in Deliverable 1: {len(deliverable_research_population(qa_frame)):,}\n\n"
+                f"Full Research rows in Deliverable 1: {len(qa_frame):,}\n"
+                f"Filtered final-directory rows: {len(deliverable_research_population(qa_frame)):,}\n\n"
                 "Each file is generated from the same Datablix reporting state so the figures remain aligned.\n"
-                "Deliverable 1 uses the full valid/current researched inventory; Approved for Export remains a separate optional workflow status.\n"
+                "Every deliverable is grounded in the full research state, including Starting Data matches, new discoveries, rented, excluded/not-current, duplicate, and review records where applicable.\n"
+                "Filtered final-use views remain secondary and are labeled separately; they do not replace or erase the full research evidence.\n"
+                "Approved for Export remains a separate optional workflow status.\n"
             ).encode("utf-8"),
         )
     return package.getvalue()
@@ -7062,13 +7221,13 @@ def presentation_summary_text(qa_frame, registry, scope_label, baseline=None) ->
 def project_deliverables_table():
     """Map each reusable deliverable to its Datablix generator."""
     return pd.DataFrame([
-        {"Deliverable": "1. Research Dataset", "Datablix Location": "Deliverables → Research dataset", "Generated Output": "Full valid/current researched inventory", "Export": "Excel + CSV"},
-        {"Deliverable": "2. Organization Research Summary", "Datablix Location": "Deliverables → Research coverage", "Generated Output": "Company coverage + discoveries", "Export": "Excel"},
-        {"Deliverable": "3. Source & Verification Tracker", "Datablix Location": "Deliverables → Verification", "Generated Output": "Record-level source/verification tracker + follow-up summary", "Export": "Excel"},
-        {"Deliverable": "4. Draft Record Profiles", "Datablix Location": "Deliverables → Profiles", "Generated Output": "Copy-ready draft profiles", "Export": "HTML"},
-        {"Deliverable": "5. Structure & Search Recommendations", "Datablix Location": "Deliverables → Recommendations", "Generated Output": "Field availability + findings + recommendations", "Export": "Excel"},
-        {"Deliverable": "6. Methodology & Limitations", "Datablix Location": "Deliverables → Methodology", "Generated Output": "Methodology, assumptions, limitations, next steps", "Export": "HTML"},
-        {"Deliverable": "7. Final Project Data Matrix", "Datablix Location": "Deliverables → Final matrix", "Generated Output": "Project-level matrix + supporting evidence", "Export": "HTML + CSV"},
+        {"Deliverable": "1. Research Dataset", "Datablix Location": "Deliverables → Research dataset", "Generated Output": "Full research + filtered final directory view", "Export": "Excel + CSV"},
+        {"Deliverable": "2. Organization Research Summary", "Datablix Location": "Deliverables → Research coverage", "Generated Output": "All research by company + coverage + discoveries + status summary", "Export": "Excel"},
+        {"Deliverable": "3. Source & Verification Tracker", "Datablix Location": "Deliverables → Verification", "Generated Output": "Full verification tracker + status summary + active follow-up view", "Export": "Excel"},
+        {"Deliverable": "4. Draft Record Profiles", "Datablix Location": "Deliverables → Profiles", "Generated Output": "Full research profiles + filtered final profile candidates", "Export": "HTML"},
+        {"Deliverable": "5. Structure & Search Recommendations", "Datablix Location": "Deliverables → Recommendations", "Generated Output": "Full-research availability + candidate findings + recommendations", "Export": "Excel"},
+        {"Deliverable": "6. Methodology & Limitations", "Datablix Location": "Deliverables → Methodology", "Generated Output": "Full-research status + methodology, assumptions, limitations, next steps", "Export": "HTML"},
+        {"Deliverable": "7. Final Project Data Matrix", "Datablix Location": "Deliverables → Final matrix", "Generated Output": "Full-research project matrix + clearly separated filtered-use metrics", "Export": "HTML + CSV"},
     ])
 
 
@@ -13945,14 +14104,30 @@ elif section == "Analysis & report":
     with analysis_tabs[0]:
         st.subheader("1. Research Dataset")
         dataset = deliverable_research_dataset(analysis_qa)
+        final_directory_dataset = deliverable_final_directory_dataset(analysis_qa)
         st.caption(
-            "This deliverable contains the full valid/current researched inventory in scope. "
-            "Approved for Export is tracked separately and does not remove verified existing records from this dataset."
+            "Full Research preserves every researched property, including records already in Starting Data, "
+            "new discoveries, rented properties, exclusions, duplicates, and records needing follow-up. "
+            "Status fields explain each record's outcome."
         )
         if dataset.empty:
-            st.info("No valid/current researched records are available in this reporting state.")
+            st.info("No researched records are available in this reporting state.")
         else:
             st.dataframe(dataset, width="stretch", hide_index=True, height=560)
+
+        with smart_expander(
+            "Final Directory View",
+            count=len(final_directory_dataset),
+            expanded=False,
+        ):
+            st.caption(
+                "This is the separate filtered view based on the current directory-eligibility rules. "
+                "It does not remove rows from Full Research."
+            )
+            if final_directory_dataset.empty:
+                st.info("No records currently meet the directory-view rules.")
+            else:
+                st.dataframe(final_directory_dataset, width="stretch", hide_index=True, height=500)
 
         d1_export_cols = st.columns(2)
         with d1_export_cols[0]:
@@ -13978,8 +14153,17 @@ elif section == "Analysis & report":
     with analysis_tabs[1]:
         st.subheader("2. Organization Research Summary")
         st.caption(
-            "Company-by-company reconciliation of Starting Data, research records, discoveries, changes, submissions, and review status."
+            "This summary starts with every researched record by company, including records already in Starting Data, discoveries, exclusions, duplicates, rented properties, and review items. Reconciliation views remain secondary."
         )
+        full_company_summary = full_company_research_summary(analysis_qa, analysis_registry)
+        st.markdown("#### All research by company")
+        st.dataframe(
+            full_company_summary,
+            width="stretch",
+            hide_index=True,
+            height=min(700, 90 + 36 * max(len(full_company_summary), 1)),
+        )
+        st.markdown("#### Starting Data reconciliation")
         st.dataframe(
             coverage_matrix,
             width="stretch",
@@ -14005,18 +14189,26 @@ elif section == "Analysis & report":
 
     with analysis_tabs[4]:
         st.subheader("5. Structure & Search Recommendations")
-        availability_matrix = field_availability_matrix(analysis_qa, analysis_registry)
+        availability_matrix = field_availability_matrix(
+            analysis_qa, analysis_registry, include_all=True
+        )
+        full_field_findings = field_availability_summary(analysis_qa, include_all=True)
         field_findings = field_availability_summary(analysis_qa)
         recommendations = directory_recommendations_with_coverage(analysis_qa)
 
-        st.markdown("#### Field availability")
+        st.caption(
+            "Full-research availability is shown first. Directory-candidate findings and recommendations are secondary views for final platform design."
+        )
+        st.markdown("#### Full research field availability")
         st.dataframe(
             availability_matrix,
             width="stretch",
             hide_index=True,
             height=min(620, 90 + 36 * max(len(availability_matrix), 1)),
         )
-        st.markdown("#### Findings and recommendations")
+        st.markdown("#### Full research findings")
+        st.dataframe(full_field_findings, width="stretch", hide_index=True, height=520)
+        st.markdown("#### Directory-candidate findings and recommendations")
         st.dataframe(recommendations, width="stretch", hide_index=True, height=680)
         st.caption(
             "Recommendations follow observed coverage. The Rationale column can be refined independently without changing the underlying research data."
@@ -14034,8 +14226,13 @@ elif section == "Analysis & report":
         st.subheader("3. Source & Verification Tracker")
         followup = verification_followup_summary(analysis_qa)
         tracker = source_verification_tracker(analysis_qa)
-        st.dataframe(followup, width="stretch", hide_index=True)
-        with smart_expander("Record-level source and verification tracker", count=len(tracker), expanded=True):
+        status_summary = full_research_status_summary(analysis_qa)
+        st.caption(
+            "The tracker preserves source and verification information for every researched record. The follow-up summary below is a separate active-candidate view."
+        )
+        st.markdown("#### Full research status")
+        st.dataframe(status_summary, width="stretch", hide_index=True)
+        with smart_expander("Full record-level source and verification tracker", count=len(tracker), expanded=True):
             st.dataframe(
                 tracker,
                 width="stretch",
@@ -14045,6 +14242,8 @@ elif section == "Analysis & report":
                     "Source URL": st.column_config.LinkColumn("Source URL", width="large"),
                 },
             )
+        st.markdown("#### Active follow-up summary")
+        st.dataframe(followup, width="stretch", hide_index=True)
         st.download_button(
             "Download Source & Verification Tracker — Excel",
             data=verification_tracker_workbook(analysis_qa),
@@ -14057,8 +14256,9 @@ elif section == "Analysis & report":
     with analysis_tabs[3]:
         st.subheader("4. Draft Record Profiles")
         profiles = draft_profiles_table(analysis_qa)
+        final_profile_candidates = final_profile_candidates_table(analysis_qa)
         st.caption(
-            "Profiles are assembled only from information already stored in the selected reporting state."
+            "Profiles are generated for every researched property so the research history is preserved. A separate filtered candidate view identifies records suitable for final profile use."
         )
         if profiles.empty:
             st.info("No records are available for profile drafting in this scope.")
@@ -14077,6 +14277,20 @@ elif section == "Analysis & report":
                 profiles["Record ID"].astype(str).eq(selected_profile_id), "Profile Draft"
             ].iloc[0]
             st.code(profile_text, language="markdown")
+        with smart_expander(
+            "Filtered final profile candidates",
+            count=len(final_profile_candidates),
+            expanded=False,
+        ):
+            if final_profile_candidates.empty:
+                st.info("No records currently meet the filtered profile-candidate rules.")
+            else:
+                st.dataframe(
+                    final_profile_candidates.drop(columns=["Profile Draft"], errors="ignore"),
+                    width="stretch",
+                    hide_index=True,
+                    height=420,
+                )
         st.download_button(
             "Download Draft Record Profiles — HTML",
             data=profiles_html(analysis_qa),
@@ -14089,10 +14303,13 @@ elif section == "Analysis & report":
     with analysis_tabs[5]:
         st.subheader("6. Methodology & Limitations")
         method_report = methodology_and_limitations_report(analysis_qa, scope_label)
-        st.dataframe(method_report, width="stretch", hide_index=True)
         st.caption(
-            "This is generated from the current reporting state and can be refined as a standalone deliverable."
+            "The methodology is grounded in the complete research state; filtered final-use views are downstream outputs."
         )
+        st.markdown("#### Full research status")
+        st.dataframe(full_research_status_summary(analysis_qa), width="stretch", hide_index=True)
+        st.markdown("#### Methodology and limitations")
+        st.dataframe(method_report, width="stretch", hide_index=True)
         st.download_button(
             "Download Methodology & Limitations — HTML",
             data=methodology_html(analysis_qa, scope_label),
@@ -14149,7 +14366,7 @@ elif section == "Analysis & report":
                 key="db_deliverable_07_matrix_csv",
             )
         st.caption(
-            "This matrix is factual and matrix-first. Narrative refinement can happen later without changing the underlying evidence."
+            "This matrix starts from the full research population and keeps filtered final-use metrics explicitly separate. Narrative refinement can happen later without changing the underlying evidence."
         )
 
 # -----------------------------
