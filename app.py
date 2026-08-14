@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Full Research Across Deliverables 2026.08.10-v86"
+DATABLIX_BUILD = "Deliverables Generator + Evidence-Backed Counts 2026.08.14-v89"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -103,9 +103,11 @@ INTERNAL_COLUMNS = [
     "Property Website", "Company Website", "Number of Apartments",
     "Apartment Count Search Status", "Apartment Count Source URL",
     "Apartment Count Evidence", "Apartment Count Confidence",
-    "Number of Storeys", "Rental Rate Range", "Suite Types", "Amenities",
+    "Number of Storeys", "Storey Count Search Status", "Storey Count Source URL",
+    "Storey Count Evidence", "Storey Count Confidence",
+    "Rental Rate Range", "Suite Types", "Amenities",
     "Parking", "Laundry", "Utilities", "Elevator", "Accessibility",
-    "Pet Policy", "Smoke-Free", "Building Classification",
+    "Pet Policy", "Smoke-Free", "Property Type", "Building Classification",
     "Current Inventory Status", "Inventory Evidence",
     "Rental Availability Status", "Rental Availability Detail",
     "Rental Availability Evidence",
@@ -168,6 +170,10 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Apartment Count Source URL", "Apartment Count Source URL"),
     ("Apartment Count Evidence", "Apartment Count Evidence"),
     ("Apartment Count Confidence", "Apartment Count Confidence"),
+    ("Storey Count Search Status", "Storey Count Search Status"),
+    ("Storey Count Source URL", "Storey Count Source URL"),
+    ("Storey Count Evidence", "Storey Count Evidence"),
+    ("Storey Count Confidence", "Storey Count Confidence"),
     ("Rental Rate Range", "Rental Rate Range"),
     ("Suite Types", "Suite Types"),
     ("Amenities", "Amenities"),
@@ -178,6 +184,7 @@ LISTING_ADDITIONAL_FIELD_MAP = [
     ("Accessibility", "Accessibility"),
     ("Pet Policy", "Pet Policy"),
     ("Smoke-Free", "Smoke-Free"),
+    ("Property Type", "Property Type"),
     ("Current Inventory Status", "Current Inventory Status"),
     ("Inventory Evidence", "Inventory Evidence"),
     ("Rental Availability Status", "Rental Availability Status"),
@@ -268,6 +275,21 @@ ALIASES = {
         "Number of Storeys", "Number of Floors", "Number of Stories", "Number of Levels",
         "Storey", "Storeys", "Story", "Stories", "Floor", "Floors", "Level", "Levels",
     ],
+    "Storey Count Search Status": [
+        "Storey Count Search Status", "Storey Search Status", "Storeys Search Status",
+        "Storey Count Status", "Storeys Status",
+    ],
+    "Storey Count Source URL": [
+        "Storey Count Source URL", "Storey Source URL", "Storeys Source URL",
+        "Storey Count Source", "Storey Source",
+    ],
+    "Storey Count Evidence": [
+        "Storey Count Evidence", "Storey Evidence", "Storeys Evidence",
+        "Storey Count Supporting Evidence",
+    ],
+    "Storey Count Confidence": [
+        "Storey Count Confidence", "Storey Confidence", "Storeys Confidence",
+    ],
     "Rental Rate Range": ["Rental Rate Range", "Rental Rates", "Rent Range", "Rent"],
     "Suite Types": ["Suite Types", "Unit Types", "Bedroom Types", "Floor Plan Types"],
     "Amenities": ["Amenities", "Detected Amenities", "Features"],
@@ -278,7 +300,11 @@ ALIASES = {
     "Accessibility": ["Accessibility", "Accessible Features"],
     "Pet Policy": ["Pet Policy", "Pets"],
     "Smoke-Free": ["Smoke-Free", "Smoke Free", "Non-Smoking"],
-    "Building Classification": ["Building Classification", "Verified Building Classification", "Category", "Building Type"],
+    "Property Type": [
+        "Property Type", "Property Form", "Housing Type", "Residential Property Type",
+        "Building Type",
+    ],
+    "Building Classification": ["Building Classification", "Verified Building Classification"],
     "Current Inventory Status": ["Current Inventory Status", "Inventory Status", "Portfolio Status"],
     "Inventory Evidence": ["Inventory Evidence", "Current Inventory Evidence"],
     "Rental Availability Status": [
@@ -316,20 +342,28 @@ COMBINED_LOCATION_ALIASES = [
     "City, Province and Postal Code", "City Province Postal Code",
 ]
 
-CLASSIFICATION_SOURCE_COLUMNS = [
-    "Luxury", "Adult", "Low Rental", "Hi Rise", "Townhome", "Duplex", "Garden Home"
+PROPERTY_TYPE_SOURCE_COLUMNS = [
+    "Apartment", "Condominium", "Condo", "Townhome", "Duplex", "Garden Home",
+    "Semi-detached", "Semi Detached", "Detached", "Detached Home",
 ]
-CLASSIFICATION_LABELS = {
-    "Luxury": "Luxury", "Adult": "Adult-oriented", "Low Rental": "Low Rental",
-    "Hi Rise": "High Rise", "Townhome": "Townhome", "Duplex": "Duplex",
+PROPERTY_TYPE_LABELS = {
+    "Apartment": "Apartment",
+    "Condominium": "Condominium",
+    "Condo": "Condominium",
+    "Townhome": "Townhome",
+    "Duplex": "Duplex",
     "Garden Home": "Garden Home",
+    "Semi-detached": "Semi-detached",
+    "Semi Detached": "Semi-detached",
+    "Detached": "Detached",
+    "Detached Home": "Detached",
 }
 
 CORE_FIELDS = ["Management/Owner", "Street Address", "City"]
 TARGET_FIELDS = [
     "Building Name", "Province", "Postal Code", "Phone", "Primary Email",
     "Website", "Number of Apartments", "Number of Storeys",
-    "Building Classification",
+    "Property Type", "Building Classification",
 ]
 ALL_RESEARCH_FIELDS = CORE_FIELDS + TARGET_FIELDS
 
@@ -353,6 +387,10 @@ PO_BOX_SEARCH_STATUSES = [
     "Not Checked", "Found", "Not Found after Search", "Not Applicable", "Needs Review",
 ]
 EVIDENCE_CONFIDENCE_LEVELS = ["Not Checked", "High", "Medium", "Low"]
+COUNT_SEARCH_STATUSES = [
+    "Not Checked", "Official page", "Official document", "Public record",
+    "Reputable property source", "Not Found after Search", "Conflict — Needs Review",
+]
 GEOGRAPHIC_SCOPE_STATUSES = [
     "Not Checked", "Inside City of Ottawa", "Outside City of Ottawa",
     "Needs Geographic Review",
@@ -1737,6 +1775,24 @@ def normalize_workflow(df):
     for c in INTERNAL_COLUMNS:
         if c not in out.columns:
             out[c] = pd.NA
+
+    # Backward-compatible migration for projects saved before Property Type was
+    # separated from Building Classification. Recover only recognized property-form
+    # labels from the old mixed field, then make Building Classification height-only.
+    legacy_property_type = out["Building Classification"].apply(
+        property_type_from_legacy_classification
+    )
+    migrated_property_type = pd.Series(pd.NA, index=out.index, dtype="object")
+    for idx in out.index:
+        migrated_property_type.loc[idx] = merge_property_type_values(
+            out.at[idx, "Property Type"],
+            legacy_property_type.loc[idx],
+        )
+    out["Property Type"] = migrated_property_type
+    out["Building Classification"] = derive_height_classification_from_storeys(
+        out["Number of Storeys"]
+    )
+
     out["Research Status"] = normalize_choice(out["Research Status"], RESEARCH_STATUSES, "Not Started", STATUS_ALIASES["Research Status"])
     out["Source Status"] = normalize_choice(out["Source Status"], SOURCE_STATUSES, "Not Checked", STATUS_ALIASES["Source Status"])
     out["Verification Status"] = normalize_choice(out["Verification Status"], VERIFICATION_STATUSES, "Not Reviewed", STATUS_ALIASES["Verification Status"])
@@ -1766,6 +1822,26 @@ def normalize_workflow(df):
     out["PO Box Search Status"] = normalize_choice(
         out["PO Box Search Status"],
         PO_BOX_SEARCH_STATUSES,
+        "Not Checked",
+    )
+    out["Apartment Count Search Status"] = normalize_choice(
+        out["Apartment Count Search Status"],
+        COUNT_SEARCH_STATUSES,
+        "Not Checked",
+    )
+    out["Apartment Count Confidence"] = normalize_choice(
+        out["Apartment Count Confidence"],
+        EVIDENCE_CONFIDENCE_LEVELS,
+        "Not Checked",
+    )
+    out["Storey Count Search Status"] = normalize_choice(
+        out["Storey Count Search Status"],
+        COUNT_SEARCH_STATUSES,
+        "Not Checked",
+    )
+    out["Storey Count Confidence"] = normalize_choice(
+        out["Storey Count Confidence"],
+        EVIDENCE_CONFIDENCE_LEVELS,
         "Not Checked",
     )
     out["PO Box Confidence"] = normalize_choice(
@@ -3419,10 +3495,12 @@ def combine_columns(df, columns):
     return out
 
 
-def derive_classification(df):
-    available = [c for c in CLASSIFICATION_SOURCE_COLUMNS if c in df.columns]
+def derive_property_type(df):
+    """Derive property-form labels from legacy source flag columns only."""
+    available = [c for c in PROPERTY_TYPE_SOURCE_COLUMNS if c in df.columns]
     if not available:
         return pd.Series(pd.NA, index=df.index, dtype="object")
+
     def derive(row):
         values = []
         for c in available:
@@ -3430,10 +3508,15 @@ def derive_classification(df):
             n = norm_scalar(value)
             if n in UNRESOLVED or n in NO_VALUES:
                 continue
-            label = CLASSIFICATION_LABELS.get(c, c) if n in YES_VALUES or norm_header(value) == norm_header(c) else str(value).strip()
-            if label and label not in values:
+            label = (
+                PROPERTY_TYPE_LABELS.get(c, c)
+                if n in YES_VALUES or norm_header(value) == norm_header(c)
+                else str(value).strip()
+            )
+            if label and norm_header(label) not in {norm_header(v) for v in values}:
                 values.append(label)
         return " | ".join(values) if values else pd.NA
+
     return df[available].apply(derive, axis=1)
 
 
@@ -3489,45 +3572,63 @@ def normalize_height_classification(value):
     return mapping.get(key, str(value).strip())
 
 
-def _classification_parts(value) -> list[str]:
-    """Split height and source property-form/category labels without losing either."""
+def _property_type_parts(value) -> list[str]:
+    """Split and deduplicate property-form labels without treating them as height bands."""
     if is_unresolved(value):
         return []
     parts = re.split(r"\s*(?:\||;|,)\s*", str(value).strip())
     normalized = []
+    seen = set()
     for part in parts:
-        if not part:
-            continue
-        label = normalize_height_classification(part)
-        if is_unresolved(label):
-            continue
-        clean = str(label).strip()
-        if clean and norm_header(clean) not in {norm_header(v) for v in normalized}:
+        clean = str(part).strip()
+        key = norm_header(clean)
+        if clean and key and key not in seen:
+            seen.add(key)
             normalized.append(clean)
     return normalized
 
 
-def _has_height_classification(value) -> bool:
-    height_keys = {"lowrise", "midrise", "highrise", "hirise"}
-    return any(norm_header(part) in height_keys for part in _classification_parts(value))
-
-
-def merge_classification_values(*values):
-    """Combine height band and source categories, for example Low-rise | Townhome."""
+def merge_property_type_values(*values):
+    """Combine property-form labels only, for example Apartment | Townhome."""
     parts = []
     seen = set()
     for value in values:
-        for part in _classification_parts(value):
+        for part in _property_type_parts(value):
             key = norm_header(part)
             if key and key not in seen:
                 seen.add(key)
                 parts.append(part)
+    return " | ".join(parts) if parts else pd.NA
 
-    height_order = {"lowrise": 0, "midrise": 1, "highrise": 2, "hirise": 2}
-    height = [part for part in parts if norm_header(part) in height_order]
-    other = [part for part in parts if norm_header(part) not in height_order]
-    height.sort(key=lambda part: height_order[norm_header(part)])
-    return " | ".join(height + other) if height or other else pd.NA
+
+def property_type_from_legacy_classification(value):
+    """Recover only recognized property-form labels from older mixed classifications."""
+    recognized = {
+        "apartment": "Apartment",
+        "apartmentbuilding": "Apartment",
+        "apartmentunit": "Apartment",
+        "condominium": "Condominium",
+        "condo": "Condominium",
+        "condominiumrental": "Condominium",
+        "townhome": "Townhome",
+        "townhouse": "Townhome",
+        "duplex": "Duplex",
+        "gardenhome": "Garden Home",
+        "semidetached": "Semi-detached",
+        "semidetachedhome": "Semi-detached",
+        "detached": "Detached",
+        "detachedhome": "Detached",
+        "detachedsinglefamilyhome": "Detached",
+    }
+    recovered = []
+    seen = set()
+    for part in _property_type_parts(value):
+        key = norm_header(part)
+        label = recognized.get(key)
+        if label and norm_header(label) not in seen:
+            seen.add(norm_header(label))
+            recovered.append(label)
+    return " | ".join(recovered) if recovered else pd.NA
 
 
 def ensure_ids(df):
@@ -3591,26 +3692,23 @@ def map_schema(df):
                         row["Imported Column(s)"] = ", ".join(combined)
                         row["Mapping Status"] = "Derived"
 
-    # Preserve both dimensions represented by the Starting Data:
-    # 1) the verified height band derived from storeys; and
-    # 2) source property-form/category labels such as Townhome, Duplex, or Garden Home.
-    # A storey-based result must not erase a valid property-form label.
-    current = resolved(mapped["Building Classification"]).apply(normalize_height_classification)
-    height_derived = derive_height_classification_from_storeys(mapped["Number of Storeys"])
-    legacy_derived = derive_classification(imported)
-
-    combined_classification = pd.Series(pd.NA, index=mapped.index, dtype="object")
+    # Keep property form and height classification as separate dimensions.
+    # Property Type preserves supported labels such as Apartment, Townhome, Duplex,
+    # Garden Home, or Semi-detached. Building Classification is height-only and is
+    # derived exclusively from verified Number of Storeys.
+    supplied_property_type = resolved(mapped["Property Type"])
+    legacy_property_type = derive_property_type(imported)
+    combined_property_type = pd.Series(pd.NA, index=mapped.index, dtype="object")
     for idx in mapped.index:
-        supplied = current.loc[idx]
-        # Do not add a second height label when the imported classification already
-        # contains one; retain the supplied height for human review if it conflicts.
-        derived_height = pd.NA if _has_height_classification(supplied) else height_derived.loc[idx]
-        combined_classification.loc[idx] = merge_classification_values(
-            derived_height,
-            supplied,
-            legacy_derived.loc[idx],
+        combined_property_type.loc[idx] = merge_property_type_values(
+            supplied_property_type.loc[idx],
+            legacy_property_type.loc[idx],
         )
-    mapped["Building Classification"] = combined_classification
+    mapped["Property Type"] = combined_property_type
+
+    mapped["Building Classification"] = derive_height_classification_from_storeys(
+        mapped["Number of Storeys"]
+    )
 
     source = resolved(mapped["Source URL"])
     website = resolved(mapped["Website"])
@@ -3749,8 +3847,10 @@ AI_RESEARCH_DELIVERABLE_COLUMNS = [
     "Secondary Email", "Property Website", "Company Website", "Source URL",
     "Number of Apartments", "Apartment Count Search Status",
     "Apartment Count Source URL", "Apartment Count Evidence",
-    "Apartment Count Confidence", "Number of Storeys", "Rental Rate Range",
-    "Suite Types", "Building Classification", "Amenities", "Parking",
+    "Apartment Count Confidence", "Property Type", "Number of Storeys",
+    "Storey Count Search Status", "Storey Count Source URL",
+    "Storey Count Evidence", "Storey Count Confidence", "Rental Rate Range",
+    "Suite Types", "Amenities", "Parking",
     "Laundry", "Utilities", "Elevator", "Accessibility", "Pet Policy",
     "Smoke-Free",
     "Current Inventory Status", "Inventory Evidence",
@@ -3810,6 +3910,7 @@ def company_source_records_for_research(
         "City",
         "Province",
         "Postal Code",
+        "Property Type",
         "Building Classification",
         "Number of Storeys",
         "Number of Apartments",
@@ -4126,6 +4227,7 @@ def company_source_field_comparison(
         "City",
         "Province",
         "Postal Code",
+        "Property Type",
         "Building Classification",
         "Number of Storeys",
         "Number of Apartments",
@@ -4254,7 +4356,7 @@ def _render_company_source_field_comparison(
                 return f"{compact_value(before, 12)} → {compact_value(now, 12)}"
             if field == "Phone" and before and now and len(before) <= 18 and len(now) <= 18:
                 return f"{before} → {now}"
-            if field == "Building Classification" and before and now and len(before) + len(now) <= 34:
+            if field in {"Property Type", "Building Classification"} and before and now and len(before) + len(now) <= 50:
                 return f"{before} → {now}"
             return "Updated"
 
@@ -4264,6 +4366,7 @@ def _render_company_source_field_comparison(
             ("Phone", "Phone"),
             ("Email", "Primary Email"),
             ("Website", "Website"),
+            ("Property Type", "Property Type"),
             ("Classification", "Building Classification"),
         ]
         matrix_rows = []
@@ -4850,7 +4953,7 @@ Research the company's current official residential listing inventory—not only
 - Do not exclude a current property solely because it is a townhome, duplex, garden home, condominium unit, or another low-density rental form recognized by the project Starting Data.
 - A current detached single-family home must not be silently discarded. Retain it in the CSV, keep Current Inventory Status based on the official inventory evidence, and add `Detached single-family home — Needs Scope Review` to Reviewer Notes unless company-specific instructions clearly resolve its scope.
 - Do not relabel an ordinary detached home as a Garden Home without explicit official or source-file evidence.
-- Record the supported property-form label in Building Classification alongside the height band when both are known, for example `Low-rise | Townhome`, `Low-rise | Duplex`, or `Low-rise | Garden Home`.
+- Record the supported property-form label in `Property Type`, for example `Apartment`, `Townhome`, `Duplex`, `Garden Home`, `Semi-detached`, or a supported combination such as `Apartment | Townhome | Semi-detached`. Never place property-form labels in Building Classification.
 - Inactive, archived, or no-longer-supported listings may still be marked Excluded because of inventory status; townhome, duplex, or garden-home form alone is never an exclusion reason.
 
 ## Non-negotiable City of Ottawa municipal boundary
@@ -4983,58 +5086,217 @@ Only after an official-site property candidate is established may outside eviden
 1. Postal Code recovery — use the exact verified physical address; accept only an exact civic-address match. Never infer from a neighbour, neighbourhood, FSA, or partial code.
 2. PO Box/mailing-address recovery — follow the exhaustive method above and keep it separate from the property address.
 3. Geographic-position verification — exact-address geocoding and municipal-boundary evidence only.
-4. Number of Storeys / Building Classification — search the exact address and reliable planning, development, public-document, or property evidence. Treat source wording such as storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when it clearly describes the building's storey count.
-5. Number of Apartments / Total Unit Count — when the official property page is silent, recover the total only for an already-established exact property/address. Follow this source order: (a) official property page or microsite; (b) official company PDF, brochure, report, filing, acquisition/development page, or other official document; (c) municipal, planning, development-application, assessment, CMHC/government publication, or other reliable public record tied to the exact address; (d) a reputable property/database source with an exact property match. Leave the field blank when the total cannot be confirmed.
+4. Number of Storeys — use the mandatory storey-verification sequence below. The AI researches and evidences the storey count; Datablix derives Building Classification automatically after import from a verified Number of Storeys.
+5. Number of Apartments / Total Unit Count — use the mandatory apartment-count verification sequence below. The value must represent total residential inventory for the exact property scope represented by the row.
 
-### Mandatory apartment-count closure pass
-Before producing the final CSV, inspect EVERY in-scope property row whose Number of Apartments is still blank. Do not finish merely because the official leasing page omitted the total.
+External research for apartment/storey counts is a RECOVERY step for an already-established property, not a discovery method for inventing additional properties.
 
-For each unresolved property:
-1. Search the exact civic address in quotation marks plus several total-count terms: `units`, `apartments`, `suites`, `residential units`, `dwelling units`, `unit count`, and `total units`.
-2. Repeat with the exact building/property name plus the address when a name is known.
-3. Open likely official PDFs/brochures/reports and public/planning/government documents; search-result snippets are not evidence.
-4. If still unresolved, check a reputable property/database source only when it matches the exact civic address/property.
-5. For any external match, the civic number, street name, street type, and directional component (when present) must refer to the same property. Do not accept a match based only on the civic number or on a generic street word such as Road, Street, Avenue, Drive, or Boulevard.
-6. Record the outcome in Apartment Count Search Status, Apartment Count Source URL, Apartment Count Evidence, and Apartment Count Confidence even when Number of Apartments remains blank.
+## Number of Apartments — mandatory verification rule
+Research `Number of Apartments` for EVERY Current or Review property.
+
+`Number of Apartments` means the TOTAL residential inventory associated with the exact property represented by the row. It does NOT mean currently available, vacant, advertised, remaining, or search-result units.
+
+Recognize equivalent total-inventory wording including:
+- apartments;
+- units;
+- residential units;
+- rental units;
+- dwelling units;
+- suites;
+- residences;
+- rental homes;
+- doors;
+- unit count;
+- suite count;
+- number of units;
+- number of suites;
+- total units; and
+- total suites.
+
+### Mandatory apartment-count search sequence
+Do NOT leave Number of Apartments blank after checking only the main property/leasing page.
+
+For every unresolved property, complete this sequence in order:
+1. Exact official property page or official property microsite.
+2. Other exact-property pages on the official company website.
+3. Official company/property PDFs, brochures, reports, filings, acquisition pages, development pages, planning material, or tenant/property documents.
+4. Search the exact civic address in quotation marks together with several total-count terms: `units`, `apartments`, `suites`, `residential units`, `dwelling units`, `unit count`, `number of units`, and `total units`.
+5. Repeat with the exact building/property name plus exact address when a name is known.
+6. Municipal, planning, development-application, assessment, CMHC/government, permit, or comparable reliable public records tied to the exact property.
+7. Only after stronger tiers are silent, use a reputable property/database or industry source that clearly matches the exact civic address/property.
+
+Open the underlying page/document. A search-result snippet, AI summary, generated answer, or search preview alone is NOT evidence.
+
+### Apartment-count property identity and scope test
+Before accepting any apartment/unit total, verify that the number refers to the SAME property scope represented by the CSV row.
+
+Determine whether the candidate number refers to:
+- the exact building;
+- the exact multi-address complex represented by the row;
+- a larger community containing several buildings;
+- a phase within a larger development;
+- the management company's entire portfolio; or
+- only currently available/vacant units.
+
+Accept the number only when its scope matches the row.
+
+Do NOT:
+- use available units, vacant units, units remaining, or availability-search counts;
+- use the number of floor plans, bedroom types, listings, or advertised suites;
+- assign a whole-community or portfolio total to one building unless the source explicitly allocates that total to the row's exact building/property;
+- transfer a count from a nearby, similarly named, or same-street property;
+- infer a count from storeys, windows, balconies, maps, photos, elevators, unit numbers, or visual appearance.
+
+For an external exact-address match, the civic number, street name, street type, and directional component when present must refer to the same property. A matching civic number alone is insufficient.
+
+### Apartment-count source hierarchy and confidence
+Use source quality, exact-property match, context, and scope—not repetition alone—to judge confidence.
+
+- `High`: clear explicit total tied to the exact property from an official property/company source, official document, or strong authoritative public record.
+- `Medium`: clear exact-property total from a reputable secondary property/industry source after stronger tiers were checked and silent.
+- `Low`: usable but weak/ambiguous evidence, unresolved scope concerns, or a material source conflict.
+- Two weak sources agreeing do NOT automatically become High confidence.
 
 Apartment Count Search Status values:
-- `Official page` — confirmed on the official property/company web page.
+- `Official page` — confirmed on the exact official property/company web page.
 - `Official document` — confirmed in an official company PDF, brochure, report, filing, acquisition/development document, or equivalent official document.
 - `Public record` — confirmed in a municipal/planning/government/CMHC or comparable reliable public record tied to the exact property.
 - `Reputable property source` — confirmed only after stronger source tiers were silent, using a reputable exact-address property/database source.
-- `Not Found after Search` — the mandatory recovery pass was completed but no reliable total could be confirmed.
-- `Conflict — Needs Review` — reliable exact-property sources report materially different totals and the conflict cannot be resolved safely.
+- `Not Found after Search` — the mandatory recovery sequence was completed but no reliable total could be confirmed.
+- `Conflict — Needs Review` — reliable exact-property sources report materially different totals and the conflict cannot be safely resolved.
 
-External evidence must never invent a property, override the company's official inventory status, or fill ordinary fields such as amenities, rates, unit types, leasing contacts, or policies. Number of Apartments is the deliberate exception above and must follow its exact-address/source-hierarchy rules.
+### Conflicting apartment counts
+If reliable exact-property sources report different totals:
+1. Do not silently choose the value that appears most often.
+2. Compare source authority, exact-address match, date, context, and property scope.
+3. Prefer one value only when a clearly stronger and more property-specific source reasonably resolves the discrepancy.
+4. Otherwise leave Number of Apartments blank, set Apartment Count Search Status to `Conflict — Needs Review`, record both values and URLs in Apartment Count Evidence and Reviewer Notes, and use Low confidence.
 
-## Number of Apartments / total-unit-count rule
-Treat `Number of Apartments` as the property's TOTAL residential inventory, not the number currently advertised as available.
+### Mandatory apartment-count closure pass
+Before producing the final CSV, revisit EVERY Current or Review row where Number of Apartments is blank.
 
-Accept equivalent source wording such as apartments, units, residential units, rental units, dwelling units, suites, residences, rental homes, doors, unit count, suite count, total units, and total suites when the context clearly describes the whole property. Examples of acceptable forms include `176 units`, `176-unit building`, `Number of units: 176`, `Unit count = 176`, and `the property comprises 176 suites`.
+A completed property must NEVER have both Number of Apartments blank AND Apartment Count Search Status blank.
 
-Do NOT use:
-- available units, vacant units, units remaining, or search-result availability counts;
-- the number of floor plans, bedroom types, listings, or currently advertised suites;
-- a count for an entire multi-building complex as one building's count unless the row itself represents that exact complex or the source allocates the units to that building;
-- a count from a nearby/similarly named property; or
-- an estimate inferred from storeys, windows, photos, maps, elevator count, or visual appearance.
+If no reliable total can be confirmed after the full sequence:
+- leave Number of Apartments blank;
+- set Apartment Count Search Status to `Not Found after Search`;
+- set Apartment Count Confidence to `Low`;
+- use Apartment Count Evidence to briefly state which source tiers/searches were completed; and
+- do not invent or estimate a number merely to avoid a blank.
 
-When searching outside the official property page, use the exact civic address plus terms such as `units`, `apartments`, `suites`, `residential units`, `unit count`, and `dwelling units`. Open the underlying source; a search-result snippet is not evidence. If two reliable sources conflict, preserve both counts and URLs in Apartment Count Evidence and Reviewer Notes, set Apartment Count Search Status to `Conflict — Needs Review`, set Apartment Count Confidence conservatively, and leave Number of Apartments unresolved unless one source is clearly more authoritative and directly property-specific.
+For EVERY populated Number of Apartments, Apartment Count Evidence must make clear what the source says and why the number represents TOTAL residential inventory for the exact property—not availability.
 
-A blank Number of Apartments is acceptable only after the mandatory closure pass has been completed and documented as `Not Found after Search` or `Conflict — Needs Review`. Never leave Apartment Count Search Status blank for a completed property row.
+## Number of Storeys — mandatory evidence-backed verification rule
+Research `Number of Storeys` for EVERY Current or Review property. Do NOT research or return Building Classification; Datablix calculates that field after import.
 
-## Property-form and building-classification rule
-First identify the official property form when the source supports it: apartment building/unit, condominium rental, townhome, duplex, garden home, detached single-family home, or another clearly stated form. Do not infer property form from appearance.
+Number of Storeys means the verified TOTAL building storey count. It does not mean the floor on which a particular apartment/unit is located.
 
-Then research Number of Storeys before deriving the height band.
-Accept reliable source wording such as storey/storeys, story/stories, floor/floors, or level/levels when the wording clearly refers to the building's total storey count. Normalize the confirmed result into Number of Storeys. Do not count a basement, underground parking level, mezzanine, podium/mechanical level, or rooftop structure as a storey unless the source explicitly includes it in the building's stated storey count. Do not treat wording such as “2nd-floor apartment” or “unit on level 4” as evidence that the building has 2 or 4 storeys.
-- Low-rise = 1–4 storeys
-- Mid-rise = 5–11 storeys
-- High-rise = 12+ storeys
+Recognize equivalent wording including `storey/storeys`, `story/stories`, `floor/floors`, and `level/levels` ONLY when context clearly states the TOTAL building height.
 
-When both dimensions are known, keep them in Building Classification separated by ` | `, for example `Low-rise | Townhome`. Property form does not replace the height band, and the height band must not erase the property form.
+Accept examples such as:
+- `8-storey building` → Number of Storeys = 8;
+- `8-story apartment building` → Number of Storeys = 8;
+- `the building consists of 8 floors` → Number of Storeys = 8.
 
-Do not infer height classification from appearance, unit count, elevator presence, building name, “tower,” “luxury,” or marketing terminology. When reliable storey counts conflict across height bands, leave Number of Storeys and the height-band portion of Building Classification unresolved, preserve any independently confirmed property-form label, and document the conflict.
+Reject examples such as:
+- `apartment located on the 8th floor` → NOT proof of 8 storeys;
+- `unit on level 4` → NOT proof of 4 storeys;
+- `Suite 1204` → NOT proof of 12 storeys.
+
+### Mandatory storey-count search sequence
+Do NOT leave Number of Storeys unresolved after checking only the official property/leasing page.
+
+For every unresolved property, complete this sequence in order:
+1. Exact official property page or official property microsite.
+2. Other exact-property pages on the official company website.
+3. Official brochures, PDFs, reports, acquisition/development pages, architectural/planning material, or other official documents.
+4. Search the exact civic address in quotation marks with several height terms: `storeys`, `stories`, `floors`, `levels`, `building height`, and `storey apartment building`.
+5. Repeat with the exact building/property name plus exact address when a name is known.
+6. Municipal planning/development/building/permit or comparable authoritative public records tied to the exact address.
+7. Only after stronger tiers are silent, use a reputable exact-address property/real-estate/database or industry source.
+
+Open the underlying source. Search-result snippets, AI summaries, generated answers, and previews alone are NOT evidence.
+
+### Storey-count property identity and scope test
+Before accepting a storey count, verify that it belongs to the exact building/property represented by the row. Match the full civic address and, where available, the property/building name or official property URL.
+
+For multi-building communities or combined-address properties:
+- do not assign one building's height to another building;
+- do not assign one storey count to an entire mixed-height community when buildings differ;
+- if the row genuinely represents a multi-building complex and no single storey count applies, leave Number of Storeys blank, set Storey Count Search Status to `Conflict — Needs Review`, set Storey Count Confidence to `Low`, and explain the mixed-height condition in Storey Count Evidence and Reviewer Notes;
+- if a source gives a range such as `2–3 storeys` for a mixed community, do not convert the range to a single integer.
+
+### What must NOT be counted or inferred
+Do not independently add basements, underground parking levels, mezzanines, podium/mechanical levels, or rooftop structures. Include one only when the source itself explicitly includes it in the stated storey total.
+
+Never determine Number of Storeys by visually counting photographs, Google Street View, satellite imagery, windows, balconies, entrances, or rooflines. Do not infer storeys from elevators, unit numbers, apartment floor locations, the property name, the word `Tower`, `High-Rise`, `Luxury`, or other marketing language.
+
+### Storey-count source hierarchy and confidence
+Use source quality, exact-property match, context, and scope—not repetition alone—to judge confidence.
+
+- `High`: clear explicit total storey count tied to the exact property from an official property/company source, official document, or strong authoritative public record.
+- `Medium`: clear exact-property total storey count from a reputable secondary property/industry source after stronger tiers were checked and silent.
+- `Low`: weak/ambiguous evidence, unresolved scope concerns, mixed-height scope, or a material source conflict.
+- Two weak sources agreeing do NOT automatically become High confidence.
+
+Storey Count Search Status values:
+- `Official page` — confirmed on the exact official property/company web page.
+- `Official document` — confirmed in an official company PDF, brochure, report, filing, development/planning document, or equivalent official document.
+- `Public record` — confirmed in a municipal/planning/building/government or comparable authoritative public record tied to the exact property.
+- `Reputable property source` — confirmed only after stronger source tiers were silent, using a reputable exact-address property/database source.
+- `Not Found after Search` — the mandatory recovery sequence was completed but no reliable total could be confirmed.
+- `Conflict — Needs Review` — reliable sources materially disagree or the row represents a mixed-height property for which no single storey count safely applies.
+
+### Conflicting storey counts
+If reliable exact-property sources report different storey totals:
+1. Compare exact-address match, source authority, date, context, and whether each source describes the same building/phase.
+2. Do not average the values.
+3. Do not choose the most frequently repeated value merely because it appears more often.
+4. If one clearly stronger exact-property source resolves the discrepancy, use it, set the status/confidence according to that source, and preserve the conflicting source in Storey Count Evidence and Reviewer Notes.
+5. Otherwise leave Number of Storeys blank, set Storey Count Search Status to `Conflict — Needs Review`, set Storey Count Confidence to `Low`, and record both values, contexts, and URLs in Storey Count Evidence.
+
+### Mandatory storey-count closure pass
+Before producing the final CSV, revisit EVERY Current or Review row where Number of Storeys is blank.
+
+A completed property must NEVER have both Number of Storeys blank AND Storey Count Search Status blank/Not Checked.
+
+When no reliable storey count can be verified after the full sequence:
+- leave Number of Storeys blank;
+- set Storey Count Search Status to `Not Found after Search`;
+- set Storey Count Confidence to `Low`;
+- use Storey Count Evidence to briefly state which source tiers/searches were completed;
+- leave Storey Count Source URL blank when no source supports a count; and
+- do not guess.
+
+For EVERY populated Number of Storeys:
+- Storey Count Search Status must identify the source tier;
+- Storey Count Source URL must contain the exact page/document supporting the count;
+- Storey Count Evidence must state the wording/context proving TOTAL building height; and
+- Storey Count Confidence must be High, Medium, or Low according to the rules above.
+
+## Property Type and Datablix-derived Building Classification
+Identify the official residential property form independently and record it ONLY in `Property Type`: Apartment, Condominium, Townhome, Duplex, Garden Home, Semi-detached, Detached, or another clearly stated residential form. If an official community genuinely contains more than one supported form, separate the Property Type labels with ` | `. Do not infer property form from appearance.
+
+Do NOT include `Building Classification` in the research CSV. Datablix derives it automatically from verified Number of Storeys after import:
+- 1–4 storeys → Low-rise
+- 5–11 storeys → Mid-rise
+- 12+ storeys → High-rise
+
+If Number of Storeys is unresolved, Datablix leaves Building Classification unresolved. Property Type never substitutes for the height classification.
+
+## Final count verification pass — mandatory before CSV output
+Before producing the final CSV, audit EVERY Current or Review property row:
+
+1. If Number of Apartments is blank, confirm the mandatory apartment-count recovery sequence was completed and Apartment Count Search Status documents the outcome.
+2. If Number of Storeys is blank, confirm the mandatory storey-count recovery sequence was completed and Storey Count Search Status/Evidence document the outcome.
+3. For every populated Number of Apartments, confirm the number belongs to the exact row/property scope and represents TOTAL residential inventory rather than available/vacant inventory.
+4. For every populated Number of Storeys, confirm Storey Count Source URL/Evidence prove the TOTAL building height rather than an individual unit's floor.
+5. Recheck multi-building communities so a complex-wide unit count or one building's storey count is not incorrectly assigned to another building/row.
+6. Recheck conflicting numbers using source authority, exact-property identity, date, context, and scope. Do not silently select a convenient value.
+7. Do not finish a row merely because the official leasing page omitted these fields. Complete the permitted external recovery hierarchy first.
+8. Accuracy is more important than completeness: a documented unresolved value is preferable to an unsupported or estimated number.
+
+External evidence must never invent a property, override the company's official inventory status, or fill unrelated ordinary fields such as amenities, rates, unit types, leasing contacts, or policies.
 
 ## Source policy
 {source_policy}
@@ -5058,7 +5320,13 @@ Field requirements:
 - Apartment Count Source URL: the exact page/document supporting the total; blank only when no count was confirmed.
 - Apartment Count Evidence: concise exact-property wording/context supporting the count, or a short note describing the completed unsuccessful/conflicting recovery search.
 - Apartment Count Confidence: High, Medium, Low, or Not Checked. Use Not Checked only before the mandatory apartment-count closure pass has been completed. Once the closure pass is complete, do not leave confidence as Not Checked; use High only for clear exact-property evidence from strong sources, Medium for usable but less authoritative exact-property evidence, and Low for unresolved conflicts or weak/ambiguous evidence.
-- Building Classification: preserve the supported height band and property-form/category labels together, separated by ` | ` when more than one applies.
+- Property Type: record only the officially supported residential property form(s), such as Apartment, Condominium, Townhome, Duplex, Garden Home, Semi-detached, or Detached. Use ` | ` only when the same official property/community genuinely contains multiple supported forms.
+- Number of Storeys: verified TOTAL building storey count only; never an individual unit floor or visually inferred count.
+- Storey Count Search Status: required for every completed row; use Official page, Official document, Public record, Reputable property source, Not Found after Search, or Conflict — Needs Review.
+- Storey Count Source URL: the exact page/document supporting the storey count; blank only when no count was confirmed.
+- Storey Count Evidence: concise exact-property wording/context supporting the total building height, or a short note describing the completed unsuccessful/conflicting recovery search.
+- Storey Count Confidence: High, Medium, Low, or Not Checked. Once the mandatory closure pass is complete, do not leave confidence as Not Checked.
+- Building Classification is NOT an AI output column. Datablix derives it automatically from verified Number of Storeys after import.
 - PO Box Search Status: Not Checked, Found, Not Found after Search, Not Applicable, or Needs Review.
 - PO Box Confidence: High, Medium, Low, or Not Checked.
 - Geographic Scope Status: Inside City of Ottawa, Outside City of Ottawa, Needs Geographic Review, or Not Checked.
@@ -5089,7 +5357,7 @@ Field requirements:
 19. Available Now and Available Future are the only statuses that count as active/upcoming rental inventory. Status Unclear requires human review and Rented must never be counted as an active/new rental discovery.
 
 ## Priority or company-specific instructions
-The City of Ottawa municipal boundary, residential property-type scope, mandatory rental-availability validation, physical-vs-mailing address separation, exhaustive PO Box search, exact-address geographic verification, postal-code recovery, and storey/classification rules are project-wide. Company notes may refine priorities but must not broaden the project to nearby municipalities, treat `For Rent` page placement as availability proof, or weaken these rules.
+The City of Ottawa municipal boundary, residential property-type scope, mandatory rental-availability validation, physical-vs-mailing address separation, exhaustive PO Box search, exact-address geographic verification, postal-code recovery, and evidence-backed storey rules are project-wide. Company notes may refine priorities but must not broaden the project to nearby municipalities, treat `For Rent` page placement as availability proof, or weaken these rules.
 
 {priority_notes or 'No additional priorities were provided.'}
 
@@ -5240,14 +5508,16 @@ def consolidate_shared_leasing_rows(df: pd.DataFrame) -> pd.DataFrame:
 
     rows = []
     list_like_fields = {
-        "Amenities", "Suite Types", "Rental Rate Range", "Supporting Evidence",
+        "Amenities", "Suite Types", "Rental Rate Range", "Property Type", "Supporting Evidence",
         "PO Box Evidence", "Geographic Evidence", "Apartment Count Evidence",
-        "Missing Information", "Reviewer Notes",
+        "Storey Count Evidence", "Missing Information", "Reviewer Notes",
     }
     protected_conflict_fields = {
         "Number of Apartments", "Apartment Count Search Status",
         "Apartment Count Source URL", "Apartment Count Confidence",
-        "Number of Storeys", "Postal Code", "Phone",
+        "Number of Storeys", "Storey Count Search Status",
+        "Storey Count Source URL", "Storey Count Confidence",
+        "Postal Code", "Phone",
         "Primary Email", "Secondary Email", "Building Classification", "PO Box",
         "PO Box Postal Code", "Latitude", "Longitude", "Geographic Scope Status",
     }
@@ -5276,6 +5546,8 @@ def consolidate_shared_leasing_rows(df: pd.DataFrame) -> pd.DataFrame:
                 continue
             if len(values) == 1:
                 merged[column] = values[0]
+            elif column == "Property Type":
+                merged[column] = merge_property_type_values(*values)
             elif column in list_like_fields:
                 merged[column] = "; ".join(values)
             elif column == "Current Inventory Status":
@@ -5412,6 +5684,111 @@ def qa_checks(df):
 
     units = pd.to_numeric(out["Number of Apartments"].astype("string").str.replace(",", "", regex=False).str.extract(r"(\d+(?:\.\d+)?)", expand=False), errors="coerce")
     flag(~unresolved_mask(out["Number of Apartments"]) & (units.isna() | units.le(0)), "Warning", "Invalid number of apartments")
+
+    # Evidence-backed count QA. A populated researched count should carry a
+    # source tier, exact supporting URL, evidence, and confidence. A completed
+    # blank count should document that the mandatory closure pass was performed.
+    research_completed = out["Research Status"].astype("string").fillna("").str.strip().eq("Completed")
+
+    apartment_count_present = ~unresolved_mask(out["Number of Apartments"])
+    apartment_status = out["Apartment Count Search Status"].astype("string").fillna("").str.strip()
+    apartment_confidence = out["Apartment Count Confidence"].astype("string").fillna("").str.strip()
+    flag(
+        apartment_count_present & apartment_status.isin({"", "Not Checked"}),
+        "Warning",
+        "Apartment count has no verified search-status/source tier",
+    )
+    flag(
+        apartment_count_present & unresolved_mask(out["Apartment Count Source URL"]),
+        "Warning",
+        "Apartment count has no exact supporting source URL",
+    )
+    flag(
+        apartment_count_present & unresolved_mask(out["Apartment Count Evidence"]),
+        "Warning",
+        "Apartment count has no supporting evidence",
+    )
+    flag(
+        apartment_count_present & apartment_confidence.isin({"", "Not Checked"}),
+        "Warning",
+        "Apartment count confidence has not been assessed",
+    )
+    flag(
+        research_completed
+        & ~apartment_count_present
+        & apartment_status.isin({"", "Not Checked"}),
+        "Warning",
+        "Apartment count closure pass is not documented",
+    )
+    flag(
+        apartment_count_present
+        & apartment_status.isin({"Not Found after Search", "Conflict — Needs Review"}),
+        "Warning",
+        "Apartment count is populated despite an unresolved/conflict search status",
+    )
+    flag(
+        apartment_status.eq("Reputable property source") & apartment_confidence.eq("High"),
+        "Warning",
+        "Apartment count confidence is High although only a secondary property source is recorded",
+    )
+
+    storey_text = out["Number of Storeys"].astype("string").fillna("").str.strip()
+    storey_numbers = storey_text.str.findall(r"\b\d+\b")
+    storey_count_present = ~unresolved_mask(out["Number of Storeys"])
+    storey_status = out["Storey Count Search Status"].astype("string").fillna("").str.strip()
+    storey_confidence = out["Storey Count Confidence"].astype("string").fillna("").str.strip()
+    flag(
+        storey_count_present & storey_numbers.apply(lambda values: len(values) != 1),
+        "Warning",
+        "Number of Storeys should be one verified whole-building count",
+    )
+    flag(
+        storey_count_present & storey_status.isin({"", "Not Checked"}),
+        "Warning",
+        "Storey count has no verified search-status/source tier",
+    )
+    flag(
+        storey_count_present & unresolved_mask(out["Storey Count Source URL"]),
+        "Warning",
+        "Storey count has no exact supporting source URL",
+    )
+    flag(
+        storey_count_present & unresolved_mask(out["Storey Count Evidence"]),
+        "Warning",
+        "Storey count has no supporting evidence",
+    )
+    flag(
+        storey_count_present & storey_confidence.isin({"", "Not Checked"}),
+        "Warning",
+        "Storey count confidence has not been assessed",
+    )
+    flag(
+        research_completed
+        & ~storey_count_present
+        & storey_status.isin({"", "Not Checked"}),
+        "Warning",
+        "Storey count closure pass is not documented",
+    )
+    flag(
+        storey_count_present
+        & storey_status.isin({"Not Found after Search", "Conflict — Needs Review"}),
+        "Warning",
+        "Storey count is populated despite an unresolved/conflict search status",
+    )
+    flag(
+        storey_status.eq("Reputable property source") & storey_confidence.eq("High"),
+        "Warning",
+        "Storey count confidence is High although only a secondary property source is recorded",
+    )
+
+    for count_source_field in ["Apartment Count Source URL", "Storey Count Source URL"]:
+        count_urls = out[count_source_field].astype("string").fillna("").str.lower().str.strip()
+        flag(
+            ~unresolved_mask(out[count_source_field])
+            & ~count_urls.str.startswith(("http://", "https://"), na=False),
+            "Warning",
+            f"Invalid {count_source_field}",
+        )
 
     email = out["Primary Email"].astype("string").fillna("").str.strip()
     flag(~unresolved_mask(out["Primary Email"]) & ~email.str.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", na=False), "Warning", "Invalid email format")
@@ -5781,6 +6158,7 @@ def draft_profiles(df):
         label = str(row["Working Record Label"]).strip() or "Rental property"
         sentences = [f"{label} is located at {row['Street Address']}, {formatted_location(row)}."]
         if not is_unresolved(row["Management/Owner"]): sentences.append(f"The recorded management or owner is {row['Management/Owner']}.")
+        if not is_unresolved(row["Property Type"]): sentences.append(f"The recorded property type is {row['Property Type']}.")
         if not is_unresolved(row["Building Classification"]): sentences.append(f"The current building classification is {row['Building Classification']}.")
         if not is_unresolved(row["Number of Apartments"]): sentences.append(f"The source records approximately {row['Number of Apartments']} apartments.")
         contact = []
@@ -5850,13 +6228,22 @@ CLOSEOUT_FIELD_SPECS = [
         "Rationale": "Studio, one-bedroom, two-bedroom, and other suite configurations help users match housing to household size and space needs.",
     },
     {
-        "Field": "Property Type / Building Classification",
-        "Source Fields": ["Building Classification"],
+        "Field": "Property Type",
+        "Source Fields": ["Property Type"],
         "Mode": "all",
         "Directory Use": "Category + Filter",
         "Decision Value": "High",
         "Base Recommendation": "Priority",
-        "Rationale": "The research includes different housing forms and building heights, so a controlled category helps users distinguish the kind of rental community they are considering.",
+        "Rationale": "Property form helps users distinguish apartments, townhomes, duplexes, garden homes, semi-detached homes, and other supported rental formats.",
+    },
+    {
+        "Field": "Building Classification",
+        "Source Fields": ["Building Classification"],
+        "Mode": "all",
+        "Directory Use": "Filter",
+        "Decision Value": "High",
+        "Base Recommendation": "Priority",
+        "Rationale": "A separate storey-based height band lets users distinguish low-rise, mid-rise, and high-rise buildings without mixing height with property form.",
     },
     {
         "Field": "Rental Availability",
@@ -6894,7 +7281,8 @@ def structure_recommendations():
         ("Identity", "Apartment Building Name", "Where available", "Text", "Recognizable building or property name", "Search"),
         ("Location", "Street Address", "Required", "Text", "Primary building address", "Search"),
         ("Location", "City and Postal Code", "Required", "Formatted location", "City, province code, and postal code", "Search/Filter"),
-        ("Property", "Building Classification", "Where available", "Controlled text", "Building classification", "Filter"),
+        ("Property", "Property Type", "Where available", "Controlled text", "Residential property form", "Category/Filter"),
+        ("Property", "Building Classification", "Where available", "Controlled text", "Height band derived from storeys", "Filter"),
         ("Property", "Storeys", "Where available", "Whole number", "Number of building storeys", "Sort/Filter"),
         ("Property", "Number of Apartments", "Where available", "Whole number", "Apartment count", "Sort/Filter"),
         ("Ownership", "Apartment Building Management/Owner", "Required", "Controlled text", "Responsible organization", "Filter"),
@@ -7035,6 +7423,7 @@ def community_profile_text(row) -> str:
         f"**Address:** {_profile_value(row, 'Street Address')} "
         + (f"— {location}" if not is_unresolved(location) else ""),
         f"**Management / Owner:** {_profile_value(row, 'Management/Owner')}",
+        f"**Property Type:** {_profile_value(row, 'Property Type')}",
         f"**Building Classification:** {_profile_value(row, 'Building Classification')}",
         f"**Storeys:** {_profile_value(row, 'Number of Storeys')}",
         f"**Number of Apartments:** {_profile_value(row, 'Number of Apartments')}",
@@ -7957,6 +8346,7 @@ def _read_source_table_with_detected_header(
         ALIASES["Website"],
         ALIASES["Phone"],
         ALIASES["Number of Apartments"],
+        ALIASES["Property Type"],
         ALIASES["Building Classification"],
     ]
     normalized_groups = [
@@ -8023,6 +8413,7 @@ def _source_sheet_structure_score(
         "website": ALIASES["Website"],
         "phone": ALIASES["Phone"],
         "apartments": ALIASES["Number of Apartments"],
+        "property_type": ALIASES["Property Type"],
         "classification": ALIASES["Building Classification"],
     }
     found = {key: bool(source_columns(sample, aliases)) for key, aliases in groups.items()}
@@ -8678,7 +9069,7 @@ def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.Data
         "Management/Owner", "Street Address", "Address Line 2", "City", "Province",
         "Postal Code", "Country", "Phone", "Primary Email", "Secondary Email",
         "Website", "Number of Apartments", "Number of Storeys",
-        "Building Classification", "Source URL",
+        "Property Type", "Building Classification", "Source URL",
     ]
 
     current_key_map = {}
@@ -13268,13 +13659,12 @@ elif section == "Website scanner":
         "PROPERTY DISCOVERY AND ORDINARY FIELD RESEARCH: use the selected company's official website first, including confirmed official property pages, subdomains, and microsites under the same registrable root domain. Treat them as one company and do not create a company per hostname. "
         "The project includes current official residential listings inside the City of Ottawa municipal boundary, including apartment buildings or units, condominium rentals, townhomes, duplexes, and garden homes. Website inventory presence and rental availability are separate facts. Do not exclude these recognized property forms merely because they are not conventional apartment buildings. Retain current detached single-family homes for human scope review and identify them clearly in Reviewer Notes. Company labels such as Ottawa Region or National Capital Region are not geographic proof. "
         "RENTAL AVAILABILITY: inspect every current property card/listing for an explicit status. Normalize to Available Now, Available Future, Rented, or Status Unclear — Needs Review. A listing can remain on a For Rent page after it is rented; page placement, page existence, a displayed rent, or a working URL is not availability proof. Keep explicit Rented rows when they remain on a current official inventory page so Datablix can reconcile them, but never count them as active/new rental inventory. "
-        "PROPERTY FORM: use official website or source evidence for apartment/condominium, townhome, duplex, garden-home, or detached-home labels. Preserve a supported property-form label together with the height band in Building Classification, separated by |. Do not infer property form from appearance. "
+        "PROPERTY TYPE: use official website or source evidence for Apartment, Condominium, Townhome, Duplex, Garden Home, Semi-detached, Detached, or another clearly stated residential form. Store these labels only in Property Type; use | only when the same property/community genuinely contains multiple supported forms. Never place property-form labels in Building Classification. Do not infer property form from appearance. "
         "PO BOX / MAILING ADDRESS: search official Contact, Corporate, Legal, Privacy, Accessibility, footer, tenant-document, payment, PDF, and form pages. If still missing, Google/search engines may locate reliable underlying evidence. Keep mailing and PO Box information separate from the physical property address and record the source, evidence, and confidence. "
         "GEOGRAPHIC POSITION: after an official-site candidate is identified, Google Maps/geocoding and a City of Ottawa boundary check may verify latitude, longitude, municipality, and scope. Never geocode a PO Box to establish property location. "
         "POSTAL CODE: exact-address external recovery is allowed when the official property page omits it. "
-        "NUMBER OF APARTMENTS: actively recognize total apartments, units, residential/rental/dwelling units, suites, residences, rental homes, doors, unit count, suite count, total units, and total suites. Never use available/vacant listings as the total. When the official property page is silent, use this exact-address hierarchy: official property/company documents first (including PDFs, brochures, reports, filings and development/acquisition pages), then municipal/planning/public records, then a reputable exact-match property/database source. Leave blank if still unconfirmed and record supporting URLs/evidence. "
-        "BUILDING CLASSIFICATION: external exact-address research is allowed for Number of Storeys and the 1–4 / 5–11 / 12+ height band. "
-        "Treat storey/storeys, story/stories, floor/floors, and level/levels as equivalent only when the source clearly states the building total; normalize that evidence to Number of Storeys. Exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless the source explicitly counts them as storeys, and never use an apartment's floor location as the building storey count. "
+        "NUMBER OF APARTMENTS: research total residential inventory for EVERY Current/Review property. Never use available/vacant/advertised units, floor-plan counts, or visual estimates. If the official property page is silent, complete the exact-property recovery hierarchy: other official pages/documents/PDFs first; then exact-address municipal/planning/government/public records; then only a reputable exact-address property/industry source. Verify that the candidate total matches the exact building/complex scope represented by the row; do not transfer community/portfolio totals to a single building. Open underlying sources—snippets/AI summaries are not evidence. Resolve conflicts by source authority, exact-property match, date, context, and scope; otherwise leave blank and mark Conflict — Needs Review. Do not finish a blank count until the mandatory recovery sequence is documented. "
+        "NUMBER OF STOREYS: research the total storey count for EVERY Current/Review property and populate the dedicated Storey Count Search Status, Source URL, Evidence, and Confidence fields. Use exact-property official pages/documents first, then exact-address planning/building/public records, then only reputable exact-address secondary property/industry sources. Accept storey/story/floor/level wording only when it clearly states TOTAL building height; never treat an apartment's floor location, unit number, Tower marketing, elevator, photo, Street View, windows, or balconies as storey evidence. Do not independently count basements, underground parking, mezzanines, podium/mechanical levels, or rooftops unless the source includes them. For mixed-height multi-building communities, leave a single storey value blank unless one count truly applies to the row and use Conflict — Needs Review when no single count safely represents the row. Datablix, not the AI, derives Building Classification after import from verified Number of Storeys. "
         "Search snippets alone are not evidence; open the underlying source. External evidence must not discover extra properties, override official current-inventory evidence, or override explicit official rental-status evidence."
     )
     default_priority_notes = (
@@ -13282,7 +13672,7 @@ elif section == "Website scanner":
         "For every current listing, perform a mandatory rental-status pass. Explicitly capture FOR RENT/AVAILABLE as Available Now, future dated/month availability as Available Future, RENTED/LEASED/NO LONGER AVAILABLE as Rented, and unresolved/conflicting signals as Status Unclear — Needs Review. Preserve the site's wording in Rental Availability Detail and the exact official context/URL in Rental Availability Evidence. A For Rent page can contain Rented listings; never use page placement, a displayed rent, or a live URL as availability proof. "
         "For every candidate, verify the exact physical address and geographic position. Record Latitude, Longitude, Geocoded Municipality, Geographic Scope Status, evidence, and confidence. "
         "Conduct an exhaustive PO Box/mailing-address search across official contact, corporate, legal, privacy, accessibility, footer, PDF, form, rent-payment, and tenant-document pages. If official sources remain incomplete, use Google to locate reliable underlying evidence. Never place a PO Box or corporate mailing address in Street Address. "
-        "Recover missing Postal Code only from an exact civic-address match. For Number of Apartments, search total-count synonyms (units, residential units, rental units, dwelling units, suites, residences, homes, doors, unit count, suite count) and distinguish total inventory from available/vacant listings. If the property page is silent, search official company documents/PDFs first, then municipal/planning/public records, then reputable exact-address property databases; leave blank if unresolved and preserve every supporting URL. Research Number of Storeys by exact address. Accept storey/storeys, story/stories, floor/floors, and level/levels only when they clearly describe the building total, normalize the result to Number of Storeys, and exclude basements, underground parking, mezzanines, podium/mechanical levels, and rooftop structures unless explicitly counted by the source. Do not mistake an apartment's floor location for the building storey count. Derive Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve every secondary source in Supporting Evidence."
+        "Recover missing Postal Code only from an exact civic-address match. For EVERY Current/Review property, perform a mandatory count pass for both Number of Apartments and Number of Storeys. Apartment count must be TOTAL residential inventory for the exact row/property scope—not available/vacant units, floor plans, a community/portfolio total incorrectly applied to one building, or a visual estimate. Storeys must describe TOTAL building height—not a unit's floor, unit number, Tower marketing, elevator, photo, Street View, windows, or balconies. For each unresolved count, search official exact-property pages/documents first, then exact-address planning/municipal/government/public records, then only reputable exact-address secondary property/industry sources; open the underlying evidence and do not rely on snippets or AI summaries. Reconcile conflicts using source authority, exact-property identity, date, context, and scope; otherwise leave the value unresolved and document the conflict. For mixed-height multi-building communities, do not force one storey count. Populate Storey Count Search Status, Source URL, Evidence, and Confidence for every completed storey search. Keep Property Type separate from Building Classification. Do not return Building Classification in the AI CSV; Datablix derives it after import from verified Number of Storeys: Low-rise = 1–4, Mid-rise = 5–11, High-rise = 12+. Preserve secondary-source details in the dedicated count evidence fields and Reviewer Notes."
     )
     default_output_notes = (
         "Return exactly one downloadable CSV file only. Use one row per unique company-leased property record—not one row per URL—and keep the exact requested headings in the exact requested order. Keep the root/corporate URL in Company Website, the exact property page or official subdomain in Property Website, and the strongest evidence page in Source URL. When multiple civic addresses share one property/complex name and the same leasing page/contact/process, keep them together in one combined-address row rather than splitting them. "
@@ -13817,13 +14207,16 @@ elif section == "Review records":
                 edit_presets = {
                     "Required listing information": [
                         "Building Name", "Management/Owner", "Street Address", "Address Line 2",
-                        "City", "Province", "Postal Code", "Building Classification",
+                        "City", "Province", "Postal Code", "Property Type",
+                        "Number of Storeys", "Building Classification",
                         "Number of Apartments", "Rental Rate Range",
                     ],
                     "Contact and source information": [
                         "Phone", "Primary Email", "Secondary Email", "Website", "Source URL",
                         "Apartment Count Search Status", "Apartment Count Source URL",
                         "Apartment Count Evidence", "Apartment Count Confidence",
+                        "Storey Count Search Status", "Storey Count Source URL",
+                        "Storey Count Evidence", "Storey Count Confidence",
                         "Date Researched", "Researcher", "Source Status",
                     ],
                     "Research and verification": [
