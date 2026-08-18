@@ -308,16 +308,13 @@ This could complement the existing research and provide additional evidence for 
 
 Combining direct user feedback with the data-availability patterns observed during the research could provide several business benefits.
 
-| Business Value | Details |
-|---|---|
-| **Better Audience Alignment** | Provides direct insight into which property information the intended 55+ audience considers most important when evaluating rental options |
-| **Clearer Field Prioritization** | Helps distinguish high-priority information from fields that may have lower decision value for the intended audience |
-| **More Useful Property Listings** | Supports decisions about which information should be most visible and useful when users compare properties |
-| **Identification of Information Gaps** | Could reveal important property information that users value but that is not currently collected or consistently available |
-| **More Relevant Search & Filters** | User priorities could provide additional evidence for deciding which well-supported fields may be useful as search, filter, or comparison options |
-| **Better Use of Research Resources** | Helps focus future research effort on information that combines strong user value with practical data availability |
-| **Evidence-Based Decisions** | Adds direct user feedback to the evidence available for future decisions about fields, content, and directory improvements |
-| **Stronger 55+ Relevance** | Provides insight into whether particular housing information becomes more important with age and how the directory can better reflect those priorities |
+| Business Opportunity | Proposed Approach | Potential Business Value |
+|---|---|---|
+| **Understand what matters most to the intended audience** | Ask adults aged 55+ to identify and rank the property details most important to them when considering a place to live | Provides direct evidence of user priorities rather than relying on assumptions |
+| **Understand how housing priorities may change with age** | Compare what participants value today with what they considered important when they were younger | Helps identify property information that may become more relevant at different stages of life |
+| **Identify missing information** | Ask users what they would want to know that is not currently represented in the property information collected | Reveals potential gaps from the user's perspective |
+| **Prioritize fields, content, and filters** | Compare user-ranked priorities with the field availability observed during the research | Helps focus future research and directory features on information that is both useful and realistically maintainable |
+| **Improve the value of research effort** | Give greater attention to information with high user importance and reliable availability | Directs research resources toward information with stronger potential business and user value |
 
 ## Proposed Validation Approach
 
