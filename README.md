@@ -22,6 +22,7 @@ I translated these challenges into **workflow requirements** and began testing a
 | **Tools** | Python · Streamlit · Pandas · Excel/OpenPyXL · Google Sheets · AI-assisted research · Git/GitHub |
 | **BA Methods** | Stakeholder Analysis · AS-IS/TO-BE · Requirements Analysis · User Stories · Acceptance Criteria · Data Quality Rules · KPI Framework |
 | **Scope** | Current residential rental properties physically located within the City of Ottawa |
+| **Business Recommendations** | 55+ user-priority validation, data freshness and verification, and independent Datablix user validation |
 
 ---
 
