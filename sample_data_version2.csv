@@ -1,0 +1,8 @@
+Record ID,Name,Category,Address,City,Province,Postal Code,Phone,Email,Website,Source URL,Date Researched,Verification Status,Reviewer Notes
+DB-001,Maple Grove Residence,Independent Living,101 Cedar Lane,Ottawa,Ontario,K1A 1A1,613-555-0101,hello@maplegrove.example,https://maplegrove.example,https://example.com/maple-grove,2026-07-01,Not Reviewed,
+DB-002,Riverside Court,Retirement Residence,250 River Road,Ottawa,Ontario,K1B 2B2,613-555-0102,contact@riverside.example,https://riverside.example,example.com/riverside,2026-07-03,Needs Review,Source URL requires review
+DB-003,Sunrise Place,Assisted Living,75 Sunrise Avenue,Kanata,Ontario,K2C 3C3,613-555-0103,info@sunrise.example,https://sunrise.example,https://example.com/sunrise,2026-07-05,Verified,Information manually confirmed
+DB-004,Maple Grove Residence,Independent Living,101 Cedar Lane,Ottawa,Ontario,K1A 1A1,613-555-0101,hello@maplegrove.example,https://maplegrove.example,https://example.com/maple-grove-copy,2026-07-06,Not Reviewed,
+DB-005,Lakeside Apartments,Apartment Living,88 Lake Street,Nepean,Ontario,K2E 4D4,613-555-0105,,https://lakeside.example,https://example.com/lakeside,2026-08-15,Pending,
+DB-006,,Senior Apartments,300 Pine Road,Orleans,Ontario,K1C 5E5,613-555-0106,office@pineview.example,https://pineview.example,https://example.com/pine-view,not-a-date,Not Reviewed,
+DB-007,Greenfield Manor,Assisted Living,44 Greenfield Drive,,Ontario,K1G 6F6,613-555-0107,contact@greenfield.example,https://greenfield.example,https://example.com/greenfield,2026-07-08,Needs Review,City needs confirmation

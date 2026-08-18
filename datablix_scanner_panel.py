@@ -1,0 +1,2579 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import io
+import json
+import os
+import re
+import unicodedata
+from dataclasses import asdict
+from datetime import date, datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+import pandas as pd
+import streamlit as st
+from openpyxl.styles import Alignment, Border, Font, Side
+
+from full_site_scanner import ScanOptions, ScanReport, WebsiteScanError, scan_website
+
+
+# Change this key if your existing Datablix working dataframe uses another
+# st.session_state name.
+WORKING_DATA_KEY = "working_df"
+
+SCANNER_BUILD = "Safer Unit-Count Recovery + PDF Evidence 2026.08.07-r8"
+CHECKPOINT_DIRECTORY = Path(
+    os.environ.get("DATABLIX_CHECKPOINT_DIRECTORY", "/tmp/datablix_checkpoints")
+)
+
+COMPANY_SCAN_STATE_STORE = "_db_company_scan_states"
+ACTIVE_SCAN_COMPANY_KEY = "_db_active_scan_company"
+
+
+def _scanner_session_keys() -> list[str]:
+    """Return transient scanner keys that must stay isolated by company."""
+    return [
+        key for key in st.session_state
+        if (
+            key.startswith("website_scan_")
+            or key.startswith("full_scan_")
+            or key == "confirm_clear_full_scan"
+        )
+        and key not in {COMPANY_SCAN_STATE_STORE, ACTIVE_SCAN_COMPANY_KEY}
+    ]
+
+
+def _safe_session_copy(value):
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
+
+
+def _switch_company_scan_state(company_id: str, default_website: str = "") -> None:
+    """Save the previous company's scanner UI and restore the selected company."""
+    company_id = str(company_id or "").strip()
+    if not company_id:
+        return
+
+    previous_company = str(
+        st.session_state.get(ACTIVE_SCAN_COMPANY_KEY, "")
+    ).strip()
+    if previous_company == company_id:
+        return
+
+    store = st.session_state.get(COMPANY_SCAN_STATE_STORE)
+    if not isinstance(store, dict):
+        store = {}
+
+    transient_keys = _scanner_session_keys()
+    if previous_company:
+        store[previous_company] = {
+            key: _safe_session_copy(st.session_state[key])
+            for key in transient_keys
+            if key != "full_scan_submit"  # Button state must never be restored.
+        }
+
+    for key in transient_keys:
+        st.session_state.pop(key, None)
+
+    saved_state = store.get(company_id, {})
+    if isinstance(saved_state, dict):
+        for key, value in saved_state.items():
+            st.session_state[key] = _safe_session_copy(value)
+
+    if not str(st.session_state.get("full_scan_website_url", "")).strip():
+        st.session_state["full_scan_website_url"] = str(default_website or "").strip()
+
+    st.session_state[COMPANY_SCAN_STATE_STORE] = store
+    st.session_state[ACTIVE_SCAN_COMPANY_KEY] = company_id
+
+
+def _normalized_scan_url(value: str) -> str:
+    return str(value or "").strip().lower().rstrip("/")
+
+
+_MULTIPART_PUBLIC_SUFFIXES = {
+    "co.uk", "org.uk", "gov.uk", "ac.uk",
+    "com.au", "net.au", "org.au",
+    "co.nz", "org.nz",
+    "co.jp", "co.in", "com.br", "com.mx",
+}
+
+
+def _parsed_public_url(value: str):
+    """Parse a public URL safely, adding https:// when the scheme is omitted."""
+    raw = str(value or "").strip()
+    if not raw:
+        return urlparse("")
+    if "://" not in raw:
+        raw = "https://" + raw.lstrip("/")
+    try:
+        return urlparse(raw)
+    except ValueError:
+        return urlparse("")
+
+
+def _url_hostname(value: str) -> str:
+    host = (_parsed_public_url(value).hostname or "").lower().strip(".")
+    return host[4:] if host.startswith("www.") else host
+
+
+def _registered_domain(value: str) -> str:
+    """Return a stable organization-domain key for ordinary public websites.
+
+    This intentionally groups company subdomains such as
+    ``wildwood.milyservice.com`` and ``hillpark.milyservice.com`` under
+    ``milyservice.com``. No third-party dependency is required.
+    """
+    host = _url_hostname(value)
+    if not host:
+        return ""
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", host) or host == "localhost":
+        return host
+    labels = [label for label in host.split(".") if label]
+    if len(labels) <= 2:
+        return host
+    last_two = ".".join(labels[-2:])
+    if last_two in _MULTIPART_PUBLIC_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return last_two
+
+
+def _same_organization_domain(first_url: str, second_url: str) -> bool:
+    first = _registered_domain(first_url)
+    second = _registered_domain(second_url)
+    return bool(first and second and first == second)
+
+
+def _is_property_specific_url(candidate_url: str, company_url: str) -> bool:
+    """Identify an official property page or microsite under the company domain."""
+    if not candidate_url or not _same_organization_domain(candidate_url, company_url):
+        return False
+    candidate = _parsed_public_url(candidate_url)
+    company = _parsed_public_url(company_url)
+    candidate_host = _url_hostname(candidate_url)
+    company_host = _url_hostname(company_url)
+    if candidate_host and company_host and candidate_host != company_host:
+        return True
+    path = re.sub(r"/+", "/", candidate.path or "").strip("/").lower()
+    company_path = re.sub(r"/+", "/", company.path or "").strip("/").lower()
+    return bool(path and path != company_path and path not in {"home", "index", "index.html"})
+
+
+def _url_specificity_score(candidate_url: str, company_url: str) -> tuple[int, int, int]:
+    """Prefer a property subdomain/path over a general company homepage."""
+    if not candidate_url:
+        return (-1, -1, -1)
+    parsed = _parsed_public_url(candidate_url)
+    host = _url_hostname(candidate_url)
+    company_host = _url_hostname(company_url)
+    is_related = int(_same_organization_domain(candidate_url, company_url))
+    is_subdomain = int(bool(host and company_host and host != company_host and is_related))
+    path_depth = len([part for part in (parsed.path or "").split("/") if part])
+    return (is_related * 10 + is_subdomain * 20 + path_depth, path_depth, len(candidate_url))
+
+
+def _best_property_url(row: pd.Series, company_url: str) -> str:
+    candidates = []
+    for field in ["website", "source_url"]:
+        value = _clean_value(row.get(field))
+        if value and value not in candidates and _is_property_specific_url(value, company_url):
+            candidates.append(value)
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda value: _url_specificity_score(value, company_url))
+
+
+def _identity_token(value) -> str:
+    text = unicodedata.normalize("NFKD", _clean_value(value))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+_ADDRESS_IDENTITY_ALIASES = {
+    "street": "st", "st": "st",
+    "avenue": "ave", "ave": "ave",
+    "road": "rd", "rd": "rd",
+    "boulevard": "blvd", "blvd": "blvd",
+    "drive": "dr", "dr": "dr",
+    "court": "ct", "ct": "ct",
+    "crescent": "cres", "cres": "cres",
+    "place": "pl", "pl": "pl",
+    "lane": "ln", "ln": "ln",
+    "terrace": "terr", "terr": "terr",
+    "parkway": "pkwy", "pkwy": "pkwy",
+}
+
+
+def _address_identity_token(value) -> str:
+    text = unicodedata.normalize("NFKD", _clean_value(value))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    tokens = [_ADDRESS_IDENTITY_ALIASES.get(token, token) for token in tokens]
+    return "".join(tokens)
+
+
+def _first_resolved(*values):
+    for value in values:
+        if not _is_blank_value(value):
+            return value
+    return ""
+
+
+def _building_identity_from_row(row: pd.Series, company_id: str = "") -> str:
+    """Match physical buildings independently of the page that described them."""
+    company_value = _first_resolved(
+        company_id,
+        row.get("Company ID"),
+        row.get("company_id"),
+        row.get("Management/Owner"),
+        row.get("management_owner"),
+        row.get("assigned_company"),
+    )
+    address_value = _first_resolved(row.get("Street Address"), row.get("street_address"))
+    city_value = _first_resolved(row.get("City"), row.get("city"))
+    name_value = _first_resolved(row.get("Building Name"), row.get("building_name"))
+    source_value = _first_resolved(row.get("Source URL"), row.get("source_url"))
+
+    company = _identity_token(company_value)
+    address = _address_identity_token(address_value)
+    city = _identity_token(city_value)
+    name = _identity_token(name_value)
+    if address:
+        # Scanner approvals are Ottawa-only, so company + normalized civic
+        # address is the stable physical-building identity. Source URL is
+        # deliberately excluded because one building can have several pages.
+        return f"{company}|address|{address}"
+    if name:
+        return f"{company}|name|{name}|{city}"
+    source = _identity_token(source_value)
+    return f"{company}|source|{source}"
+
+
+def _is_blank_value(value) -> bool:
+    if value is None or value is pd.NA:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return not str(value).strip()
+
+
+APARTMENT_PROVENANCE_PLACEHOLDERS = {"", "not checked"}
+
+
+def _apartment_provenance_is_placeholder(value) -> bool:
+    return _clean_value(value).lower() in APARTMENT_PROVENANCE_PLACEHOLDERS
+
+
+def _normalized_apartment_count(value) -> str:
+    text = _clean_value(value).replace(",", "")
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return str(int(float(text)))
+    return text.lower()
+
+
+def _append_unique_text(existing, addition, separator: str = " | ") -> str:
+    current = _clean_value(existing)
+    new_value = _clean_value(addition)
+    if not new_value:
+        return current
+    parts = [part.strip() for part in current.split(separator) if part.strip()] if current else []
+    if new_value not in parts:
+        parts.append(new_value)
+    return separator.join(parts)
+
+
+def _consolidate_approved_candidates(
+    approved: pd.DataFrame,
+    *,
+    company_id: str,
+    company_name: str,
+    company_website: str,
+) -> pd.DataFrame:
+    """Collapse portfolio-page and microsite findings for the same building."""
+    if approved is None or approved.empty:
+        return approved.copy()
+
+    groups: dict[str, list[pd.Series]] = {}
+    for _, row in approved.iterrows():
+        key = _building_identity_from_row(row, company_id)
+        groups.setdefault(key, []).append(row.copy())
+
+    consolidated_rows = []
+    for rows in groups.values():
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                float(pd.to_numeric(row.get("confidence", 0), errors="coerce") or 0),
+                sum(not _is_blank_value(value) for value in row.values),
+            ),
+            reverse=True,
+        )
+        merged = rows[0].copy()
+        all_official_urls: list[str] = []
+        for row in rows:
+            for field in ["website", "source_url"]:
+                value = _clean_value(row.get(field))
+                if value and value not in all_official_urls:
+                    all_official_urls.append(value)
+            for column, value in row.items():
+                if _is_blank_value(merged.get(column)) and not _is_blank_value(value):
+                    merged[column] = value
+
+        property_url = ""
+        for row in rows:
+            candidate = _best_property_url(row, company_website)
+            if candidate and (
+                not property_url
+                or _url_specificity_score(candidate, company_website)
+                > _url_specificity_score(property_url, company_website)
+            ):
+                property_url = candidate
+
+        if property_url:
+            merged["website"] = property_url
+            merged["source_url"] = property_url
+        elif company_website and _is_blank_value(merged.get("website")):
+            merged["website"] = company_website
+
+        evidence = _clean_value(merged.get("evidence"))
+        if len(all_official_urls) > 1:
+            source_note = "Official pages consolidated for one building: " + "; ".join(all_official_urls)
+            merged["evidence"] = _append_unique_text(evidence, source_note)
+        if _is_blank_value(merged.get("management_owner")):
+            merged["management_owner"] = company_name
+        consolidated_rows.append(merged)
+
+    return pd.DataFrame(consolidated_rows).reset_index(drop=True)
+
+
+def _checkpoint_path(website_url: str) -> Path | None:
+    normalized = _normalized_scan_url(website_url)
+    if not normalized:
+        return None
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    return CHECKPOINT_DIRECTORY / f"{digest}.json"
+
+
+def _write_durable_checkpoint(
+    report,
+    website_url: str,
+    scope: str,
+    *,
+    is_final: bool = False,
+) -> Path | None:
+    path = _checkpoint_path(website_url)
+    if path is None:
+        return None
+
+    CHECKPOINT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "scanner_build": SCANNER_BUILD,
+        "website_url": website_url,
+        "scope": scope,
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "is_final": bool(is_final),
+        "report": report.as_dict(),
+    }
+
+    temporary_path = path.with_suffix(".tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, path)
+    return path
+
+
+def _read_durable_checkpoint(website_url: str) -> tuple[ScanReport, dict] | None:
+    path = _checkpoint_path(website_url)
+    if path is None or not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("scanner_build") != SCANNER_BUILD:
+            # Old scan results can contain the exact extraction and inventory
+            # behaviours this build is replacing. Never mix them with new code.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        report_data = payload.get("report", {})
+        report = ScanReport.from_dict(report_data)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+    if not report.pages:
+        return None
+    return report, payload
+
+
+def _delete_durable_checkpoint(website_url: str) -> None:
+    path = _checkpoint_path(website_url)
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+DIRECTORY_FIELD_MAP = {
+    "company_id": "Company ID",
+    "scan_id": "Scan ID",
+    "building_name": "Building Name",
+    "management_owner": "Management/Owner",
+    "street_address": "Street Address",
+    "address_line_2": "Address Line 2",
+    "city": "City",
+    "province": "Province",
+    "postal_code": "Postal Code",
+    "country": "Country",
+    "phone": "Phone",
+    "primary_email": "Primary Email",
+    "website": "Website",
+    "number_of_apartments": "Number of Apartments",
+    "apartment_count_search_status": "Apartment Count Search Status",
+    "apartment_count_source_url": "Apartment Count Source URL",
+    "apartment_count_evidence": "Apartment Count Evidence",
+    "apartment_count_confidence": "Apartment Count Confidence",
+    "number_of_storeys": "Number of Storeys",
+    "amenities": "Amenities",
+    "building_classification": "Building Classification",
+    "inventory_status": "Current Inventory Status",
+    "inventory_evidence": "Inventory Evidence",
+    "found_on_city_page": "Found on City/Portfolio Page",
+    "found_on_html_sitemap": "Found on HTML Sitemap",
+    "found_on_xml_sitemap": "Found on XML Sitemap",
+    "exclusion_reason": "Inventory Exclusion Reason",
+    "source_url": "Source URL",
+    "source_page_title": "Source Page Title",
+    "extraction_method": "Extraction Method",
+    "confidence": "Detection Confidence",
+    "evidence": "Supporting Evidence",
+    "ottawa_scope_status": "Ottawa Scope Status",
+    "ottawa_scope_reason": "Ottawa Scope Reason",
+    "scan_start_url": "Scan Start URL",
+}
+
+
+OTTAWA_SCOPE_CONFIRMED = "Confirmed Ottawa"
+OTTAWA_SCOPE_LIKELY = "Likely Ottawa — Review"
+OTTAWA_SCOPE_UNCLEAR = "Ottawa Scope Unclear"
+OTTAWA_SCOPE_OUTSIDE = "Outside Ottawa"
+
+OTTAWA_APPROVABLE_STATUSES = {
+    OTTAWA_SCOPE_CONFIRMED,
+    OTTAWA_SCOPE_LIKELY,
+}
+
+INVENTORY_STATUS_CURRENT = "Current inventory"
+INVENTORY_STATUS_REVIEW = "Review inventory"
+INVENTORY_STATUS_EXCLUDED = "Excluded — not in current inventory"
+
+
+def _inventory_eligible_mask(frame: pd.DataFrame) -> pd.Series:
+    if "inventory_status" not in frame.columns:
+        return pd.Series(True, index=frame.index)
+    return ~frame["inventory_status"].fillna(INVENTORY_STATUS_REVIEW).eq(
+        INVENTORY_STATUS_EXCLUDED
+    )
+
+CANADIAN_PROVINCE_ALIASES = {
+    "alberta": "AB", "ab": "AB",
+    "british columbia": "BC", "bc": "BC",
+    "manitoba": "MB", "mb": "MB",
+    "new brunswick": "NB", "nb": "NB",
+    "newfoundland and labrador": "NL", "newfoundland": "NL",
+    "labrador": "NL", "nl": "NL",
+    "nova scotia": "NS", "ns": "NS",
+    "northwest territories": "NT", "nt": "NT",
+    "nunavut": "NU", "nu": "NU",
+    "ontario": "ON", "on": "ON",
+    "prince edward island": "PE", "pei": "PE", "pe": "PE",
+    "quebec": "QC", "québec": "QC", "qc": "QC",
+    "saskatchewan": "SK", "sk": "SK",
+    "yukon": "YT", "yt": "YT",
+}
+
+# Locality labels that may legitimately appear on addresses within the current
+# City of Ottawa municipal boundary. They are geographic evidence, not a general
+# Ontario whitelist.
+OTTAWA_LOCALITIES = {
+    "ottawa", "kanata", "nepean", "orleans", "gloucester", "barrhaven",
+    "stittsville", "vanier", "rockcliffe park", "manotick", "carp",
+    "cumberland", "greely", "metcalfe", "osgoode", "richmond",
+    "north gower", "navan", "vars", "constance bay", "dunrobin",
+    "fitzroy harbour", "munster", "sarsfield", "kinburn",
+}
+
+# Known Ontario municipality labels are used only to identify clear non-Ottawa
+# records when the page explicitly names another municipality.
+KNOWN_NON_OTTAWA_ONTARIO_MUNICIPALITIES = {
+    "ajax", "alexandria", "alliston", "almonte", "amherstburg", "ancaster",
+    "arnprior", "aurora", "aylmer", "bancroft", "barrie", "beamsville",
+    "belle river", "belleville", "blind river", "bolton", "bracebridge",
+    "bradford", "brampton", "brantford", "brighton", "brockville",
+    "burlington", "caledon", "caledonia", "cambridge", "campbellford",
+    "carleton place", "casselman", "chatham", "chelmsford", "clarington",
+    "cobourg", "cochrane", "collingwood", "cornwall", "deep river", "delhi",
+    "dryden", "dunnville", "east gwillimbury", "elliot lake", "elmira",
+    "elora", "embrun", "erin", "espanola", "essex", "etobicoke", "fergus",
+    "fort erie", "fort frances", "gananoque", "georgetown", "geraldton",
+    "goderich", "grand bend", "gravenhurst", "greater napanee",
+    "greater sudbury", "grimsby", "guelph", "haliburton", "hamilton",
+    "hanover", "harriston", "hawkesbury", "hearst", "huntsville",
+    "ingersoll", "iroquois falls", "kapuskasing", "kawartha lakes",
+    "kemptville", "kenora", "keswick", "kincardine", "kingston",
+    "kirkland lake", "kitchener", "lasalle", "leamington", "lindsay",
+    "listowel", "london", "markham", "midland", "milton", "mississauga",
+    "mitchell", "napanee", "new hamburg", "new liskeard", "newmarket",
+    "niagara falls", "niagara on the lake", "north bay", "north york",
+    "oakville", "orangeville", "orillia", "oshawa", "owen sound", "paris",
+    "parry sound", "pembroke", "perth", "petawawa", "peterborough",
+    "petrolia", "pickering", "port colborne", "port elgin", "port hope",
+    "prescott", "prince edward county", "renfrew", "richmond hill",
+    "rockland", "sarnia", "sault ste marie", "scarborough", "simcoe",
+    "smiths falls", "south porcupine", "st catharines", "st marys",
+    "st thomas", "stratford", "strathroy", "sturgeon falls", "sudbury",
+    "tecumseh", "temiskaming shores", "thunder bay", "tillsonburg",
+    "timmins", "toronto", "trenton", "uxbridge", "vaughan", "walkerton",
+    "wallaceburg", "waterdown", "waterloo", "welland", "whitby", "wiarton",
+    "windsor", "wingham", "woodstock",
+}
+
+# K1 and K2 are strong urban-Ottawa postal evidence. Rural Ottawa can use K0A,
+# so K0A is deliberately not used for automatic approval because it also covers
+# municipalities outside the City of Ottawa.
+OTTAWA_URBAN_POSTAL_PREFIXES = {"K1", "K2"}
+
+CANADIAN_POSTAL_PATTERN = re.compile(
+    r"^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_location_text(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(
+        character for character in text
+        if not unicodedata.combining(character)
+    )
+    text = text.lower().replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _normalized_postal_code(value) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", _clean_value(value)).upper()
+
+
+def _province_code(value) -> str:
+    return CANADIAN_PROVINCE_ALIASES.get(_normalize_location_text(value), "")
+
+
+def _country_is_canada(value) -> bool:
+    normalized = _normalize_location_text(value)
+    return not normalized or normalized in {"canada", "ca", "can"}
+
+
+def _classify_ottawa_scope(row: pd.Series) -> tuple[str, str]:
+    """Classify a scanner candidate against the City of Ottawa project boundary.
+
+    Province-level or Ontario postal evidence is never enough on its own. A record
+    must contain Ottawa-specific locality/postal/source evidence before it can be
+    approved for this project.
+    """
+    province_text = _clean_value(row.get("province"))
+    province_code = _province_code(province_text)
+    city = _normalize_location_text(row.get("city"))
+    city_display = _clean_value(row.get("city"))
+    street = _clean_value(row.get("street_address"))
+    postal = _normalized_postal_code(row.get("postal_code"))
+    postal_display = _clean_value(row.get("postal_code"))
+    country = _clean_value(row.get("country"))
+
+    source_context = " ".join(
+        _normalize_location_text(row.get(field))
+        for field in ["source_page_title", "evidence", "source_url"]
+    )
+    source_mentions_ottawa = bool(re.search(r"\bottawa\b", source_context))
+    postal_is_canadian = bool(CANADIAN_POSTAL_PATTERN.fullmatch(postal))
+    postal_is_urban_ottawa = (
+        postal_is_canadian
+        and len(postal) >= 2
+        and postal[:2] in OTTAWA_URBAN_POSTAL_PREFIXES
+    )
+    city_is_ottawa = city in OTTAWA_LOCALITIES
+    city_is_known_non_ottawa = city in KNOWN_NON_OTTAWA_ONTARIO_MUNICIPALITIES
+
+    if not _country_is_canada(country):
+        return OTTAWA_SCOPE_OUTSIDE, f"Country is recorded as {country}."
+
+    if province_code and province_code != "ON":
+        return OTTAWA_SCOPE_OUTSIDE, f"Province is recorded as {province_text}."
+
+    # A recognized Ottawa locality is the strongest address-level evidence.
+    if city_is_ottawa:
+        details = [f"city/locality is {city_display or city}"]
+        if province_code == "ON":
+            details.append("province is Ontario")
+        if street:
+            details.append("a street address is present")
+        if postal_is_urban_ottawa:
+            details.append(f"postal code {postal_display} follows an Ottawa K1/K2 pattern")
+        return OTTAWA_SCOPE_CONFIRMED, "; ".join(details) + "."
+
+    # An explicit different Ontario municipality is outside the project unless
+    # the postal data itself conflicts, in which case human review is safer.
+    if city_is_known_non_ottawa:
+        if postal_is_urban_ottawa:
+            return (
+                OTTAWA_SCOPE_UNCLEAR,
+                f"City is recorded as {city_display}, but postal code {postal_display} looks like urban Ottawa; resolve the conflict.",
+            )
+        return OTTAWA_SCOPE_OUTSIDE, f"City is recorded as {city_display}, outside the City of Ottawa."
+
+    # K1/K2 without a conflicting municipality is strong Ottawa evidence, but we
+    # retain a review step when the city/locality was not captured from the page.
+    if postal_is_urban_ottawa:
+        return (
+            OTTAWA_SCOPE_LIKELY,
+            f"Postal code {postal_display} follows an urban Ottawa K1/K2 pattern; confirm the City of Ottawa address before final verification.",
+        )
+
+    if source_mentions_ottawa and street:
+        return (
+            OTTAWA_SCOPE_LIKELY,
+            "The source explicitly mentions Ottawa and a street address is present; confirm the municipal address before final verification.",
+        )
+
+    if source_mentions_ottawa:
+        return (
+            OTTAWA_SCOPE_UNCLEAR,
+            "The source mentions Ottawa, but the extracted address is not complete enough to confirm municipal scope.",
+        )
+
+    if street or city or postal or province_text:
+        return (
+            OTTAWA_SCOPE_UNCLEAR,
+            "The available location details do not yet confirm that the property is within the City of Ottawa municipal boundary.",
+        )
+
+    return (
+        OTTAWA_SCOPE_UNCLEAR,
+        "No Ottawa-specific city/locality, K1/K2 postal code, or source evidence was detected.",
+    )
+
+
+def _apply_ottawa_scope(frame: pd.DataFrame) -> pd.DataFrame:
+    scoped = frame.copy()
+    if scoped.empty:
+        scoped["ottawa_scope_status"] = pd.Series(dtype="object")
+        scoped["ottawa_scope_reason"] = pd.Series(dtype="object")
+        return scoped
+
+    classifications = scoped.apply(_classify_ottawa_scope, axis=1)
+    scoped["ottawa_scope_status"] = classifications.map(lambda result: result[0])
+    scoped["ottawa_scope_reason"] = classifications.map(lambda result: result[1])
+
+    if "approved" not in scoped.columns:
+        scoped["approved"] = False
+
+    outside_or_unclear = scoped["ottawa_scope_status"].isin(
+        {OTTAWA_SCOPE_OUTSIDE, OTTAWA_SCOPE_UNCLEAR}
+    )
+    scoped.loc[outside_or_unclear, "approved"] = False
+    return scoped
+
+
+def _ottawa_eligible_mask(frame: pd.DataFrame) -> pd.Series:
+    scoped = (
+        frame
+        if "ottawa_scope_status" in frame.columns
+        else _apply_ottawa_scope(frame)
+    )
+    return scoped["ottawa_scope_status"].isin(OTTAWA_APPROVABLE_STATUSES)
+
+
+def _apply_candidate_status(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep scanner approval distinct from final Datablix verification."""
+    out = frame.copy()
+    if "approved" not in out.columns:
+        out["approved"] = False
+    requested = out["approved"].fillna(False).astype(bool)
+    location_ok = _ottawa_eligible_mask(out)
+    inventory_ok = _inventory_eligible_mask(out)
+    eligible = location_ok & inventory_ok
+
+    status = pd.Series("Needs candidate review", index=out.index, dtype="object")
+    status.loc[~inventory_ok] = "Excluded from current inventory"
+    status.loc[inventory_ok & ~location_ok] = "Approval blocked — location"
+    status.loc[requested & eligible] = "Approved for project"
+    out["candidate_status"] = status
+    return out
+
+
+
+def _records_dataframe(report) -> pd.DataFrame:
+    frame = pd.DataFrame([asdict(record) for record in report.records])
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "approved", "building_name", "management_owner",
+                "street_address",
+                "address_line_2", "city", "province", "postal_code", "country",
+                "phone", "primary_email", "website", "number_of_apartments",
+                "apartment_count_search_status", "apartment_count_source_url",
+                "apartment_count_evidence", "apartment_count_confidence",
+                "number_of_storeys", "amenities", "building_classification",
+                "inventory_status", "inventory_evidence",
+                "found_on_city_page", "found_on_html_sitemap",
+                "found_on_xml_sitemap", "exclusion_reason",
+                "source_url", "source_page_title",
+                "extraction_method", "confidence",
+                "review_status", "candidate_status", "evidence",
+                "ottawa_scope_status", "ottawa_scope_reason",
+            ]
+        )
+    frame["confidence"] = pd.to_numeric(frame["confidence"], errors="coerce").fillna(0.0)
+    return _apply_height_classification(_apply_ottawa_scope(frame))
+
+
+def _pages_dataframe(report) -> pd.DataFrame:
+    return pd.DataFrame([asdict(page) for page in report.pages])
+
+
+SCAN_LISTING_FIELDS = [
+    ("Apartment Building Name", "building_name"),
+    ("Street Address", "street_address"),
+    ("City and Postal Code", None),
+    ("Building Classification", "building_classification"),
+    ("Storeys", "number_of_storeys"),
+    ("Number of Apartments", "number_of_apartments"),
+    ("Apartment Building Management/Owner", "management_owner"),
+    ("Phone Number", "phone"),
+    ("Email Contact", "primary_email"),
+    ("WebSite", "website"),
+]
+
+SCAN_ADDITIONAL_FIELDS = [
+    ("Address Line 2", "address_line_2"),
+    ("Apartment Count Search Status", "apartment_count_search_status"),
+    ("Apartment Count Source URL", "apartment_count_source_url"),
+    ("Apartment Count Evidence", "apartment_count_evidence"),
+    ("Apartment Count Confidence", "apartment_count_confidence"),
+    ("Amenities", "amenities"),
+    ("Current Inventory Status", "inventory_status"),
+    ("Inventory Evidence", "inventory_evidence"),
+    ("Found on City/Portfolio Page", "found_on_city_page"),
+    ("Found on HTML Sitemap", "found_on_html_sitemap"),
+    ("Found on XML Sitemap", "found_on_xml_sitemap"),
+    ("Inventory Exclusion Reason", "exclusion_reason"),
+    ("Country", "country"),
+    ("Official Source URL", "source_url"),
+    ("Source Page Title", "source_page_title"),
+    ("Extraction Method", "extraction_method"),
+    ("Confidence", "confidence"),
+    ("Ottawa Scope Status", "ottawa_scope_status"),
+    ("Ottawa Scope Reason", "ottawa_scope_reason"),
+    ("Evidence", "evidence"),
+]
+
+
+def _clean_value(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+BUILDING_CLASSIFICATION_BANDS = (
+    ("Low-rise", 1, 4),
+    ("Mid-rise", 5, 11),
+    ("High-rise", 12, None),
+)
+
+
+def _classification_for_storey_count(storeys: int) -> str:
+    if 1 <= storeys <= 4:
+        return "Low-rise"
+    if 5 <= storeys <= 11:
+        return "Mid-rise"
+    if storeys >= 12:
+        return "High-rise"
+    return ""
+
+
+STOREY_TERM_PATTERN = r"(?:storey|storeys|story|stories|floor|floors|level|levels)"
+
+
+def _storey_counts_from_evidence(value) -> list[int]:
+    """Extract building-height counts without mistaking a unit's floor for storeys.
+
+    Accepted wording includes Canadian/US variants such as ``6 storeys``,
+    ``6 stories``, ``6 floors``, ``6 levels``, and hyphenated forms such as
+    ``6-storey``. A plain numeric value is also accepted because the scanner's
+    ``number_of_storeys`` field may already contain a normalized count.
+
+    Wording that only describes where a suite/unit is located, such as
+    ``apartment on the 2nd floor`` or ``suite located on level 3``, is not building
+    height evidence and intentionally returns no count.
+    """
+    raw = _clean_value(value)
+    if not raw:
+        return []
+
+    text = re.sub(r"\s+", " ", raw).strip().lower()
+
+    # A normalized numeric field is safe to treat as a building storey count.
+    if re.fullmatch(r"\d{1,3}", text):
+        number = int(text)
+        return [number] if 1 <= number <= 200 else []
+
+    # Common unit-location wording must not become building height.
+    unit_location_patterns = [
+        rf"\b(?:apartment|apt|suite|unit)\b.{{0,35}}\b(?:on|at|located on|located at)\b.{{0,12}}\b\d{{1,3}}(?:st|nd|rd|th)?\s+{STOREY_TERM_PATTERN}\b",
+        rf"\b(?:apartment|apt|suite|unit)\b.{{0,35}}\b(?:on|at|located on|located at)\b.{{0,12}}\b{STOREY_TERM_PATTERN}\s*#?\s*\d{{1,3}}\b",
+        rf"\b(?:on|at|located on|located at)\s+(?:the\s+)?\d{{1,3}}(?:st|nd|rd|th)?\s+{STOREY_TERM_PATTERN}\b",
+        rf"\b(?:on|at|located on|located at)\s+(?:the\s+)?{STOREY_TERM_PATTERN}\s*#?\s*\d{{1,3}}\b",
+        rf"\b{STOREY_TERM_PATTERN}\s*#?\s*\d{{1,3}}\b.{{0,25}}\b(?:apartment|apt|suite|unit)\b",
+    ]
+    if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in unit_location_patterns):
+        # If the same text separately states an explicit building-height phrase,
+        # keep evaluating instead of rejecting the whole value.
+        explicit_building = re.search(
+            rf"(?:\b(?:building|property|tower|structure)\b.{{0,30}}\b\d{{1,3}}(?:[- ]?{STOREY_TERM_PATTERN})\b"
+            rf"|\b\d{{1,3}}(?:[- ]?{STOREY_TERM_PATTERN})\b.{{0,30}}\b(?:building|property|tower|structure)\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not explicit_building:
+            return []
+
+    counts: list[int] = []
+
+    # Prefer numbers explicitly tied to storey/floor/story/level terminology.
+    explicit_patterns = [
+        rf"\b(\d{{1,3}})\s*[- ]?{STOREY_TERM_PATTERN}\b",
+        rf"\b{STOREY_TERM_PATTERN}\s*[:#-]?\s*(\d{{1,3}})\b",
+    ]
+    for pattern in explicit_patterns:
+        for token in re.findall(pattern, text, flags=re.IGNORECASE):
+            number = int(token)
+            if 1 <= number <= 200 and number not in counts:
+                counts.append(number)
+
+    if counts:
+        return counts
+
+    # Preserve the previous conflict-review behaviour for already-normalized
+    # alternatives such as ``14 / 15`` or ``14 or 15``. Do not apply this fallback
+    # to arbitrary prose because unrelated numbers could be dates, unit numbers, etc.
+    if re.fullmatch(r"\s*\d{1,3}(?:\s*(?:/|or|to|-)\s*\d{1,3})+\s*", text):
+        for token in re.findall(r"\b\d{1,3}\b", text):
+            number = int(token)
+            if 1 <= number <= 200 and number not in counts:
+                counts.append(number)
+
+    return counts
+
+
+def _classification_from_storey_evidence(value) -> str:
+    """Derive classification only from clear building storey/floor evidence.
+
+    Multiple reported counts are allowed only when all counts remain in the same
+    classification band, e.g. 14 vs 15 -> High-rise. Evidence crossing a band
+    boundary, e.g. 11 vs 12, intentionally returns blank for human follow-up.
+    """
+    counts = _storey_counts_from_evidence(value)
+    if not counts:
+        return ""
+    bands = {_classification_for_storey_count(number) for number in counts}
+    bands.discard("")
+    return next(iter(bands)) if len(bands) == 1 else ""
+
+
+def _apply_height_classification(frame: pd.DataFrame) -> pd.DataFrame:
+    """Enforce the project's storey-based Low/Mid/High-rise classification."""
+    out = frame.copy()
+    if "number_of_storeys" not in out.columns:
+        out["number_of_storeys"] = ""
+    if "building_classification" not in out.columns:
+        out["building_classification"] = ""
+
+    # The project classification must be evidence-based. Existing marketing or
+    # legacy labels are not accepted without storey evidence.
+    out["building_classification"] = out["number_of_storeys"].apply(
+        _classification_from_storey_evidence
+    )
+    return out
+
+
+def _scan_location(row: pd.Series) -> str:
+    city = _clean_value(row.get("city"))
+    province = _clean_value(row.get("province"))
+    postal = _clean_value(row.get("postal_code"))
+    tail = " ".join(value for value in [province, postal] if value)
+    return f"{city}, {tail}" if city and tail else city or tail
+
+
+def _approved_listing_table(frame: pd.DataFrame) -> pd.DataFrame:
+    output = pd.DataFrame(index=frame.index)
+    for label, source_field in SCAN_LISTING_FIELDS:
+        output[label] = (
+            frame.apply(_scan_location, axis=1)
+            if source_field is None
+            else frame.get(source_field, "")
+        )
+    for label, source_field in SCAN_ADDITIONAL_FIELDS:
+        output[label] = frame.get(source_field, "")
+    return output.reset_index(drop=True)
+
+
+def _write_approved_listing_blocks(ws, approved: pd.DataFrame) -> None:
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ws.merge_cells("A1:B1")
+    ws["A1"] = "Create a listing for each Apartment Building as per sample below"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].alignment = Alignment(wrap_text=True)
+
+    row_number = 3
+    required_fields = [label for label, _ in SCAN_LISTING_FIELDS]
+    for listing_number, (_, row) in enumerate(approved.iterrows(), start=1):
+        name = _clean_value(row.get("Apartment Building Name")) or f"Listing {listing_number}"
+        ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=2)
+        ws.cell(
+            row=row_number,
+            column=1,
+            value=f"Apartment Building {listing_number}: {name}",
+        ).font = Font(bold=True, size=12)
+        row_number += 1
+
+        for field_name, raw_value in row.items():
+            value = _clean_value(raw_value)
+            if field_name not in required_fields and not value:
+                continue
+            field_cell = ws.cell(row=row_number, column=1, value=field_name)
+            value_cell = ws.cell(row=row_number, column=2, value=value)
+            field_cell.font = Font(bold=True)
+            field_cell.border = border
+            value_cell.border = border
+            field_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            value_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            if field_name in {"WebSite", "Official Source URL"} and value.startswith(("http://", "https://")):
+                value_cell.hyperlink = value
+                value_cell.style = "Hyperlink"
+            elif field_name == "Email Contact" and value:
+                value_cell.hyperlink = f"mailto:{value}"
+                value_cell.style = "Hyperlink"
+            row_number += 1
+        row_number += 2
+
+    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 75
+    ws.freeze_panes = "A3"
+    ws.sheet_view.showGridLines = False
+
+
+def _excel_bytes(records_df: pd.DataFrame, pages_df: pd.DataFrame, report) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        approved_mask = records_df.get(
+            "approved",
+            pd.Series(False, index=records_df.index),
+        ).fillna(False)
+        approved = records_df.loc[
+            approved_mask & _ottawa_eligible_mask(records_df)
+        ].copy()
+        approved_listings = _approved_listing_table(approved)
+        ws = writer.book.create_sheet("Approved Listings")
+        _write_approved_listing_blocks(ws, approved_listings)
+        records_df.to_excel(writer, sheet_name="Record Candidates", index=False)
+        records_df.loc[
+            records_df["ottawa_scope_status"].eq(OTTAWA_SCOPE_OUTSIDE)
+        ].to_excel(writer, sheet_name="Outside Ottawa", index=False)
+        records_df.loc[
+            records_df["ottawa_scope_status"].eq(OTTAWA_SCOPE_UNCLEAR)
+        ].to_excel(writer, sheet_name="Ottawa Scope Review", index=False)
+        if "inventory_status" in records_df.columns:
+            records_df.loc[
+                records_df["inventory_status"].eq(INVENTORY_STATUS_EXCLUDED)
+            ].to_excel(writer, sheet_name="Excluded Legacy URLs", index=False)
+        pages_df.to_excel(writer, sheet_name="Pages Scanned", index=False)
+        pd.DataFrame({"Blocked URL": report.blocked_urls}).to_excel(
+            writer,
+            sheet_name="Blocked",
+            index=False,
+        )
+        pd.DataFrame({"Error": report.errors}).to_excel(
+            writer,
+            sheet_name="Errors",
+            index=False,
+        )
+    return output.getvalue()
+
+
+
+SCAN_HISTORY_COLUMNS = [
+    "Scan ID", "Company ID", "Management/Owner", "Start URL", "Coverage",
+    "Started At UTC", "Completed At UTC", "Completion Reason",
+    "Pages Scanned", "Candidates Detected", "Candidates Approved",
+    "Records Added", "Duplicates Skipped", "Blocked URLs", "Scan Errors",
+    "Recovered Partial", "Last Updated UTC",
+]
+
+
+def _scan_id_for_report(report, company_id: str, website_url: str) -> str:
+    existing = str(st.session_state.get("website_scan_id", "")).strip()
+    if existing:
+        return existing
+
+    started = str(getattr(report, "started_at_utc", "") or "").strip()
+    source = "|".join([
+        str(company_id or "").strip(),
+        _normalized_scan_url(website_url),
+        started,
+    ])
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:8].upper()
+    compact_time = re.sub(r"[^0-9]", "", started)[:14]
+    if not compact_time:
+        compact_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    scan_id = f"SCAN-{compact_time}-{digest}"
+    st.session_state["website_scan_id"] = scan_id
+    return scan_id
+
+
+def _attach_scan_context(
+    frame: pd.DataFrame,
+    *,
+    scan_id: str,
+    company_id: str,
+    company_name: str,
+    website_url: str,
+) -> pd.DataFrame:
+    contextual = frame.copy()
+    contextual["scan_id"] = scan_id
+    contextual["company_id"] = str(company_id or "").strip()
+    contextual["assigned_company"] = str(company_name or "").strip()
+    contextual["scan_start_url"] = str(website_url or "").strip()
+
+    if "management_owner" not in contextual.columns:
+        contextual["management_owner"] = ""
+    owner_blank = contextual["management_owner"].apply(_clean_value).eq("")
+    contextual.loc[owner_blank, "management_owner"] = str(company_name or "").strip()
+    return contextual
+
+
+def _history_frame(key: str, columns: list[str] | None = None) -> pd.DataFrame:
+    value = st.session_state.get(key)
+    if not isinstance(value, pd.DataFrame):
+        value = pd.DataFrame(columns=columns or [])
+    value = value.copy()
+    if columns:
+        for column in columns:
+            if column not in value.columns:
+                value[column] = pd.NA
+    return value
+
+
+def _replace_scan_rows(existing: pd.DataFrame, new_rows: pd.DataFrame, scan_id: str) -> pd.DataFrame:
+    if "Scan ID" in existing.columns:
+        existing = existing.loc[
+            ~existing["Scan ID"].fillna("").astype(str).eq(str(scan_id))
+        ].copy()
+    if new_rows is None or new_rows.empty:
+        return existing.reset_index(drop=True)
+
+    all_columns = list(existing.columns)
+    all_columns.extend(
+        column for column in new_rows.columns
+        if column not in all_columns
+    )
+    return pd.concat(
+        [
+            existing.reindex(columns=all_columns),
+            new_rows.reindex(columns=all_columns),
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+
+
+def _persist_scan_evidence(
+    *,
+    report,
+    records_df: pd.DataFrame,
+    pages_df: pd.DataFrame,
+    scan_id: str,
+    company_id: str,
+    company_name: str,
+    website_url: str,
+    scope: str,
+    history_key: str,
+    candidates_key: str,
+    pages_key: str,
+    added_count: int | None = None,
+    duplicate_count: int | None = None,
+) -> None:
+    approval_mask = records_df.get(
+        "approved",
+        pd.Series(False, index=records_df.index),
+    ).fillna(False)
+    eligible_mask = _ottawa_eligible_mask(records_df)
+    approved_count = int((approval_mask & eligible_mask).sum())
+
+    history = _history_frame(history_key, SCAN_HISTORY_COLUMNS)
+    prior_added = 0
+    prior_duplicates = 0
+    if not history.empty and "Scan ID" in history.columns:
+        prior = history.loc[history["Scan ID"].astype(str).eq(scan_id)]
+        if not prior.empty:
+            prior_added_value = pd.to_numeric(
+                prior.iloc[-1].get("Records Added", 0),
+                errors="coerce",
+            )
+            prior_duplicate_value = pd.to_numeric(
+                prior.iloc[-1].get("Duplicates Skipped", 0),
+                errors="coerce",
+            )
+            prior_added = (
+                0 if pd.isna(prior_added_value) else int(prior_added_value)
+            )
+            prior_duplicates = (
+                0
+                if pd.isna(prior_duplicate_value)
+                else int(prior_duplicate_value)
+            )
+
+    summary = pd.DataFrame([{
+        "Scan ID": scan_id,
+        "Company ID": str(company_id or "").strip(),
+        "Management/Owner": str(company_name or "").strip(),
+        "Start URL": str(website_url or "").strip(),
+        "Coverage": str(scope or "").strip(),
+        "Started At UTC": str(getattr(report, "started_at_utc", "") or ""),
+        "Completed At UTC": str(getattr(report, "completed_at_utc", "") or ""),
+        "Completion Reason": str(getattr(report, "completion_reason", "") or ""),
+        "Pages Scanned": len(getattr(report, "pages", []) or []),
+        "Candidates Detected": len(records_df),
+        "Candidates Approved": approved_count,
+        "Records Added": prior_added if added_count is None else int(added_count),
+        "Duplicates Skipped": (
+            prior_duplicates if duplicate_count is None else int(duplicate_count)
+        ),
+        "Blocked URLs": len(getattr(report, "blocked_urls", []) or []),
+        "Scan Errors": len(getattr(report, "errors", []) or []),
+        "Recovered Partial": bool(
+            st.session_state.get("website_scan_recovered_partial", False)
+        ),
+        "Last Updated UTC": datetime.now(timezone.utc).isoformat(),
+    }])
+    st.session_state[history_key] = _replace_scan_rows(history, summary, scan_id)
+
+    candidates = records_df.copy().rename(columns={
+        "scan_id": "Scan ID",
+        "company_id": "Company ID",
+        "assigned_company": "Assigned Company",
+        "scan_start_url": "Scan Start URL",
+    })
+    candidates.columns = [
+        column
+        if column in {
+            "Scan ID", "Company ID", "Assigned Company", "Scan Start URL"
+        }
+        else str(column).replace("_", " ").title()
+        for column in candidates.columns
+    ]
+    candidates["Scan ID"] = scan_id
+    candidates["Company ID"] = str(company_id or "").strip()
+    candidates["Management/Owner"] = str(company_name or "").strip()
+    candidates["Candidate Outcome"] = "Not selected"
+    if "Candidate Status" in candidates.columns:
+        candidates["Candidate Outcome"] = candidates["Candidate Status"].fillna(
+            "Not selected"
+        )
+    elif "Approved" in candidates.columns:
+        candidates.loc[candidates["Approved"].fillna(False), "Candidate Outcome"] = (
+            "Approved for project"
+        )
+    candidate_history = _history_frame(candidates_key)
+    st.session_state[candidates_key] = _replace_scan_rows(
+        candidate_history,
+        candidates,
+        scan_id,
+    )
+
+    pages = pages_df.copy()
+    pages.columns = [
+        str(column).replace("_", " ").title()
+        for column in pages.columns
+    ]
+    pages["Scan ID"] = scan_id
+    pages["Company ID"] = str(company_id or "").strip()
+    pages["Management/Owner"] = str(company_name or "").strip()
+    page_history = _history_frame(pages_key)
+    st.session_state[pages_key] = _replace_scan_rows(
+        page_history,
+        pages,
+        scan_id,
+    )
+
+
+
+def _merge_into_working_data(
+    approved: pd.DataFrame,
+    working_data_key: str,
+    company_id: str,
+    company_name: str,
+    company_website: str = "",
+) -> tuple[int, int]:
+    canonical_company_website = _clean_value(company_website)
+    approved = _consolidate_approved_candidates(
+        approved,
+        company_id=company_id,
+        company_name=company_name,
+        company_website=canonical_company_website,
+    )
+
+    mapped = approved.rename(columns=DIRECTORY_FIELD_MAP)
+    available_mapped_columns = [
+        destination
+        for source, destination in DIRECTORY_FIELD_MAP.items()
+        if source in approved.columns
+    ]
+    mapped = mapped[available_mapped_columns].copy()
+
+    # The selected company remains the single authoritative parent even when
+    # listings are hosted on official property subdomains or microsites.
+    mapped["Company ID"] = str(company_id or "").strip()
+    mapped["Company Website"] = canonical_company_website
+    if "Management/Owner" not in mapped.columns:
+        mapped["Management/Owner"] = str(company_name or "").strip()
+    else:
+        blank_owner = mapped["Management/Owner"].apply(_clean_value).eq("")
+        mapped.loc[blank_owner, "Management/Owner"] = str(company_name or "").strip()
+
+    def property_url_for_mapped_row(row: pd.Series) -> str:
+        for field in ["Website", "Source URL"]:
+            candidate = _clean_value(row.get(field))
+            if candidate and _is_property_specific_url(candidate, canonical_company_website):
+                return candidate
+        return ""
+
+    mapped["Property Website"] = mapped.apply(property_url_for_mapped_row, axis=1)
+    property_present = mapped["Property Website"].apply(_clean_value).ne("")
+    mapped.loc[property_present, "Website"] = mapped.loc[property_present, "Property Website"]
+    if canonical_company_website:
+        website_blank = mapped.get(
+            "Website", pd.Series("", index=mapped.index)
+        ).apply(_clean_value).eq("")
+        mapped.loc[website_blank, "Website"] = canonical_company_website
+
+    mapped["Date Researched"] = date.today().isoformat()
+    mapped["Research Status"] = "Ready for Review"
+    mapped["Source Status"] = "Active"
+    mapped["Verification Status"] = "Needs Review"
+    mapped["Record Decision"] = "Undecided"
+    mapped["Missing Information"] = (
+        "Website-scanned rental property candidate. Confirm every extracted "
+        "detail and supporting source before final use."
+    )
+
+    existing = st.session_state.get(working_data_key)
+    if existing is None or not isinstance(existing, pd.DataFrame):
+        st.session_state[working_data_key] = mapped.reset_index(drop=True)
+        return len(mapped), 0
+
+    existing = existing.copy()
+    for column in mapped.columns:
+        if column not in existing.columns:
+            existing[column] = ""
+    for column in existing.columns:
+        if column not in mapped.columns:
+            mapped[column] = ""
+    mapped = mapped[existing.columns]
+
+    existing_key_to_index: dict[str, object] = {}
+    for index, row in existing.iterrows():
+        key = _building_identity_from_row(row)
+        if key not in existing_key_to_index:
+            existing_key_to_index[key] = index
+
+    new_rows = []
+    duplicates = 0
+    fill_if_blank_columns = [
+        "Building Name", "Street Address", "Address Line 2", "City",
+        "Province", "Postal Code", "Country", "Phone", "Primary Email",
+        "Number of Apartments", "Apartment Count Search Status",
+        "Apartment Count Source URL", "Apartment Count Evidence",
+        "Apartment Count Confidence", "Number of Storeys", "Amenities",
+        "Building Classification", "Property Website", "Company Website",
+    ]
+
+    for _, incoming in mapped.iterrows():
+        key = _building_identity_from_row(incoming, company_id)
+        existing_index = existing_key_to_index.get(key)
+        if existing_index is None:
+            new_rows.append(incoming)
+            continue
+
+        duplicates += 1
+        apartment_provenance_columns = {
+            "Apartment Count Search Status", "Apartment Count Source URL",
+            "Apartment Count Evidence", "Apartment Count Confidence",
+        }
+        for column in fill_if_blank_columns:
+            if column not in existing.columns or column in apartment_provenance_columns:
+                continue
+            if _is_blank_value(existing.at[existing_index, column]) and not _is_blank_value(incoming.get(column)):
+                existing.at[existing_index, column] = incoming.get(column)
+
+        # Merge apartment-count provenance as one evidence bundle. A scanner result can
+        # replace placeholder values such as ``Not Checked``. A different resolved
+        # total is never silently written over an existing total; it becomes a review
+        # conflict instead.
+        existing_count = _clean_value(existing.at[existing_index, "Number of Apartments"]) if "Number of Apartments" in existing.columns else ""
+        incoming_count = _clean_value(incoming.get("Number of Apartments"))
+        existing_normalized = _normalized_apartment_count(existing_count)
+        incoming_normalized = _normalized_apartment_count(incoming_count)
+
+        if incoming_count and not existing_count and "Number of Apartments" in existing.columns:
+            existing.at[existing_index, "Number of Apartments"] = incoming_count
+            existing_count = incoming_count
+            existing_normalized = incoming_normalized
+
+        counts_conflict = bool(
+            existing_normalized and incoming_normalized
+            and existing_normalized != incoming_normalized
+        )
+        if counts_conflict:
+            if "Apartment Count Search Status" in existing.columns:
+                existing.at[existing_index, "Apartment Count Search Status"] = "Conflict — Needs Review"
+            if "Apartment Count Confidence" in existing.columns:
+                existing.at[existing_index, "Apartment Count Confidence"] = "Low"
+            incoming_apartment_source = _clean_value(incoming.get("Apartment Count Source URL"))
+            if (
+                "Apartment Count Source URL" in existing.columns
+                and _is_blank_value(existing.at[existing_index, "Apartment Count Source URL"])
+                and incoming_apartment_source
+            ):
+                existing.at[existing_index, "Apartment Count Source URL"] = incoming_apartment_source
+            if "Apartment Count Evidence" in existing.columns:
+                source_note = f" Scanner source: {incoming_apartment_source}." if incoming_apartment_source else ""
+                conflict_note = (
+                    f"Scanner found {incoming_count} apartments while the existing record has "
+                    f"{existing_count}. Verify both sources before changing the total." + source_note
+                )
+                merged_evidence = _append_unique_text(
+                    existing.at[existing_index, "Apartment Count Evidence"],
+                    incoming.get("Apartment Count Evidence"),
+                )
+                existing.at[existing_index, "Apartment Count Evidence"] = _append_unique_text(
+                    merged_evidence, conflict_note
+                )
+        elif incoming_count and incoming_normalized == existing_normalized:
+            for column in apartment_provenance_columns:
+                if column not in existing.columns:
+                    continue
+                incoming_value = incoming.get(column)
+                current_value = existing.at[existing_index, column]
+                if not _is_blank_value(incoming_value) and (
+                    _is_blank_value(current_value)
+                    or _apartment_provenance_is_placeholder(current_value)
+                ):
+                    existing.at[existing_index, column] = incoming_value
+        elif not incoming_count:
+            # A completed unsuccessful search can still improve a placeholder status
+            # when no apartment total exists yet.
+            incoming_status = incoming.get("Apartment Count Search Status")
+            if (
+                "Apartment Count Search Status" in existing.columns
+                and not _is_blank_value(incoming_status)
+                and _apartment_provenance_is_placeholder(
+                    existing.at[existing_index, "Apartment Count Search Status"]
+                )
+            ):
+                for column in apartment_provenance_columns:
+                    if column not in existing.columns:
+                        continue
+                    incoming_value = incoming.get(column)
+                    if not _is_blank_value(incoming_value):
+                        existing.at[existing_index, column] = incoming_value
+
+        incoming_property = _clean_value(incoming.get("Property Website"))
+        current_property = _clean_value(existing.at[existing_index, "Property Website"]) if "Property Website" in existing.columns else ""
+        if incoming_property and (
+            not current_property
+            or _url_specificity_score(incoming_property, canonical_company_website)
+            > _url_specificity_score(current_property, canonical_company_website)
+        ):
+            existing.at[existing_index, "Property Website"] = incoming_property
+            if "Website" in existing.columns:
+                existing.at[existing_index, "Website"] = incoming_property
+
+        if "Source URL" in existing.columns:
+            incoming_source = _clean_value(incoming.get("Source URL"))
+            current_source = _clean_value(existing.at[existing_index, "Source URL"])
+            if incoming_source and (
+                not current_source
+                or _url_specificity_score(incoming_source, canonical_company_website)
+                > _url_specificity_score(current_source, canonical_company_website)
+            ):
+                existing.at[existing_index, "Source URL"] = incoming_source
+
+        if "Supporting Evidence" in existing.columns:
+            existing.at[existing_index, "Supporting Evidence"] = _append_unique_text(
+                existing.at[existing_index, "Supporting Evidence"],
+                incoming.get("Supporting Evidence"),
+            )
+        if "Reviewer Notes" in existing.columns:
+            note = (
+                "Scanner matched this result to an existing physical building and "
+                "merged additional official portfolio or microsite evidence instead "
+                "of creating a duplicate record."
+            )
+            existing.at[existing_index, "Reviewer Notes"] = _append_unique_text(
+                existing.at[existing_index, "Reviewer Notes"],
+                note,
+            )
+
+    if new_rows:
+        new_frame = pd.DataFrame(new_rows).reindex(columns=existing.columns)
+        existing = pd.concat([existing, new_frame], ignore_index=True)
+    st.session_state[working_data_key] = existing.reset_index(drop=True)
+    return len(new_rows), duplicates
+
+
+
+def _clear_stale_scanner_session_if_needed() -> bool:
+    """Remove in-memory results produced by an older scanner build."""
+    has_results = any(
+        key in st.session_state
+        for key in (
+            "website_scan_report",
+            "website_scan_records",
+            "website_scan_checkpoint_report",
+        )
+    )
+    stored_build = str(st.session_state.get("website_scan_build", "")).strip()
+    if not has_results or stored_build == SCANNER_BUILD:
+        return False
+
+    for key in list(st.session_state):
+        if (
+            key.startswith("website_scan_")
+            or key.startswith("full_scan_record_editor_")
+        ):
+            st.session_state.pop(key, None)
+    st.session_state["website_scan_build"] = SCANNER_BUILD
+    return True
+
+
+def render_website_scanner_panel(
+    working_data_key: str = WORKING_DATA_KEY,
+    *,
+    active_company_id: str = "",
+    active_company_name: str = "",
+    active_company_website: str = "",
+    scan_history_key: str = "db_scan_history",
+    scan_candidates_key: str = "db_scan_candidates_history",
+    scan_pages_key: str = "db_scan_pages_history",
+) -> dict | None:
+    result: dict | None = None
+    active_company_id = str(active_company_id or "").strip()
+    active_company_name = str(active_company_name or "").strip()
+    active_company_website = str(active_company_website or "").strip()
+    company_context_ready = bool(active_company_id and active_company_name)
+
+    # The app shell already renders the shared Collect → Review → Verify →
+    # Download process bar. Keep only the scanner page heading here so the
+    # workflow controls do not appear twice.
+    st.markdown(
+        """
+        <section class="db-page-head" aria-label="Scan a rental property website">
+            <div class="db-eyebrow">COLLECT</div>
+            <h2>Scan a rental property website</h2>
+            <p>Search permitted public pages for listing details, contacts, building classifications, apartment counts, and supporting evidence. Only approved candidates move into the workspace.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="db-guidance"><strong>Ottawa-only research scope.</strong>'
+        '<span>Use this optional scanner to cross-check website coverage and possible omissions. Only properties within the City of Ottawa municipal boundary can be approved, added, or exported; out-of-Ottawa records remain in the scan log.</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="db-guidance"><strong>Storeys drive building classification.</strong>'
+        '<span>The scanner can use storey evidence found on the company website, but it does not replace address-based web research. If building height is missing, use the Datablix AI research prompt with the verified full Ottawa street address to search reliable evidence for storeys, stories, floors, or levels. Treat those terms as equivalent only when they clearly describe the building height—not the floor where a particular apartment or suite is located. Then let Datablix derive Low-rise (1–4), Mid-rise (5–11), or High-rise (12+).</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="db-guidance"><strong>Approval and verification are separate.</strong>'
+        '<span>Approve a candidate to add it to the workspace; complete human verification in Review records.</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    if not company_context_ready:
+        st.warning(
+            "Select or add the company in the Master project area before "
+            "starting a scan. This prevents findings from being attached to "
+            "the wrong organization."
+        )
+        return None
+
+    _switch_company_scan_state(active_company_id, active_company_website)
+    stale_scan_cleared = _clear_stale_scanner_session_if_needed()
+    if stale_scan_cleared:
+        st.info(
+            "Older scanner results were cleared because the inventory and field-extraction rules changed. "
+            "Run the company website again to use the corrected logic."
+        )
+
+    saved_scan_company_id = str(
+        st.session_state.get("website_scan_company_id", "")
+    ).strip()
+    has_current_scan = (
+        st.session_state.get("website_scan_report") is not None
+        or st.session_state.get("website_scan_records") is not None
+    )
+    company_context_mismatch = bool(
+        has_current_scan
+        and saved_scan_company_id
+        and saved_scan_company_id != active_company_id
+    )
+
+    st.success(
+        f"Current company: **{active_company_name}** "
+        f"({active_company_id}). Approved records and scan evidence will "
+        "remain attached to this company."
+    )
+    if active_company_website:
+        st.caption(f"Registered website: {active_company_website}")
+
+    if company_context_mismatch:
+        st.warning(
+            "These restored scan results carry a different company identifier. "
+            "Clear them before starting a new scan for this company."
+        )
+
+    st.markdown("### Choose website")
+    website_url = st.text_input(
+        "Website address",
+        placeholder="https://examplepropertycompany.ca",
+        help="Use the main public website of the property owner or management company.",
+        key="full_scan_website_url",
+    )
+
+    coverage_settings = {
+        "Quick check": (25, 3),
+        "Recommended": (500, 12),
+        "Extended scan": (2_000, 20),
+        "Custom": (100, 5),
+    }
+
+    # Reset older preset names safely after an app update.
+    if st.session_state.get("full_scan_scope") not in coverage_settings:
+        st.session_state["full_scan_scope"] = "Recommended"
+
+    def _select_extended_scan() -> None:
+        st.session_state["full_scan_scope"] = "Extended scan"
+
+    scope = st.session_state["full_scan_scope"]
+
+    with st.expander("Change coverage", expanded=False):
+        scope = st.radio(
+            "Coverage",
+            options=list(coverage_settings),
+            help=(
+                "Recommended is suitable for most websites. Quick check is for testing. "
+                "Extended scan is a follow-up option. Custom is for unusual cases."
+            ),
+            key="full_scan_scope",
+        )
+
+    max_pages, max_depth = coverage_settings[scope]
+
+    if scope == "Recommended":
+        st.markdown(
+            "**Recommended scan**  \n"
+            "Up to **500 pages** · **12 link levels** · Sitemaps and related "
+            "subdomains included"
+        )
+        st.caption(
+            "Start here for broad, efficient coverage. Datablix will tell you when "
+            "an extended scan may be useful."
+        )
+    elif scope == "Extended scan":
+        st.markdown(
+            "**Extended scan selected**  \n"
+            "Up to **2,000 pages** · **20 link levels** · Sitemaps and related "
+            "subdomains included"
+        )
+        st.caption(
+            "Use this after the recommended scan reaches its limit or when known "
+            "listings still appear to be missing."
+        )
+    elif scope == "Quick check":
+        st.markdown(
+            "**Quick check selected**  \n"
+            "Up to **25 pages** · **3 link levels**"
+        )
+        st.caption("Use this only to confirm that a website can be scanned.")
+    else:
+        st.markdown("**Custom coverage selected**")
+        st.caption("Set manual limits for unusual websites or troubleshooting.")
+
+    with st.expander("Advanced scan settings", expanded=scope == "Custom"):
+        if scope == "Custom":
+            custom_col1, custom_col2 = st.columns(2)
+            max_pages = custom_col1.number_input(
+                "Maximum pages",
+                min_value=1,
+                max_value=2_000,
+                value=100,
+                step=25,
+                help="The scan stops at this limit even when the site has more pages.",
+                key="full_scan_max_pages_custom",
+            )
+            max_depth = custom_col2.number_input(
+                "Maximum link depth",
+                min_value=0,
+                max_value=20,
+                value=5,
+                step=1,
+                help="How many link levels the scanner follows from the starting page.",
+                key="full_scan_max_depth_custom",
+            )
+        else:
+            st.caption(
+                f"Current coverage: up to **{max_pages:,} pages** and "
+                f"**{max_depth} link levels**."
+            )
+
+        advanced_col1, advanced_col2 = st.columns(2)
+        with advanced_col1:
+            render_label = st.selectbox(
+                "Page rendering",
+                options=[
+                    "Automatic",
+                    "HTML only",
+                    "Always render JavaScript",
+                ],
+                help=(
+                    "Automatic reads ordinary HTML first and opens a browser only "
+                    "when a page appears to require JavaScript."
+                ),
+                key="full_scan_render_mode",
+            )
+            delay = st.number_input(
+                "Delay between requests (seconds)",
+                min_value=0.1,
+                max_value=30.0,
+                value=0.75,
+                step=0.25,
+                help=(
+                    "A longer delay is gentler on the website and can reduce "
+                    "temporary blocking during large scans."
+                ),
+                key="full_scan_delay",
+            )
+
+        with advanced_col2:
+            if scope == "Custom":
+                use_sitemaps = st.checkbox(
+                    "Use sitemaps and current listing pages",
+                    value=True,
+                    key="full_scan_sitemaps_custom",
+                )
+                include_subdomains = st.checkbox(
+                    "Include subdomains",
+                    value=False,
+                    help="Turn this on when listings live on a related subdomain.",
+                    key="full_scan_subdomains_custom",
+                )
+            else:
+                use_sitemaps = True
+                include_subdomains = scope in {"Recommended", "Extended scan"}
+                discovery_note = (
+                    "Sitemaps, current listing pages, and related subdomains are included automatically."
+                    if include_subdomains
+                    else "Sitemaps and current listing pages are included; related subdomains are not followed."
+                )
+                st.caption(discovery_note)
+
+            follow_queries = st.checkbox(
+                "Follow query-string pages",
+                value=False,
+                help=(
+                    "Enable only when parameters such as ?page=2 or ?property=123 "
+                    "lead to unique listing pages."
+                ),
+                key="full_scan_queries",
+            )
+            st.checkbox(
+                "Respect robots.txt",
+                value=True,
+                disabled=True,
+                help="Always on. The scanner never visits pages a site asks crawlers to skip.",
+                key="full_scan_robots",
+            )
+
+    acknowledgement = st.checkbox(
+        "I am scanning permitted public pages and will review every finding before use.",
+        key="full_scan_acknowledgement",
+    )
+
+    missing_requirements = []
+    if not website_url.strip():
+        missing_requirements.append("enter the company website")
+    if not acknowledgement:
+        missing_requirements.append("confirm the public-page acknowledgement")
+    if company_context_mismatch:
+        missing_requirements.append("clear the mismatched restored scan")
+
+    submitted = st.button(
+        f"Start scan for {active_company_name}",
+        type="primary",
+        width="stretch",
+        disabled=bool(missing_requirements),
+        key="full_scan_submit",
+    )
+    if missing_requirements:
+        st.caption("Before starting: " + "; ".join(missing_requirements) + ".")
+    else:
+        st.caption(
+            f"Ready to scan {website_url.strip()} for {active_company_name}."
+        )
+
+    if submitted:
+        st.session_state["website_scan_build"] = SCANNER_BUILD
+        st.session_state["website_scan_active"] = True
+        st.session_state["website_scan_company_id"] = active_company_id
+        st.session_state["website_scan_company_name"] = active_company_name
+        st.session_state["website_scan_company_website"] = active_company_website
+        st.session_state.pop("website_scan_id", None)
+        st.session_state["website_scan_start_url"] = website_url
+        st.session_state["website_scan_last_progress"] = {
+            "pages_processed": 0,
+            "records_found": 0,
+            "blocked_count": 0,
+            "error_count": 0,
+            "current_url": website_url,
+            "max_pages": int(max_pages),
+        }
+        st.session_state.pop("website_scan_report", None)
+        st.session_state.pop("website_scan_records", None)
+        st.session_state.pop("website_scan_checkpoint_report", None)
+        st.session_state.pop("website_scan_recovered_partial", None)
+
+        render_mode = {
+            "Automatic": "auto",
+            "HTML only": "html",
+            "Always render JavaScript": "javascript",
+        }[render_label]
+
+        options = ScanOptions(
+            max_pages=int(max_pages),
+            max_depth=int(max_depth),
+            request_delay_seconds=float(delay),
+            render_mode=render_mode,
+            use_sitemaps=use_sitemaps,
+            include_subdomains=include_subdomains,
+            follow_query_strings=follow_queries,
+            obey_robots_txt=True,
+            checkpoint_every_pages=10,
+        )
+
+        status = st.status("Starting website scan…", expanded=True)
+        progress = st.progress(0.0)
+        current_page = st.empty()
+        counters = st.empty()
+
+        def update_progress(update: dict) -> None:
+            st.session_state["website_scan_last_progress"] = dict(update)
+            processed = update.get("pages_processed", 0)
+            maximum = max(update.get("max_pages", 1), 1)
+            progress.progress(min(processed / maximum, 1.0))
+            current_page.caption(update.get("current_url", ""))
+            counters.write(
+                f"Pages processed: **{processed}** · "
+                f"Candidates: **{update.get('records_found', 0)}** · "
+                f"Blocked: **{update.get('blocked_count', 0)}** · "
+                f"Errors: **{update.get('error_count', 0)}**"
+            )
+
+        def save_checkpoint(partial_report) -> None:
+            # Keep an in-session copy for fast recovery and an atomic JSON file
+            # for recovery after a Streamlit rerun or browser reconnection.
+            st.session_state["website_scan_checkpoint_report"] = partial_report
+            st.session_state["website_scan_checkpoint_pages"] = len(
+                partial_report.pages
+            )
+            checkpoint_path = _write_durable_checkpoint(
+                partial_report,
+                website_url,
+                scope,
+                is_final=False,
+            )
+            if checkpoint_path is not None:
+                st.session_state["website_scan_checkpoint_path"] = str(
+                    checkpoint_path
+                )
+
+        try:
+            report = scan_website(
+                website_url=website_url,
+                options=options,
+                progress_callback=update_progress,
+                checkpoint_callback=save_checkpoint,
+            )
+        except WebsiteScanError as exc:
+            st.session_state["website_scan_active"] = False
+            st.session_state["website_scan_stop_message"] = str(exc)
+            status.update(label="The scan could not start", state="error", expanded=True)
+            st.error(str(exc))
+        except Exception as exc:
+            st.session_state["website_scan_active"] = False
+            st.session_state["website_scan_stop_message"] = str(exc)
+            status.update(
+                label="The scan stopped unexpectedly",
+                state="error",
+                expanded=True,
+            )
+            st.error(
+                "The scan stopped because one page contained an unsupported or "
+                "malformed link. The corrected scanner now skips that link and "
+                "continues. Review the technical details only if the issue repeats."
+            )
+            with st.expander("Technical details"):
+                st.code(f"{type(exc).__name__}: {exc}")
+
+            recovered = _read_durable_checkpoint(website_url)
+            if recovered is not None:
+                recovered_report, checkpoint_meta = recovered
+                recovered_report.completion_reason = "interrupted_recovered"
+                recovered_records = _records_dataframe(recovered_report)
+                st.session_state["website_scan_build"] = SCANNER_BUILD
+                st.session_state["website_scan_report"] = recovered_report
+                st.session_state["website_scan_records"] = recovered_records
+                st.session_state["website_scan_scope"] = checkpoint_meta.get(
+                    "scope", scope
+                )
+                st.session_state["website_scan_page_limit_reached"] = False
+                st.session_state["website_scan_recovered_partial"] = True
+                st.warning(
+                    f"Recovered {len(recovered_report.pages):,} completed pages "
+                    f"and {len(recovered_records):,} candidate(s) from the latest "
+                    "durable checkpoint."
+                )
+        else:
+            st.session_state["website_scan_active"] = False
+            progress.progress(1.0)
+
+            completion_reason = getattr(report, "completion_reason", "")
+            page_limit_reached = (
+                completion_reason == "page_limit"
+                or len(report.pages) >= int(max_pages)
+            )
+
+            if completion_reason == "failure_limit":
+                visible_message = (
+                    f"Scan stopped after repeated page failures: "
+                    f"{len(report.pages)} pages processed and "
+                    f"{len(report.records)} unique candidates found."
+                )
+                status.update(
+                    label=visible_message,
+                    state="error",
+                    expanded=True,
+                )
+                st.error(
+                    visible_message
+                    + " Review the Errors section before trying again."
+                )
+            elif page_limit_reached:
+                visible_message = (
+                    f"Page limit reached: {len(report.pages)} pages processed and "
+                    f"{len(report.records)} unique candidates found."
+                )
+                status.update(
+                    label=visible_message,
+                    state="complete",
+                    expanded=True,
+                )
+                st.warning(
+                    visible_message
+                    + " Additional permitted pages may remain."
+                )
+            else:
+                visible_message = (
+                    f"Coverage complete: {len(report.pages)} eligible pages processed "
+                    f"and {len(report.records)} unique candidates found."
+                )
+                status.update(
+                    label=visible_message,
+                    state="complete",
+                    expanded=True,
+                )
+                st.success(
+                    visible_message
+                    + " The scan stopped because no more eligible pages were available."
+                )
+
+            st.session_state["website_scan_stop_message"] = visible_message
+            st.session_state["website_scan_build"] = SCANNER_BUILD
+            st.session_state["website_scan_report"] = report
+            st.session_state["website_scan_records"] = _records_dataframe(report)
+            st.session_state["website_scan_scope"] = scope
+            st.session_state["website_scan_page_limit_reached"] = page_limit_reached
+            final_checkpoint_path = _write_durable_checkpoint(
+                report,
+                website_url,
+                scope,
+                is_final=True,
+            )
+            if final_checkpoint_path is not None:
+                st.session_state["website_scan_checkpoint_path"] = str(
+                    final_checkpoint_path
+                )
+            st.session_state.pop("website_scan_checkpoint_report", None)
+            st.session_state.pop("website_scan_checkpoint_pages", None)
+            st.session_state.pop("website_scan_recovered_partial", None)
+
+    report = st.session_state.get("website_scan_report")
+    records_df = st.session_state.get("website_scan_records")
+
+    if report is None or not isinstance(records_df, pd.DataFrame):
+        checkpoint_report = st.session_state.get(
+            "website_scan_checkpoint_report"
+        )
+        checkpoint_meta = {}
+        recovery_url = (
+            website_url
+            or st.session_state.get("website_scan_start_url", "")
+        )
+
+        if checkpoint_report is None:
+            durable_recovery = _read_durable_checkpoint(recovery_url)
+            if durable_recovery is not None:
+                checkpoint_report, checkpoint_meta = durable_recovery
+
+        last_progress = st.session_state.get("website_scan_last_progress", {})
+        scan_active = bool(st.session_state.get("website_scan_active", False))
+        processed = int(last_progress.get("pages_processed", 0) or 0)
+
+        if checkpoint_report is not None and getattr(
+            checkpoint_report, "pages", None
+        ):
+            report = checkpoint_report
+            report.completion_reason = "interrupted_recovered"
+            records_df = _records_dataframe(report)
+
+            st.session_state["website_scan_active"] = False
+            st.session_state["website_scan_build"] = SCANNER_BUILD
+            st.session_state["website_scan_report"] = report
+            st.session_state["website_scan_records"] = records_df
+            st.session_state["website_scan_scope"] = checkpoint_meta.get(
+                "scope", scope
+            )
+            st.session_state["website_scan_page_limit_reached"] = False
+            st.session_state["website_scan_recovered_partial"] = True
+
+            st.warning(
+                f"Partial scan recovered: {len(report.pages):,} completed pages "
+                f"and {len(records_df):,} candidate(s) are available for review. "
+                "The latest durable checkpoint was restored."
+            )
+        elif scan_active and processed > 0:
+            # This covers sessions started with an older Datablix version that
+            # did not yet save checkpoints. Reset the stale flag so the same
+            # notice does not remain indefinitely.
+            st.session_state["website_scan_active"] = False
+            st.warning(
+                f"The earlier scan ended after approximately {processed:,} pages "
+                "before a durable checkpoint was available. Start the scan once "
+                "more. Future runs now save findings every 10 pages."
+            )
+            return
+        else:
+            st.caption(
+                "Scan results will appear here for review. Nothing is added to the "
+                "workspace automatically."
+            )
+            return
+
+    scan_company_id = str(
+        st.session_state.get("website_scan_company_id", active_company_id)
+        or active_company_id
+    ).strip()
+    scan_company_name = str(
+        st.session_state.get("website_scan_company_name", active_company_name)
+        or active_company_name
+    ).strip()
+    scan_start_url = str(
+        getattr(report, "start_url", "")
+        or st.session_state.get("website_scan_start_url", website_url)
+        or website_url
+    ).strip()
+    scan_id = _scan_id_for_report(
+        report,
+        scan_company_id,
+        scan_start_url,
+    )
+
+    records_df = _apply_height_classification(_apply_ottawa_scope(records_df))
+    records_df = _attach_scan_context(
+        records_df,
+        scan_id=scan_id,
+        company_id=scan_company_id,
+        company_name=scan_company_name,
+        website_url=scan_start_url,
+    )
+    records_df = _apply_candidate_status(records_df)
+    st.session_state["website_scan_records"] = records_df
+
+    if (
+        active_company_id
+        and scan_company_id
+        and active_company_id != scan_company_id
+    ):
+        st.warning(
+            f"These results belong to **{scan_company_name}** "
+            f"({scan_company_id}), not the newly selected company. Clear the "
+            "current scan before starting work for another company."
+        )
+
+    if st.session_state.get("website_scan_recovered_partial", False):
+        st.info(
+            "You are reviewing recovered partial results. They can be approved, "
+            "exported, or cleared normally. Run the website again later only when "
+            "you need to search beyond the recovered pages."
+        )
+
+    last_scan_scope = st.session_state.get("website_scan_scope", "")
+    last_scan_reached_limit = bool(
+        st.session_state.get("website_scan_page_limit_reached", False)
+    )
+
+    if last_scan_scope == "Recommended" and last_scan_reached_limit:
+        st.warning(
+            "The recommended scan reached its 500-page limit. Some permitted pages "
+            "may remain, so an extended scan is the appropriate next step."
+        )
+        st.button(
+            "Select extended scan",
+            type="primary",
+            on_click=_select_extended_scan,
+            key="select_extended_scan_after_limit",
+        )
+    elif last_scan_scope == "Recommended":
+        st.success(
+            "Recommended coverage completed without reaching its page limit. "
+            "An extended scan is not needed unless a known listing is missing."
+        )
+
+    pages_df = _pages_dataframe(report)
+    successful_pages = (
+        int((pages_df.get("outcome") == "Scanned").sum())
+        if not pages_df.empty
+        else 0
+    )
+    rendered_pages = int(
+        pages_df.get(
+            "rendered_with_javascript",
+            pd.Series(dtype=bool),
+        ).fillna(False).sum()
+    )
+
+    st.divider()
+    st.markdown("### Review detected listings")
+    st.caption(
+        "Confirm the required listing fields first, then inspect additional findings and source evidence. "
+        "A blank value means the page did not provide enough information to confirm it."
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Pages scanned", successful_pages)
+    m2.metric("Candidates", len(records_df))
+    m3.metric("JavaScript pages", rendered_pages)
+    m4.metric("Blocked or failed", len(report.blocked_urls) + len(report.errors))
+
+    scope_counts = records_df["ottawa_scope_status"].value_counts()
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Confirmed Ottawa", int(scope_counts.get(OTTAWA_SCOPE_CONFIRMED, 0)))
+    s2.metric("Likely Ottawa — review", int(scope_counts.get(OTTAWA_SCOPE_LIKELY, 0)))
+    s3.metric("Ottawa scope unclear", int(scope_counts.get(OTTAWA_SCOPE_UNCLEAR, 0)))
+    s4.metric("Outside Ottawa", int(scope_counts.get(OTTAWA_SCOPE_OUTSIDE, 0)))
+    st.caption(
+        "Only Confirmed Ottawa and human-approved Likely Ottawa candidates can "
+        "move into the selected company records. Ottawa Scope Unclear and Outside Ottawa records are "
+        "kept for traceability but excluded automatically."
+    )
+
+    if "inventory_status" in records_df.columns:
+        inventory_counts = records_df["inventory_status"].value_counts()
+        i1, i2, i3 = st.columns(3)
+        i1.metric("Current inventory", int(inventory_counts.get(INVENTORY_STATUS_CURRENT, 0)))
+        i2.metric("Inventory review", int(inventory_counts.get(INVENTORY_STATUS_REVIEW, 0)))
+        i3.metric("Legacy / excluded", int(inventory_counts.get(INVENTORY_STATUS_EXCLUDED, 0)))
+        st.caption(
+            "A dedicated property URL is not enough by itself. Buildings linked from a current "
+            "HTML sitemap or current city/portfolio page are treated as current. Legacy property "
+            "URLs stay in the audit trail but cannot be approved."
+        )
+
+    with st.expander("Manage current scan results"):
+        st.caption("Clearing removes this scan report and its review edits from the current session.")
+        confirm_clear = st.checkbox(
+            "Clear the current scan results",
+            key="confirm_clear_full_scan",
+        )
+        if st.button(
+            "Clear results",
+            disabled=not confirm_clear,
+            width="stretch",
+            key="clear_full_scan",
+        ):
+            _delete_durable_checkpoint(
+                st.session_state.get("website_scan_start_url", website_url)
+            )
+            keys_to_clear = [
+                key for key in list(st.session_state)
+                if key.startswith("full_scan_record_editor_")
+            ]
+            keys_to_clear.extend([
+                "website_scan_report",
+                "website_scan_records",
+                "website_scan_active",
+                "website_scan_last_progress",
+                "website_scan_stop_message",
+                "website_scan_checkpoint_report",
+                "website_scan_checkpoint_pages",
+                "website_scan_checkpoint_path",
+                "website_scan_recovered_partial",
+                "website_scan_start_url",
+                "website_scan_scope",
+                "website_scan_page_limit_reached",
+                "website_scan_id",
+                "website_scan_company_id",
+                "website_scan_company_name",
+                "website_scan_company_website",
+                "full_scan_review_focus",
+                "confirm_clear_full_scan",
+            ])
+            for key in keys_to_clear:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+    required_review_columns = [
+        "approved",
+        "ottawa_scope_status",
+        "ottawa_scope_reason",
+        "building_name",
+        "street_address",
+        "city",
+        "province",
+        "postal_code",
+        "number_of_storeys",
+        "building_classification",
+        "number_of_apartments",
+        "apartment_count_search_status", "apartment_count_source_url",
+        "apartment_count_evidence", "apartment_count_confidence",
+        "amenities",
+        "inventory_status",
+        "inventory_evidence",
+        "management_owner",
+        "phone",
+        "primary_email",
+        "website",
+        "source_url",
+        "confidence",
+    ]
+    additional_review_columns = [
+        "approved",
+        "ottawa_scope_status",
+        "ottawa_scope_reason",
+        "inventory_status",
+        "inventory_evidence",
+        "found_on_city_page",
+        "found_on_html_sitemap",
+        "found_on_xml_sitemap",
+        "exclusion_reason",
+        "apartment_count_search_status", "apartment_count_source_url",
+        "apartment_count_evidence", "apartment_count_confidence",
+        "amenities",
+        "address_line_2",
+        "country",
+        "source_page_title",
+        "extraction_method",
+        "candidate_status",
+        "evidence",
+        "source_url",
+        "confidence",
+    ]
+    preferred_all_order = [
+        "approved", "scan_id", "company_id", "assigned_company",
+        "building_name", "management_owner", "street_address",
+        "address_line_2", "city", "province", "postal_code", "country",
+        "phone", "primary_email", "website", "number_of_apartments",
+        "apartment_count_search_status", "apartment_count_source_url",
+        "apartment_count_evidence", "apartment_count_confidence",
+        "number_of_storeys", "building_classification", "amenities",
+        "inventory_status", "inventory_evidence",
+        "found_on_city_page", "found_on_html_sitemap", "found_on_xml_sitemap",
+        "exclusion_reason", "source_url", "source_page_title",
+        "extraction_method", "confidence", "candidate_status", "evidence",
+    ]
+    all_review_columns = [column for column in preferred_all_order if column in records_df.columns]
+    all_review_columns.extend(
+        column for column in records_df.columns if column not in all_review_columns
+    )
+
+    for column in set(required_review_columns + additional_review_columns + all_review_columns):
+        if column not in records_df.columns:
+            records_df[column] = False if column == "approved" else ""
+
+    review_views = {
+        "Required listing information": required_review_columns,
+        "Additional findings and evidence": additional_review_columns,
+        "All detected fields": all_review_columns,
+    }
+    review_focus = st.selectbox(
+        "Review focus",
+        list(review_views),
+        help="Use a focused view to reduce horizontal scrolling. Every detected field remains available in All detected fields.",
+        key="full_scan_review_focus",
+    )
+    visible_review_columns = [
+        column for column in review_views[review_focus] if column in records_df.columns
+    ]
+
+    editor_key = "full_scan_record_editor_" + review_focus.lower().replace(" ", "_").replace("/", "_")
+    edited_review = st.data_editor(
+        records_df[visible_review_columns].copy(),
+        key=editor_key,
+        width="stretch",
+        hide_index=True,
+        num_rows="fixed",
+        disabled=[
+            column for column in [
+                "confidence", "source_page_title", "extraction_method",
+                "candidate_status", "ottawa_scope_status", "ottawa_scope_reason",
+                "building_classification", "inventory_status", "inventory_evidence", "found_on_city_page",
+                "found_on_html_sitemap", "found_on_xml_sitemap", "exclusion_reason"
+            ] if column in visible_review_columns
+        ],
+        column_config={
+            "approved": st.column_config.CheckboxColumn(
+                "Approve candidate",
+                default=False,
+                help=(
+                    "Approve only after checking the source and confirming the "
+                    "candidate is within the City of Ottawa municipal boundary."
+                ),
+            ),
+            "ottawa_scope_status": st.column_config.TextColumn(
+                "Ottawa Scope Status",
+                width="medium",
+                help=(
+                    "Confirmed Ottawa may be approved. Likely Ottawa requires "
+                    "human review. Unclear and out-of-Ottawa records are excluded."
+                ),
+            ),
+            "ottawa_scope_reason": st.column_config.TextColumn(
+                "Ottawa Scope Reason",
+                width="large",
+            ),
+            "building_name": st.column_config.TextColumn("Apartment Building Name", width="large"),
+            "management_owner": st.column_config.TextColumn("Management / Owner", width="large"),
+            "street_address": st.column_config.TextColumn("Street Address"),
+            "address_line_2": st.column_config.TextColumn("Address Line 2"),
+            "city": st.column_config.TextColumn("City"),
+            "province": st.column_config.TextColumn("Province"),
+            "postal_code": st.column_config.TextColumn("Postal Code"),
+            "amenities": st.column_config.TextColumn("Amenities", width="large"),
+            "inventory_status": st.column_config.TextColumn(
+                "Current Inventory Status", width="medium"
+            ),
+            "inventory_evidence": st.column_config.TextColumn(
+                "Inventory Evidence", width="large"
+            ),
+            "found_on_city_page": st.column_config.CheckboxColumn(
+                "On City/Portfolio Page"
+            ),
+            "found_on_html_sitemap": st.column_config.CheckboxColumn(
+                "On HTML Sitemap"
+            ),
+            "found_on_xml_sitemap": st.column_config.CheckboxColumn(
+                "On XML Sitemap"
+            ),
+            "exclusion_reason": st.column_config.TextColumn(
+                "Inventory Exclusion Reason", width="large"
+            ),
+            "country": st.column_config.TextColumn("Country"),
+            "phone": st.column_config.TextColumn("Phone Number"),
+            "primary_email": st.column_config.TextColumn("Email Contact", width="large"),
+            "website": st.column_config.LinkColumn("Website", width="large"),
+            "number_of_apartments": st.column_config.TextColumn(
+                "Number of Apartments",
+                help=(
+                    "Total residential inventory only. The scanner performs a targeted same-site official-PDF "
+                    "recovery pass for unresolved counts; the AI research prompt continues exact-address recovery "
+                    "through public records and reputable property sources."
+                ),
+            ),
+            "apartment_count_search_status": st.column_config.TextColumn(
+                "Apartment Count Search Status", width="medium",
+            ),
+            "apartment_count_source_url": st.column_config.LinkColumn(
+                "Apartment Count Source", width="large",
+            ),
+            "apartment_count_evidence": st.column_config.TextColumn(
+                "Apartment Count Evidence", width="large",
+            ),
+            "apartment_count_confidence": st.column_config.TextColumn(
+                "Apartment Count Confidence", width="small",
+            ),
+            "number_of_storeys": st.column_config.TextColumn(
+                "Storeys",
+                help=(
+                    "Enter verified building-height evidence. Storey/storeys, story/stories, floor/floors, "
+                    "and level/levels may be treated as equivalent only when they clearly describe the "
+                    "whole building, not the location of a particular apartment or suite. If the company "
+                    "website does not state it, use the Datablix AI research prompt with the verified full "
+                    "Ottawa address. Datablix derives Low-rise for 1–4, "
+                    "Mid-rise for 5–11, and High-rise for 12+. If sources disagree but "
+                    "stay in one band (for example 14 / 15), the shared classification "
+                    "is allowed; 11 / 12 remains unclassified."
+                ),
+            ),
+            "building_classification": st.column_config.TextColumn(
+                "Building Classification",
+                help=(
+                    "Derived only from verified building-height evidence: Low-rise 1–4, Mid-rise 5–11, "
+                    "High-rise 12+. Storeys/stories/floors/levels are accepted when they describe the "
+                    "whole building. Unit-floor location, marketing labels, and visual appearance are not evidence."
+                ),
+            ),
+            "source_url": st.column_config.LinkColumn("Official Source URL", width="large"),
+            "source_page_title": st.column_config.TextColumn("Source Page Title", width="large"),
+            "extraction_method": st.column_config.TextColumn("Extraction Method"),
+            "confidence": st.column_config.ProgressColumn(
+                "Detection Confidence",
+                min_value=0.0,
+                max_value=1.0,
+                format="percent",
+                help="Use confidence to prioritize review; it is not proof that a value is correct.",
+            ),
+            "candidate_status": st.column_config.TextColumn(
+                "Scanner Candidate Status",
+                help="Scanner approval only. Final human verification is completed in Review records.",
+            ),
+            "evidence": st.column_config.TextColumn("Supporting Evidence", width="large"),
+        },
+    )
+
+    updated_records = records_df.copy()
+    for column in visible_review_columns:
+        updated_records.loc[edited_review.index, column] = edited_review[column]
+
+    updated_records = _apply_candidate_status(
+        _apply_height_classification(_apply_ottawa_scope(updated_records))
+    )
+    st.session_state["website_scan_records"] = updated_records
+
+    requested_approval = updated_records["approved"].fillna(False)
+    ottawa_eligible = _ottawa_eligible_mask(updated_records)
+    inventory_eligible = _inventory_eligible_mask(updated_records)
+    eligible_approval = ottawa_eligible & inventory_eligible
+    blocked_location_count = int((requested_approval & ~ottawa_eligible).sum())
+    blocked_inventory_count = int((requested_approval & ottawa_eligible & ~inventory_eligible).sum())
+
+    approved = updated_records.loc[
+        requested_approval & eligible_approval
+    ].copy()
+    _persist_scan_evidence(
+        report=report,
+        records_df=updated_records,
+        pages_df=pages_df,
+        scan_id=scan_id,
+        company_id=scan_company_id,
+        company_name=scan_company_name,
+        website_url=scan_start_url,
+        scope=st.session_state.get("website_scan_scope", scope),
+        history_key=scan_history_key,
+        candidates_key=scan_candidates_key,
+        pages_key=scan_pages_key,
+    )
+
+    if blocked_location_count:
+        st.warning(
+            f"{blocked_location_count} selected candidate(s) were not approved because "
+            "their location is unclear or confirmed outside Ottawa. Update the city, "
+            "province, street address, or postal code, then review again."
+        )
+    if blocked_inventory_count:
+        st.warning(
+            f"{blocked_inventory_count} selected candidate(s) were not approved because "
+            "their dedicated property page is not supported by the current HTML sitemap "
+            "or current city/portfolio pages. They remain in the audit trail as legacy/excluded URLs."
+        )
+
+    with st.container(border=True):
+        action_left, action_right = st.columns([2, 1], vertical_alignment="center")
+        with action_left:
+            st.subheader("Add approved records to project")
+            st.write(
+                f"{len(approved):,} Ottawa-eligible candidate(s) are approved at the scanner stage. "
+                "When added to the project, they begin final record verification in Review records; "
+                "scanner approval itself is not the final human verification decision."
+            )
+        with action_right:
+            add_approved = st.button(
+                "Add approved records to project",
+                type="primary",
+                disabled=approved.empty or not scan_company_id,
+                width="stretch",
+                key="add_approved_scan_records",
+            )
+    if add_approved:
+        added, duplicates = _merge_into_working_data(
+            approved,
+            working_data_key=working_data_key,
+            company_id=scan_company_id,
+            company_name=scan_company_name,
+            company_website=(
+                st.session_state.get("website_scan_company_website", "")
+                or scan_start_url
+            ),
+        )
+        _persist_scan_evidence(
+            report=report,
+            records_df=updated_records,
+            pages_df=pages_df,
+            scan_id=scan_id,
+            company_id=scan_company_id,
+            company_name=scan_company_name,
+            website_url=scan_start_url,
+            scope=st.session_state.get("website_scan_scope", scope),
+            history_key=scan_history_key,
+            candidates_key=scan_candidates_key,
+            pages_key=scan_pages_key,
+            added_count=added,
+            duplicate_count=duplicates,
+        )
+        result = {
+            "scan_id": scan_id,
+            "company_id": scan_company_id,
+            "company_name": scan_company_name,
+            "start_url": scan_start_url,
+            "added": added,
+            "duplicates": duplicates,
+        }
+        st.success(
+            f"Added {added} record(s) to the master project for "
+            f"{scan_company_name}. Skipped {duplicates} record(s) already "
+            "matched to the same company and physical building identity; additional official sources were merged."
+        )
+
+    with st.expander("Evidence, scan log, and downloads"):
+        st.caption(
+            "Keep the source page, extraction details, confidence, and supporting text with the research trail."
+        )
+        evidence_columns = [
+            "inventory_status",
+            "inventory_evidence",
+            "found_on_city_page",
+            "found_on_html_sitemap",
+            "found_on_xml_sitemap",
+            "exclusion_reason",
+            "ottawa_scope_status",
+            "ottawa_scope_reason",
+            "building_name",
+            "amenities",
+            "building_classification",
+            "number_of_apartments",
+            "apartment_count_search_status", "apartment_count_source_url",
+            "apartment_count_evidence", "apartment_count_confidence",
+            "source_url",
+            "source_page_title",
+            "extraction_method",
+            "confidence",
+            "evidence",
+        ]
+        available_evidence = [
+            column for column in evidence_columns if column in updated_records.columns
+        ]
+        if available_evidence:
+            st.dataframe(
+                updated_records[available_evidence],
+                width="stretch",
+                hide_index=True,
+            )
+
+        csv_data = _approved_listing_table(approved).to_csv(index=False).encode("utf-8-sig")
+        excel_data = _excel_bytes(updated_records, pages_df, report)
+        d1, d2, d3 = st.columns(3)
+        d1.download_button(
+            "Download approved listings — CSV",
+            data=csv_data,
+            file_name="approved_website_records.csv",
+            mime="text/csv",
+            disabled=approved.empty,
+            width="stretch",
+        )
+        d2.download_button(
+            "Download complete scan workbook",
+            data=excel_data,
+            file_name="website_scan_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+        )
+        reviewed_records_json = json.loads(
+            updated_records.to_json(orient="records", force_ascii=False)
+        )
+        d3.download_button(
+            "Download raw scan data — JSON",
+            data=json.dumps(
+                {
+                    "research_scope": "City of Ottawa, Ontario, Canada only",
+                    "scan_report": report.as_dict(),
+                    "reviewed_records": reviewed_records_json,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            file_name="website_scan_report_ottawa.json",
+            mime="application/json",
+            width="stretch",
+        )
+
+        st.write("**Pages scanned**")
+        st.dataframe(pages_df, width="stretch", hide_index=True)
+        if report.blocked_urls:
+            st.write("**Skipped: blocked by robots.txt or scan policy**")
+            st.dataframe(
+                pd.DataFrame({"URL": report.blocked_urls}),
+                width="stretch",
+                hide_index=True,
+            )
+        if report.errors:
+            st.write("**Errors during the scan**")
+            st.dataframe(
+                pd.DataFrame({"Error": report.errors}),
+                width="stretch",
+                hide_index=True,
+            )
+
+    return result

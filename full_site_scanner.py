@@ -1,0 +1,2492 @@
+from __future__ import annotations
+
+import gzip
+import ipaddress
+import json
+import re
+import unicodedata
+from io import BytesIO
+import socket
+import time
+import xml.etree.ElementTree as ET
+from collections import deque
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Callable, Iterable, Iterator, Literal
+from urllib.parse import parse_qsl, urlencode, urldefrag, urljoin, urlparse, urlunparse
+from urllib.robotparser import RobotFileParser
+
+import requests
+from bs4 import BeautifulSoup, Tag
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+try:
+    from pypdf import PdfReader
+except ImportError:  # Official-PDF unit recovery is optional when pypdf is unavailable.
+    PdfReader = None
+
+try:
+    import tldextract
+except ImportError:  # pragma: no cover - handled with a clear runtime error
+    tldextract = None
+
+try:
+    from playwright.sync_api import Browser, Page, Playwright, sync_playwright
+except ImportError:  # Playwright is optional unless JavaScript rendering is requested.
+    Browser = Page = Playwright = None
+    sync_playwright = None
+
+
+RenderMode = Literal["html", "auto", "javascript"]
+ProgressCallback = Callable[[dict], None]
+CheckpointCallback = Callable[["ScanReport"], None]
+
+USER_AGENT = "DatablixResearchScanner/3.4 (+human-reviewed research tool)"
+DEFAULT_TIMEOUT = 20
+MAX_HTML_BYTES = 8_000_000
+MAX_SITEMAP_BYTES = 12_000_000
+MAX_PDF_BYTES = 15_000_000
+
+TRACKING_QUERY_KEYS = {
+    "fbclid",
+    "gclid",
+    "mc_cid",
+    "mc_eid",
+    "ref",
+    "ref_src",
+    "source",
+    "utm_campaign",
+    "utm_content",
+    "utm_medium",
+    "utm_source",
+    "utm_term",
+}
+
+SKIP_EXTENSIONS = {
+    ".7z", ".avi", ".bmp", ".css", ".csv", ".doc", ".docx", ".eot",
+    ".epub", ".gif", ".gz", ".ico", ".jpeg", ".jpg", ".js", ".json",
+    ".m4a", ".m4v", ".mov", ".mp3", ".mp4", ".mpeg", ".mpg", ".ods",
+    ".odt", ".otf", ".pdf", ".png", ".ppt", ".pptx", ".rar", ".rss",
+    ".svg", ".tar", ".tif", ".tiff", ".ttf", ".txt", ".wav", ".webm",
+    ".webp", ".woff", ".woff2", ".xls", ".xlsx", ".xml", ".zip",
+}
+
+LOW_PRIORITY_PATH_WORDS = {
+    "accessibility", "author", "blog", "careers", "category", "cookies",
+    "events", "feed", "legal", "login", "news", "privacy", "register",
+    "search", "signin", "signup", "tag", "terms", "wp-admin", "wp-login",
+}
+
+HIGH_PRIORITY_WORDS = {
+    "apartment", "apartments", "building", "buildings", "communities",
+    "community", "contact", "details", "location", "locations", "portfolio",
+    "properties", "property", "rental", "rentals", "residence", "residences",
+    "residential", "suite", "suites", "unit", "units", "brochure",
+}
+
+STREET_SUFFIX_PATTERN = (
+    r"(?:Avenue|Ave\.?|Boulevard|Blvd\.?|Circle|Court|Ct\.?|Crescent|Cres\.?|"
+    r"Drive|Dr\.?|Highway|Hwy\.?|Lane|Ln\.?|Parkway|Pkwy\.?|Place|Pl\.?|"
+    r"Road|Rd\.?|Route|Street|St\.?|Terrace|Ter\.?|Trail|Way)"
+)
+CANADIAN_POSTAL_PATTERN = r"[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][ -]?\d[ABCEGHJ-NPRSTV-Z]\d"
+ADDRESS_LINE_RE = re.compile(
+    rf"\b\d{{1,6}}(?:[-–]\d{{1,6}})?\s+[A-Za-z0-9À-ÿ'’.,#&\- ]{{2,90}}?\s+{STREET_SUFFIX_PATTERN}\b"
+    rf"(?:[^\n]{{0,100}}?\b{CANADIAN_POSTAL_PATTERN}\b)?",
+    re.IGNORECASE,
+)
+POSTAL_RE = re.compile(rf"\b{CANADIAN_POSTAL_PATTERN}\b", re.IGNORECASE)
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+PHONE_RE = re.compile(
+    r"(?<!\d)(?:\+?1[ .\-]?)?(?:\(?\d{3}\)?[ .\-]?)\d{3}[ .\-]?\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?(?!\d)",
+    re.IGNORECASE,
+)
+# Apartment/unit-count wording varies widely across Canadian property sources.
+# Keep several evidence patterns rather than relying on only "176 units".
+UNIT_TERM_PATTERN = (
+    r"(?:(?:residential|rental)\s+)?(?:apartments?|units?|suites?|residences?|homes?)"
+    r"|dwelling\s+units?|housing\s+units?|doors?"
+)
+UNIT_TERM_PATTERN = rf"(?:{UNIT_TERM_PATTERN})"
+UNIT_NUMBER_PATTERN = r"(?:\d{1,3}(?:,\d{3})+|\d{1,5})"
+
+# Number-first wording: "176 units", "176-unit building", "176 rental suites".
+UNIT_COUNT_RE = re.compile(
+    rf"\b({UNIT_NUMBER_PATTERN})\s*(?:[-–]\s*)?{UNIT_TERM_PATTERN}\b",
+    re.IGNORECASE,
+)
+
+# Label-first wording: "Number of units: 176", "Unit count = 176",
+# "Total suites — 176". The delimiter/relationship requirement prevents ordinary
+# phrases such as "unit 176" from being treated as a building total.
+UNIT_COUNT_LABEL_RE = re.compile(
+    rf"\b(?:total\s+)?(?:number\s+of\s+)?{UNIT_TERM_PATTERN}\s*"
+    rf"(?:count\s*)?(?:[:=#–—-]|\bis\b|\bare\b)\s*({UNIT_NUMBER_PATTERN})\b",
+    re.IGNORECASE,
+)
+
+# Flattened cards/tables often lose punctuation: "Number of units 176". Require
+# an explicit total/number-of label before accepting bare whitespace separation.
+UNIT_COUNT_EXPLICIT_LABEL_RE = re.compile(
+    rf"\b(?:number\s+of|total)\s+{UNIT_TERM_PATTERN}\s*"
+    rf"(?:count\s*)?(?:[:=#–—-]\s*)?({UNIT_NUMBER_PATTERN})\b",
+    re.IGNORECASE,
+)
+
+# Narrative wording frequently used in acquisition releases, planning pages, and
+# brochures: "the property comprises 176 suites".
+UNIT_COUNT_NARRATIVE_RE = re.compile(
+    rf"\b(?:contains?|comprises?|comprised\s+of|includes?|features?|offers?|"
+    rf"consists?\s+of|houses?|has)\s+(?:a\s+)?(?:total\s+of\s+)?"
+    rf"({UNIT_NUMBER_PATTERN})\s*(?:[-–]\s*)?{UNIT_TERM_PATTERN}\b",
+    re.IGNORECASE,
+)
+
+# Availability is not total inventory. Reject matches such as "12 units available"
+# while retaining a true total elsewhere on the same page.
+UNIT_COUNT_AVAILABILITY_BEFORE_RE = re.compile(
+    rf"(?:"
+    rf"(?:available|vacant|currently\s+available|currently\s+vacant|remaining)\s+"
+    rf"{UNIT_TERM_PATTERN}\s*(?:[:=#–—-]\s*)?"
+    rf"|(?:available|vacant|currently\s+available|currently\s+vacant|remaining)\s*"
+    rf")$",
+    re.IGNORECASE,
+)
+UNIT_COUNT_AVAILABILITY_AFTER_RE = re.compile(
+    r"^\s*(?:are\s+)?(?:currently\s+)?(?:available|vacant|remaining|left)\b",
+    re.IGNORECASE,
+)
+STOREY_TERM_PATTERN = r"(?:storey|storeys|story|stories|floor|floors|level|levels)"
+
+# Number-first wording commonly used on Canadian property pages:
+# "6 storeys", "6-story", "6 floors", "6 levels".
+STOREY_RE = re.compile(
+    rf"\b(\d{{1,3}})\s*(?:[-–]\s*)?{STOREY_TERM_PATTERN}\b",
+    re.IGNORECASE,
+)
+
+# Label-first wording is accepted only when the page clearly presents a field/value
+# relationship. This intentionally does not treat a plain phrase such as "floor 2"
+# as a building-height count because that usually describes a unit location.
+STOREY_LABEL_RE = re.compile(
+    rf"\b(?:number\s+of\s+)?(?:storeys|stories|floors|levels)\s*"
+    rf"(?:[:=\-]|\bis\b|\bare\b)\s*(\d{{1,3}})\b",
+    re.IGNORECASE,
+)
+
+STOREY_EXCLUSION_CONTEXT_RE = re.compile(
+    r"\b(?:apartment|apt|suite|unit)\b.{0,45}\b(?:on|at|located)\b"
+    r"|\b(?:parking|garage|underground|basement|mezzanine|podium|mechanical|roof|rooftop)\b",
+    re.IGNORECASE,
+)
+CLASSIFICATION_PATTERNS = [
+    ("High Rise", re.compile(r"\b(?:high[-\s]?rise|apartment\s+tower)\b", re.IGNORECASE)),
+    ("Mid Rise", re.compile(r"\bmid[-\s]?rise\b", re.IGNORECASE)),
+    ("Low Rise", re.compile(r"\blow[-\s]?rise\b", re.IGNORECASE)),
+    ("Townhome", re.compile(r"\b(?:townhome|townhouse)s?\b", re.IGNORECASE)),
+    ("Duplex", re.compile(r"\bduplex(?:es)?\b", re.IGNORECASE)),
+    ("Garden Home", re.compile(r"\bgarden\s+(?:home|apartment)s?\b", re.IGNORECASE)),
+    ("Luxury", re.compile(r"\bluxury\b", re.IGNORECASE)),
+    ("Adult-oriented", re.compile(r"\badult[-\s]?oriented\b", re.IGNORECASE)),
+]
+
+AMENITY_PATTERNS = [
+    ("Air conditioning", re.compile(r"\b(?:air conditioning|air[- ]conditioned|a/c)\b", re.IGNORECASE)),
+    ("Balcony", re.compile(r"\b(?:balcony|balconies)\b", re.IGNORECASE)),
+    ("Bike storage", re.compile(r"\b(?:bike|bicycle)\s+(?:room|storage|parking)\b", re.IGNORECASE)),
+    ("Dishwasher", re.compile(r"\bdishwasher(?:s)?\b", re.IGNORECASE)),
+    ("Elevator", re.compile(r"\belevator(?:s)?\b", re.IGNORECASE)),
+    ("Fitness centre", re.compile(r"\b(?:fitness\s+(?:centre|center|room)|gym)\b", re.IGNORECASE)),
+    ("Laundry", re.compile(r"\b(?:laundry|washer|dryer|washers|dryers)\b", re.IGNORECASE)),
+    ("Parking", re.compile(r"\b(?:parking|garage|carport)\b", re.IGNORECASE)),
+    ("Pet friendly", re.compile(r"\b(?:pet[- ]friendly|pets?\s+(?:allowed|welcome))\b", re.IGNORECASE)),
+    ("Playground", re.compile(r"\bplayground\b", re.IGNORECASE)),
+    ("Pool", re.compile(r"\b(?:indoor\s+pool|outdoor\s+pool|swimming\s+pool|pool)\b", re.IGNORECASE)),
+    ("Security", re.compile(r"\b(?:secure entry|controlled access|security system|security cameras?|surveillance)\b", re.IGNORECASE)),
+    ("Storage", re.compile(r"\b(?:storage locker|storage lockers|storage room)\b", re.IGNORECASE)),
+]
+AMENITY_HEADING_RE = re.compile(
+    r"\b(?:amenit(?:y|ies)|building features?|community features?|property features?)\b",
+    re.IGNORECASE,
+)
+
+INVENTORY_STATUS_CURRENT = "Current inventory"
+INVENTORY_STATUS_REVIEW = "Review inventory"
+INVENTORY_STATUS_EXCLUDED = "Excluded — not in current inventory"
+INVENTORY_SOURCE_HTML_SITEMAP = "HTML sitemap"
+INVENTORY_SOURCE_CITY_PORTFOLIO = "City / portfolio page"
+PROPERTY_CONTAINER_SEGMENTS = {
+    "property", "properties", "building", "buildings", "community",
+    "communities", "residence", "residences",
+}
+INVENTORY_INDEX_MARKERS = {
+    "apartments", "buildings", "communities", "locations", "portfolio",
+    "properties", "property search", "rentals", "rent", "find a home",
+}
+
+SCHEMA_PROPERTY_TYPES = {
+    "Accommodation", "Apartment", "ApartmentComplex", "House", "Place",
+    "Residence", "SingleFamilyResidence", "RealEstateListing",
+}
+SCHEMA_ORG_TYPES = {
+    "Corporation", "LocalBusiness", "Organization", "RealEstateAgent",
+}
+
+
+class WebsiteScanError(RuntimeError):
+    """Raised when a website cannot be scanned safely or correctly."""
+
+
+@dataclass(slots=True)
+class ScanOptions:
+    max_pages: int = 100
+    max_depth: int = 5
+    request_delay_seconds: float = 0.75
+    request_timeout_seconds: int = DEFAULT_TIMEOUT
+    render_mode: RenderMode = "auto"
+    use_sitemaps: bool = True
+    include_subdomains: bool = True
+    maximum_sitemap_urls: int = 5_000
+    maximum_queue_urls: int = 10_000
+    follow_query_strings: bool = False
+    obey_robots_txt: bool = True
+    stop_after_consecutive_failures: int = 25
+    checkpoint_every_pages: int = 10
+    recover_unit_counts_from_official_pdfs: bool = True
+    maximum_unit_recovery_pdfs: int = 12
+
+    def validate(self) -> None:
+        if not 1 <= self.max_pages <= 2_000:
+            raise WebsiteScanError("Maximum pages must be between 1 and 2,000.")
+        if not 0 <= self.max_depth <= 20:
+            raise WebsiteScanError("Maximum depth must be between 0 and 20.")
+        if not 0.1 <= self.request_delay_seconds <= 30:
+            raise WebsiteScanError("Request delay must be between 0.1 and 30 seconds.")
+        if not 5 <= self.request_timeout_seconds <= 120:
+            raise WebsiteScanError("Request timeout must be between 5 and 120 seconds.")
+        if self.render_mode not in {"html", "auto", "javascript"}:
+            raise WebsiteScanError("Unknown rendering mode.")
+        if not 1 <= self.checkpoint_every_pages <= 500:
+            raise WebsiteScanError(
+                "Checkpoint interval must be between 1 and 500 pages."
+            )
+        if not 0 <= self.maximum_unit_recovery_pdfs <= 100:
+            raise WebsiteScanError("Maximum unit-recovery PDFs must be between 0 and 100.")
+
+
+@dataclass(slots=True)
+class PageResult:
+    url: str
+    final_url: str
+    depth: int
+    status_code: int | None
+    content_type: str
+    page_title: str
+    heading: str
+    rendered_with_javascript: bool
+    discovered_links: int
+    extracted_records: int
+    scanned_at_utc: str
+    outcome: str
+    error: str = ""
+
+
+@dataclass(slots=True)
+class RecordCandidate:
+    approved: bool = False
+    building_name: str = ""
+    management_owner: str = ""
+    street_address: str = ""
+    address_line_2: str = ""
+    city: str = ""
+    province: str = ""
+    postal_code: str = ""
+    country: str = ""
+    phone: str = ""
+    primary_email: str = ""
+    website: str = ""
+    number_of_apartments: str = ""
+    apartment_count_search_status: str = "Not Checked"
+    apartment_count_source_url: str = ""
+    apartment_count_evidence: str = ""
+    apartment_count_confidence: str = "Not Checked"
+    number_of_storeys: str = ""
+    amenities: str = ""
+    building_classification: str = ""
+    source_url: str = ""
+    source_page_title: str = ""
+    extraction_method: str = ""
+    confidence: float = 0.0
+    review_status: str = "Review required"
+    evidence: str = ""
+    inventory_status: str = INVENTORY_STATUS_REVIEW
+    inventory_evidence: str = ""
+    found_on_city_page: bool = False
+    found_on_html_sitemap: bool = False
+    found_on_xml_sitemap: bool = False
+    exclusion_reason: str = ""
+
+
+@dataclass(slots=True)
+class ScanReport:
+    start_url: str
+    pages: list[PageResult] = field(default_factory=list)
+    records: list[RecordCandidate] = field(default_factory=list)
+    blocked_urls: list[str] = field(default_factory=list)
+    skipped_urls: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    started_at_utc: str = ""
+    completed_at_utc: str = ""
+    completion_reason: str = ""
+    remaining_queue_urls: int = 0
+    visited_urls: int = 0
+
+    def as_dict(self) -> dict:
+        return {
+            "start_url": self.start_url,
+            "pages": [asdict(item) for item in self.pages],
+            "records": [asdict(item) for item in self.records],
+            "blocked_urls": self.blocked_urls,
+            "skipped_urls": self.skipped_urls,
+            "errors": self.errors,
+            "started_at_utc": self.started_at_utc,
+            "completed_at_utc": self.completed_at_utc,
+            "completion_reason": self.completion_reason,
+            "remaining_queue_urls": self.remaining_queue_urls,
+            "visited_urls": self.visited_urls,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ScanReport":
+        """Rebuild a scan report saved as JSON."""
+        return cls(
+            start_url=str(data.get("start_url", "")),
+            pages=[
+                PageResult(**item)
+                for item in data.get("pages", [])
+                if isinstance(item, dict)
+            ],
+            records=[
+                RecordCandidate(**item)
+                for item in data.get("records", [])
+                if isinstance(item, dict)
+            ],
+            blocked_urls=list(data.get("blocked_urls", [])),
+            skipped_urls=list(data.get("skipped_urls", [])),
+            errors=list(data.get("errors", [])),
+            started_at_utc=str(data.get("started_at_utc", "")),
+            completed_at_utc=str(data.get("completed_at_utc", "")),
+            completion_reason=str(data.get("completion_reason", "")),
+            remaining_queue_urls=int(data.get("remaining_queue_urls", 0) or 0),
+            visited_urls=int(data.get("visited_urls", 0) or 0),
+        )
+
+
+@dataclass(slots=True)
+class FetchResult:
+    requested_url: str
+    final_url: str
+    status_code: int
+    content_type: str
+    html: str
+    rendered_with_javascript: bool
+
+
+@dataclass(slots=True)
+class RobotsRules:
+    parser: RobotFileParser | None
+    sitemaps: list[str]
+    crawl_delay: float | None
+
+
+class FullSiteScanner:
+    """
+    Same-site crawler for public, permitted pages.
+
+    It supports:
+    - robots.txt checks
+    - XML sitemap and sitemap-index discovery
+    - breadth-first internal-link crawling
+    - optional JavaScript rendering with Playwright
+    - JSON-LD and HTML extraction
+    - conservative request delays and bounded crawling
+    - SSRF protection against private/local network targets
+    """
+
+    def __init__(
+        self,
+        start_url: str,
+        options: ScanOptions | None = None,
+        progress_callback: ProgressCallback | None = None,
+        checkpoint_callback: CheckpointCallback | None = None,
+    ) -> None:
+        self.options = options or ScanOptions()
+        self.options.validate()
+        self.progress_callback = progress_callback
+        self.checkpoint_callback = checkpoint_callback
+        self.start_url = self._normalize_start_url(start_url)
+        self._ensure_public_url(self.start_url)
+
+        parsed = urlparse(self.start_url)
+        self.start_origin = f"{parsed.scheme}://{parsed.netloc}"
+        self.start_host = parsed.hostname or ""
+        self.registered_domain = self._registered_domain(self.start_host)
+
+        self.session = self._build_session()
+        self.robots_cache: dict[str, RobotsRules] = {}
+        self.playwright_context = None
+        self.browser: Browser | None = None
+        self.page: Page | None = None
+        self._last_request_monotonic = 0.0
+
+        # Current-inventory evidence is collected separately from raw URL discovery.
+        # A property URL can remain technically accessible after it leaves a company's
+        # current portfolio, so XML discovery alone is never treated as proof of currency.
+        self.inventory_link_sources: dict[str, set[str]] = {}
+        self.inventory_source_pages: dict[str, str] = {}
+        self.xml_sitemap_property_urls: set[str] = set()
+        self.official_pdf_candidates: dict[str, str] = {}
+
+    def scan(self) -> ScanReport:
+        report = ScanReport(
+            start_url=self.start_url,
+            started_at_utc=self._utc_now(),
+        )
+
+        queue: deque[tuple[str, int, int]] = deque()
+        queued: set[str] = set()
+        visited: set[str] = set()
+
+        self._enqueue(queue, queued, self.start_url, depth=0, priority=-5)
+
+        if self.options.use_sitemaps:
+            # Human-readable sitemap pages often reflect the company's current
+            # portfolio more accurately than technical XML discovery feeds.
+            for html_sitemap_url in self._html_sitemap_candidates(self.start_url):
+                self._enqueue(
+                    queue, queued, html_sitemap_url, depth=0, priority=-4
+                )
+
+            for sitemap_url in self._discover_sitemap_urls(self.start_url, report):
+                for page_url in self._read_sitemap_tree(sitemap_url, report):
+                    if self._looks_like_property_detail_url(page_url):
+                        self.xml_sitemap_property_urls.add(
+                            self._canonicalize_url(page_url)
+                        )
+                        # XML URLs are useful for coverage, but they are deliberately
+                        # lower priority because they may contain legacy routes.
+                        priority = 1
+                    else:
+                        priority = max(self._url_priority(page_url), 0)
+                    self._enqueue(queue, queued, page_url, depth=0, priority=priority)
+                    if len(queued) >= self.options.maximum_queue_urls:
+                        break
+                if len(queued) >= self.options.maximum_queue_urls:
+                    break
+
+        # Deque insertion above is simple and stable. Sort once so likely property pages
+        # discovered from sitemaps are visited early, while still crawling the whole site.
+        queue = deque(sorted(queue, key=lambda item: (item[2], item[1], item[0])))
+        consecutive_failures = 0
+        stopped_after_failures = False
+
+        self._start_browser_if_needed()
+
+        try:
+            while queue and len(report.pages) < self.options.max_pages:
+                current_url, depth, _priority = queue.popleft()
+                current_url = self._canonicalize_url(current_url)
+
+                if current_url in visited:
+                    continue
+                visited.add(current_url)
+
+                if not self._is_in_scope(current_url) or self._should_skip_url(current_url):
+                    report.skipped_urls.append(current_url)
+                    continue
+
+                if self.options.obey_robots_txt and not self._robots_allows(current_url):
+                    report.blocked_urls.append(current_url)
+                    self._notify(report, current_url, "Blocked by robots.txt")
+                    continue
+
+                try:
+                    fetch = self._fetch_page(current_url)
+                    consecutive_failures = 0
+                except Exception as exc:  # continue crawling after page-specific failures
+                    consecutive_failures += 1
+                    error_message = f"{current_url}: {exc}"
+                    report.errors.append(error_message)
+                    report.pages.append(
+                        PageResult(
+                            url=current_url,
+                            final_url=current_url,
+                            depth=depth,
+                            status_code=None,
+                            content_type="",
+                            page_title="",
+                            heading="",
+                            rendered_with_javascript=False,
+                            discovered_links=0,
+                            extracted_records=0,
+                            scanned_at_utc=self._utc_now(),
+                            outcome="Error",
+                            error=str(exc),
+                        )
+                    )
+                    self._notify(report, current_url, "Error")
+                    self._checkpoint(report)
+                    if consecutive_failures >= self.options.stop_after_consecutive_failures:
+                        report.errors.append(
+                            "Scan stopped after too many consecutive page failures."
+                        )
+                        stopped_after_failures = True
+                        break
+                    continue
+
+                soup = self._make_soup(fetch.html)
+                page_title = self._page_title(soup)
+                heading = self._page_heading(soup)
+
+                records = self._extract_records(fetch.final_url, soup, page_title)
+                report.records.extend(records)
+
+                links = self._extract_internal_links(fetch.final_url, soup)
+                source_kind = self._inventory_source_kind(
+                    fetch.final_url, soup, page_title, heading, links
+                )
+                self._register_inventory_links(
+                    fetch.final_url, source_kind, links
+                )
+
+                if depth < self.options.max_depth:
+                    for link_url in links:
+                        priority = self._url_priority(link_url)
+                        if (
+                            source_kind
+                            and self._looks_like_property_detail_url(link_url)
+                        ):
+                            priority = -3
+                        self._enqueue(
+                            queue,
+                            queued,
+                            link_url,
+                            depth=depth + 1,
+                            priority=priority,
+                        )
+
+                report.pages.append(
+                    PageResult(
+                        url=current_url,
+                        final_url=fetch.final_url,
+                        depth=depth,
+                        status_code=fetch.status_code,
+                        content_type=fetch.content_type,
+                        page_title=page_title,
+                        heading=heading,
+                        rendered_with_javascript=fetch.rendered_with_javascript,
+                        discovered_links=len(links),
+                        extracted_records=len(records),
+                        scanned_at_utc=self._utc_now(),
+                        outcome="Scanned",
+                    )
+                )
+                self._notify(report, fetch.final_url, "Scanned")
+                self._checkpoint(report)
+
+            report.records = self._apply_inventory_status(report.records)
+            report.records = self._deduplicate_records(report.records)
+            if self.options.recover_unit_counts_from_official_pdfs:
+                report.records = self._recover_missing_unit_counts_from_official_pdfs(report.records, report)
+            report.completed_at_utc = self._utc_now()
+            report.remaining_queue_urls = len(queue)
+            report.visited_urls = len(visited)
+
+            if stopped_after_failures:
+                report.completion_reason = "failure_limit"
+            elif len(report.pages) >= self.options.max_pages:
+                report.completion_reason = "page_limit"
+            elif not queue:
+                report.completion_reason = "queue_exhausted"
+            else:
+                report.completion_reason = "completed"
+
+            self._notify(
+                report,
+                report.start_url,
+                f"Complete: {report.completion_reason}",
+            )
+            self._checkpoint(report, force=True)
+            return report
+        finally:
+            self.close()
+
+    def _close_browser(self) -> None:
+        if self.page is not None:
+            try:
+                self.page.close()
+            except Exception:
+                pass
+            self.page = None
+        if self.browser is not None:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
+        if self.playwright_context is not None:
+            try:
+                self.playwright_context.stop()
+            except Exception:
+                pass
+            self.playwright_context = None
+
+    def close(self) -> None:
+        self._close_browser()
+        self.session.close()
+
+    # ------------------------------------------------------------------
+    # Fetching, rendering, robots, and sitemap discovery
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_session() -> requests.Session:
+        session = requests.Session()
+        retry = Retry(
+            total=2,
+            connect=2,
+            read=2,
+            status=2,
+            backoff_factor=0.75,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "HEAD"}),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        session.headers.update(
+            {
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
+                "Accept-Language": "en-CA,en;q=0.9,fr-CA;q=0.7,fr;q=0.6",
+            }
+        )
+        return session
+
+    def _fetch_page(self, url: str) -> FetchResult:
+        self._ensure_public_url(url)
+        self._respect_delay(url)
+
+        response = self.session.get(
+            url,
+            timeout=self.options.request_timeout_seconds,
+            allow_redirects=True,
+            stream=True,
+        )
+        response.raise_for_status()
+
+        final_url = self._canonicalize_url(response.url)
+        self._ensure_public_url(final_url)
+        if not self._is_in_scope(final_url):
+            raise WebsiteScanError("Redirected outside the permitted website scope.")
+
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+        if content_type and content_type not in {"text/html", "application/xhtml+xml"}:
+            raise WebsiteScanError(f"Unsupported content type: {content_type}")
+
+        raw = self._read_limited_response(response, MAX_HTML_BYTES)
+        encoding = response.encoding or response.apparent_encoding or "utf-8"
+        html = raw.decode(encoding, errors="replace")
+        rendered = False
+
+        should_render = self.options.render_mode == "javascript" or (
+            self.options.render_mode == "auto"
+            and (
+                self._looks_javascript_dependent(html)
+                or self._property_page_missing_critical_html(final_url, html)
+            )
+        )
+        if should_render and self.page is not None:
+            html, final_url = self._render_with_playwright(final_url)
+            rendered = True
+        elif should_render and self.options.render_mode == "javascript":
+            raise WebsiteScanError("JavaScript browser rendering is unavailable.")
+
+        return FetchResult(
+            requested_url=url,
+            final_url=self._canonicalize_url(final_url),
+            status_code=response.status_code,
+            content_type=content_type or "text/html",
+            html=html,
+            rendered_with_javascript=rendered,
+        )
+
+    @staticmethod
+    def _read_limited_response(response: requests.Response, limit: int) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > limit:
+                raise WebsiteScanError("Page exceeded the configured size limit.")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _looks_javascript_dependent(self, html: str) -> bool:
+        soup = self._make_soup(html)
+        visible_text = self._visible_text(soup)
+        links = soup.find_all("a", href=True)
+        script_count = len(soup.find_all("script"))
+        app_markers = bool(
+            soup.select_one("#__next, #root, #app, [data-reactroot], [ng-version]")
+        )
+        hydration_markers = any(
+            marker in html
+            for marker in ("__NEXT_DATA__", "__NUXT__", "webpackJsonp", "hydrateRoot")
+        )
+        return (
+            (len(visible_text) < 350 and script_count >= 4)
+            or (len(links) < 3 and script_count >= 6)
+            or (app_markers and len(visible_text) < 1_000)
+            or hydration_markers
+        )
+
+    def _property_page_missing_critical_html(self, url: str, html: str) -> bool:
+        """Render likely property pages when raw HTML omits common visible details."""
+        if not self._looks_like_property_detail_url(url):
+            return False
+        soup = self._make_soup(html)
+        visible_text = self._visible_text(soup)
+        if len(visible_text) < 450:
+            return True
+        # Postal codes are commonly visible in the browser but injected after load.
+        # Rendering when they are missing fixes that gap without forcing JavaScript
+        # rendering on every page in the website.
+        return POSTAL_RE.search(visible_text) is None
+
+    def _start_browser_if_needed(self) -> None:
+        if self.options.render_mode == "html":
+            return
+        if sync_playwright is None:
+            if self.options.render_mode == "javascript":
+                raise WebsiteScanError(
+                    "JavaScript rendering was selected, but Playwright is not installed."
+                )
+            return
+
+        try:
+            self.playwright_context = sync_playwright().start()
+            self.browser = self.playwright_context.chromium.launch(headless=True)
+            self.page = self.browser.new_page(
+                user_agent=USER_AGENT,
+                locale="en-CA",
+                viewport={"width": 1440, "height": 1000},
+            )
+            self.page.route(
+                "**/*",
+                lambda route: route.abort()
+                if route.request.resource_type in {"image", "media", "font"}
+                else route.continue_(),
+            )
+        except Exception as exc:
+            self._close_browser()
+            if self.options.render_mode == "javascript":
+                raise WebsiteScanError(
+                    "Playwright could not start. Install its Chromium browser binary."
+                ) from exc
+
+    def _render_with_playwright(self, url: str) -> tuple[str, str]:
+        if self.page is None:
+            raise WebsiteScanError("JavaScript browser rendering is unavailable.")
+
+        self._ensure_public_url(url)
+        response = self.page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=self.options.request_timeout_seconds * 1_000,
+        )
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=6_000)
+        except Exception:
+            pass
+
+        final_url = self._canonicalize_url(self.page.url)
+        self._ensure_public_url(final_url)
+        if not self._is_in_scope(final_url):
+            raise WebsiteScanError("Browser navigation left the permitted website scope.")
+
+        if response is not None and response.status >= 400:
+            raise WebsiteScanError(f"Browser returned HTTP {response.status}.")
+
+        return self.page.content(), final_url
+
+    def _robots_for_url(self, url: str) -> RobotsRules:
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin in self.robots_cache:
+            return self.robots_cache[origin]
+
+        robots_url = urljoin(origin, "/robots.txt")
+        parser: RobotFileParser | None = None
+        sitemaps: list[str] = []
+        crawl_delay: float | None = None
+
+        try:
+            self._ensure_public_url(robots_url)
+            response = self.session.get(
+                robots_url,
+                timeout=self.options.request_timeout_seconds,
+                allow_redirects=True,
+            )
+            if response.ok and len(response.content) <= 1_000_000:
+                text = response.text
+                parser = RobotFileParser()
+                parser.set_url(robots_url)
+                parser.parse(text.splitlines())
+                crawl_delay = parser.crawl_delay(USER_AGENT) or parser.crawl_delay("*")
+                for line in text.splitlines():
+                    if line.lower().startswith("sitemap:"):
+                        candidate = line.split(":", 1)[1].strip()
+                        if candidate:
+                            sitemaps.append(urljoin(origin, candidate))
+            elif response.status_code in {401, 403}:
+                parser = RobotFileParser()
+                parser.set_url(robots_url)
+                parser.parse(["User-agent: *", "Disallow: /"])
+        except requests.RequestException:
+            parser = None
+
+        rules = RobotsRules(parser=parser, sitemaps=list(dict.fromkeys(sitemaps)), crawl_delay=crawl_delay)
+        self.robots_cache[origin] = rules
+        return rules
+
+    def _robots_allows(self, url: str) -> bool:
+        rules = self._robots_for_url(url)
+        if rules.parser is None:
+            return True
+        return rules.parser.can_fetch(USER_AGENT, url)
+
+    def _html_sitemap_candidates(self, start_url: str) -> list[str]:
+        parsed = urlparse(start_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        return [
+            urljoin(origin, "/sitemap"),
+            urljoin(origin, "/site-map"),
+        ]
+
+    def _discover_sitemap_urls(self, start_url: str, report: ScanReport) -> list[str]:
+        parsed = urlparse(start_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        rules = self._robots_for_url(start_url)
+        candidates = list(rules.sitemaps)
+        candidates.extend(
+            [
+                urljoin(origin, "/sitemap.xml"),
+                urljoin(origin, "/sitemap_index.xml"),
+                urljoin(origin, "/sitemap-index.xml"),
+                urljoin(origin, "/wp-sitemap.xml"),
+            ]
+        )
+        valid: list[str] = []
+        for url in dict.fromkeys(candidates):
+            if self._is_in_scope(url) and not self._should_skip_url(url, allow_xml=True):
+                valid.append(url)
+        return valid
+
+    def _read_sitemap_tree(self, sitemap_url: str, report: ScanReport) -> Iterator[str]:
+        pending = deque([sitemap_url])
+        seen_sitemaps: set[str] = set()
+        yielded_urls = 0
+
+        while pending and yielded_urls < self.options.maximum_sitemap_urls:
+            current = self._canonicalize_url(pending.popleft(), keep_query=True)
+            if current in seen_sitemaps:
+                continue
+            seen_sitemaps.add(current)
+
+            try:
+                self._ensure_public_url(current)
+                if self.options.obey_robots_txt and not self._robots_allows(current):
+                    report.blocked_urls.append(current)
+                    continue
+                self._respect_delay(current)
+                response = self.session.get(
+                    current,
+                    timeout=self.options.request_timeout_seconds,
+                    allow_redirects=True,
+                )
+                response.raise_for_status()
+                data = response.content
+                if len(data) > MAX_SITEMAP_BYTES:
+                    raise WebsiteScanError("Sitemap exceeded the size limit.")
+                if current.lower().endswith(".gz") or data[:2] == b"\x1f\x8b":
+                    data = gzip.decompress(data)
+                root = ET.fromstring(data)
+            except Exception as exc:
+                # Common sitemap guesses often do not exist, so keep these errors quiet.
+                if current in self._robots_for_url(self.start_url).sitemaps:
+                    report.errors.append(f"Could not read declared sitemap {current}: {exc}")
+                continue
+
+            root_name = self._xml_local_name(root.tag)
+            if root_name == "sitemapindex":
+                for loc in self._xml_locations(root):
+                    loc = urljoin(current, loc)
+                    if self._is_in_scope(loc):
+                        pending.append(loc)
+            elif root_name == "urlset":
+                for loc in self._xml_locations(root):
+                    loc = self._canonicalize_url(urljoin(current, loc))
+                    if not self._is_in_scope(loc) or self._should_skip_url(loc):
+                        continue
+                    yielded_urls += 1
+                    yield loc
+                    if yielded_urls >= self.options.maximum_sitemap_urls:
+                        break
+
+    @staticmethod
+    def _xml_local_name(tag: str) -> str:
+        return tag.split("}", 1)[-1].lower()
+
+    def _xml_locations(self, root: ET.Element) -> Iterator[str]:
+        for element in root.iter():
+            if self._xml_local_name(element.tag) == "loc" and element.text:
+                yield element.text.strip()
+
+    def _respect_delay(self, url: str) -> None:
+        robots_delay = self._robots_for_url(url).crawl_delay
+        delay = max(self.options.request_delay_seconds, robots_delay or 0.0)
+        elapsed = time.monotonic() - self._last_request_monotonic
+        if elapsed < delay:
+            time.sleep(delay - elapsed)
+        self._last_request_monotonic = time.monotonic()
+
+    # ------------------------------------------------------------------
+    # URL normalization, scope, and SSRF protection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_start_url(value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise WebsiteScanError("Enter a website address.")
+        if not value.startswith(("http://", "https://")):
+            value = f"https://{value}"
+
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise WebsiteScanError("Enter a valid HTTP or HTTPS website address.")
+        if parsed.username or parsed.password:
+            raise WebsiteScanError("Website addresses containing credentials are not supported.")
+
+        normalized = FullSiteScanner._canonicalize_url(value)
+        if not normalized:
+            raise WebsiteScanError("Enter a valid HTTP or HTTPS website address.")
+        return normalized
+
+    @staticmethod
+    def _canonicalize_url(url: str, keep_query: bool = False) -> str:
+        """Return a safe, normalized HTTP(S) URL or an empty string.
+
+        Public websites sometimes contain malformed links such as a phone number
+        placed where a URL port would normally appear. ``urllib.parse`` raises a
+        ``ValueError`` when ``parsed.port`` is read from those links, so scanner
+        discovery must treat them as unusable links rather than stop the scan.
+        """
+        clean_url = str(url or "").strip()
+        if not clean_url:
+            return ""
+
+        clean_url, _fragment = urldefrag(clean_url)
+
+        try:
+            parsed = urlparse(clean_url)
+            scheme = parsed.scheme.lower()
+            if scheme not in {"http", "https"}:
+                return ""
+
+            hostname = (parsed.hostname or "").lower().rstrip(".")
+            if not hostname:
+                return ""
+
+            # Accessing parsed.port can itself raise ValueError for malformed
+            # links such as https://example.com:1-866-898-9967.
+            try:
+                port = parsed.port
+            except ValueError:
+                return ""
+        except (TypeError, ValueError):
+            return ""
+
+        host_for_netloc = f"[{hostname}]" if ":" in hostname else hostname
+        if port and not (
+            (scheme == "http" and port == 80)
+            or (scheme == "https" and port == 443)
+        ):
+            netloc = f"{host_for_netloc}:{port}"
+        else:
+            netloc = host_for_netloc
+
+        path = re.sub(r"/{2,}", "/", parsed.path or "/")
+        if path != "/" and path.endswith("/"):
+            path = path[:-1]
+
+        query = ""
+        if keep_query:
+            query = parsed.query
+        elif parsed.query:
+            filtered = [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.lower() not in TRACKING_QUERY_KEYS
+            ]
+            query = urlencode(sorted(filtered))
+
+        return urlunparse((scheme, netloc, path, "", query, ""))
+
+    def _registered_domain(self, hostname: str) -> str:
+        if tldextract is None:
+            raise WebsiteScanError(
+                "The tldextract package is required for safe same-site crawling."
+            )
+        extracted = tldextract.TLDExtract(suffix_list_urls=())(hostname)
+        registered = extracted.top_domain_under_public_suffix
+        return registered or hostname
+
+    def _is_in_scope(self, url: str) -> bool:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        hostname = parsed.hostname.lower()
+        if self.options.include_subdomains:
+            return self._registered_domain(hostname) == self.registered_domain
+        return hostname == self.start_host
+
+    @staticmethod
+    def _ensure_public_url(url: str) -> None:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if parsed.scheme not in {"http", "https"} or not hostname:
+            raise WebsiteScanError("Only valid public HTTP and HTTPS URLs can be scanned.")
+        if hostname.lower() in {"localhost", "localhost.localdomain"}:
+            raise WebsiteScanError("Local network addresses cannot be scanned.")
+
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise WebsiteScanError("The website address contains an invalid port.") from exc
+
+        try:
+            addresses = socket.getaddrinfo(
+                hostname,
+                port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        except socket.gaierror as exc:
+            raise WebsiteScanError("The website hostname could not be resolved.") from exc
+
+        for address in addresses:
+            ip_text = address[4][0].split("%", 1)[0]
+            try:
+                ip_value = ipaddress.ip_address(ip_text)
+            except ValueError:
+                continue
+            if not ip_value.is_global:
+                raise WebsiteScanError(
+                    "Private, loopback, link-local, multicast, and reserved addresses cannot be scanned."
+                )
+
+    def _should_skip_url(self, url: str, allow_xml: bool = False) -> bool:
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        extension = "." + path.rsplit(".", 1)[-1] if "." in path.rsplit("/", 1)[-1] else ""
+        if extension in SKIP_EXTENSIONS and not (allow_xml and extension in {".xml", ".gz"}):
+            return True
+        if not self.options.follow_query_strings and parsed.query:
+            return True
+        if any(word in path for word in LOW_PRIORITY_PATH_WORDS):
+            return True
+        return False
+
+    def _enqueue(
+        self,
+        queue: deque[tuple[str, int, int]],
+        queued: set[str],
+        url: str,
+        depth: int,
+        priority: int,
+    ) -> None:
+        if len(queued) >= self.options.maximum_queue_urls:
+            return
+        normalized = self._canonicalize_url(url)
+        if not normalized or normalized in queued or not self._is_in_scope(normalized):
+            return
+        if self._should_skip_url(normalized):
+            return
+        queued.add(normalized)
+        # High-priority links go to the front; all others preserve BFS behavior.
+        item = (normalized, depth, priority)
+        if priority < 0:
+            queue.appendleft(item)
+        else:
+            queue.append(item)
+
+    @staticmethod
+    def _url_priority(url: str) -> int:
+        value = url.lower()
+        if any(word in value for word in HIGH_PRIORITY_WORDS):
+            return -1
+        if any(word in value for word in LOW_PRIORITY_PATH_WORDS):
+            return 2
+        return 0
+
+    # ------------------------------------------------------------------
+    # Current-inventory evidence
+    # ------------------------------------------------------------------
+
+    def _looks_like_property_detail_url(self, url: str) -> bool:
+        try:
+            segments = [
+                segment.lower()
+                for segment in urlparse(url).path.split("/")
+                if segment
+            ]
+        except ValueError:
+            return False
+        if not segments:
+            return False
+        for index, segment in enumerate(segments):
+            if segment not in PROPERTY_CONTAINER_SEGMENTS:
+                continue
+            if index + 1 >= len(segments):
+                return False
+            slug = segments[index + 1]
+            if slug in {"search", "find", "all", "ontario", "canada"}:
+                return False
+            return True
+        return False
+
+    def _inventory_source_kind(
+        self,
+        page_url: str,
+        soup: BeautifulSoup,
+        page_title: str,
+        heading: str,
+        links: list[str],
+    ) -> str:
+        path = urlparse(page_url).path.lower().rstrip("/")
+        context = self._clean_text(f"{path} {page_title} {heading}").lower()
+        if (
+            path.endswith("/sitemap")
+            or path.endswith("/site-map")
+            or re.search(r"\bsite\s*map\b", context)
+        ):
+            return INVENTORY_SOURCE_HTML_SITEMAP
+
+        property_links = [
+            link for link in links if self._looks_like_property_detail_url(link)
+        ]
+        has_index_marker = any(marker in context for marker in INVENTORY_INDEX_MARKERS)
+        is_root = urlparse(page_url).path.strip("/") == ""
+
+        # Index pages can themselves live under paths such as /properties/ottawa.
+        # Multiple property links plus portfolio wording is stronger evidence than
+        # the URL shape, so test for an index before classifying the page as detail.
+        if len(property_links) >= 2 and has_index_marker:
+            return INVENTORY_SOURCE_CITY_PORTFOLIO
+        if is_root and len(property_links) >= 2:
+            return INVENTORY_SOURCE_CITY_PORTFOLIO
+        if self._looks_like_property_detail_url(page_url):
+            return ""
+        return ""
+
+    def _register_inventory_links(
+        self,
+        page_url: str,
+        source_kind: str,
+        links: list[str],
+    ) -> None:
+        if not source_kind:
+            return
+        canonical_page = self._canonicalize_url(page_url)
+        self.inventory_source_pages[canonical_page] = source_kind
+        for link in links:
+            if not self._looks_like_property_detail_url(link):
+                continue
+            canonical = self._canonicalize_url(link)
+            self.inventory_link_sources.setdefault(canonical, set()).add(source_kind)
+
+    def _apply_inventory_status(
+        self, records: Iterable[RecordCandidate]
+    ) -> list[RecordCandidate]:
+        records = list(records)
+        detected_source_kinds = set(self.inventory_source_pages.values())
+        has_html_sitemap = INVENTORY_SOURCE_HTML_SITEMAP in detected_source_kinds
+        has_city_portfolio = INVENTORY_SOURCE_CITY_PORTFOLIO in detected_source_kinds
+        can_auto_exclude = has_html_sitemap and has_city_portfolio
+
+        for record in records:
+            source_url = self._canonicalize_url(record.source_url or record.website)
+            sources = set(self.inventory_link_sources.get(source_url, set()))
+            source_page_kind = self.inventory_source_pages.get(source_url, "")
+            if source_page_kind:
+                sources.add(source_page_kind)
+
+            record.found_on_html_sitemap = (
+                INVENTORY_SOURCE_HTML_SITEMAP in sources
+            )
+            record.found_on_city_page = (
+                INVENTORY_SOURCE_CITY_PORTFOLIO in sources
+            )
+            record.found_on_xml_sitemap = source_url in self.xml_sitemap_property_urls
+
+            strong_sources = []
+            if record.found_on_html_sitemap:
+                strong_sources.append("current HTML sitemap")
+            if record.found_on_city_page:
+                strong_sources.append("current city/portfolio page")
+
+            if strong_sources:
+                record.inventory_status = INVENTORY_STATUS_CURRENT
+                record.inventory_evidence = "; ".join(strong_sources)
+                record.exclusion_reason = ""
+            elif (
+                can_auto_exclude
+                and self._looks_like_property_detail_url(source_url)
+            ):
+                record.inventory_status = INVENTORY_STATUS_EXCLUDED
+                record.inventory_evidence = (
+                    "Dedicated property URL was found, but it was not linked from "
+                    "either the current HTML sitemap or the current city/portfolio pages "
+                    "detected during this scan."
+                )
+                record.exclusion_reason = (
+                    "Accessible property page is not supported by current inventory evidence."
+                )
+                record.approved = False
+            else:
+                record.inventory_status = INVENTORY_STATUS_REVIEW
+                if record.found_on_xml_sitemap:
+                    record.inventory_evidence = (
+                        "Found in technical XML sitemap only; confirm current inventory manually."
+                    )
+                else:
+                    record.inventory_evidence = (
+                        "No strong current-inventory index was available for this record."
+                    )
+        return records
+
+    # ------------------------------------------------------------------
+    # HTML parsing and extraction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_soup(html: str) -> BeautifulSoup:
+        return BeautifulSoup(html, "lxml")
+
+    @staticmethod
+    def _clean_text(value: str | None) -> str:
+        if not value:
+            return ""
+        return re.sub(r"\s+", " ", value).strip(" \t\r\n|–—-")
+
+    def _visible_text(self, soup: BeautifulSoup) -> str:
+        cloned = BeautifulSoup(str(soup), "lxml")
+        for node in cloned(["script", "style", "noscript", "svg", "template"]):
+            node.decompose()
+        return self._clean_text(cloned.get_text(" ", strip=True))
+
+    def _page_title(self, soup: BeautifulSoup) -> str:
+        title = self._clean_text(soup.title.get_text(" ", strip=True) if soup.title else "")
+        return title[:300]
+
+    def _page_heading(self, soup: BeautifulSoup) -> str:
+        heading = soup.find("h1") or soup.find("h2")
+        return self._clean_text(heading.get_text(" ", strip=True) if heading else "")[:300]
+
+    def _extract_internal_links(self, base_url: str, soup: BeautifulSoup) -> list[str]:
+        links: set[str] = set()
+        ignored_schemes = {
+            "mailto",
+            "tel",
+            "sms",
+            "fax",
+            "javascript",
+            "data",
+            "blob",
+            "file",
+            "whatsapp",
+        }
+
+        for tag in soup.find_all("a", href=True):
+            href = self._clean_text(tag.get("href"))
+            if not href or href.startswith("#"):
+                continue
+
+            # Skip every non-web scheme before urljoin() can reinterpret it.
+            try:
+                href_scheme = urlparse(href).scheme.lower()
+            except (TypeError, ValueError):
+                continue
+            if href_scheme in ignored_schemes:
+                continue
+            if href_scheme and href_scheme not in {"http", "https"}:
+                continue
+
+            try:
+                candidate = self._canonicalize_url(urljoin(base_url, href))
+            except (TypeError, ValueError):
+                continue
+
+            # A malformed link is ignored; it must not stop the full scan.
+            if not candidate:
+                continue
+            if not self._is_in_scope(candidate):
+                continue
+            if urlparse(candidate).path.lower().endswith(".pdf"):
+                anchor_text = self._clean_text(tag.get_text(" ", strip=True))
+                parent_text = self._clean_text(
+                    tag.parent.get_text(" ", strip=True) if tag.parent else ""
+                )[:600]
+                self.official_pdf_candidates.setdefault(
+                    candidate, self._clean_text(f"{anchor_text} {parent_text} {base_url}")
+                )
+                continue
+            if not self._should_skip_url(candidate):
+                links.add(candidate)
+
+        return sorted(links, key=lambda value: (self._url_priority(value), value))
+
+    def _extract_records(
+        self,
+        page_url: str,
+        soup: BeautifulSoup,
+        page_title: str,
+    ) -> list[RecordCandidate]:
+        records: list[RecordCandidate] = []
+        records.extend(self._records_from_json_ld(page_url, soup, page_title))
+        records.extend(self._records_from_microdata(page_url, soup, page_title))
+        records.extend(self._records_from_address_elements(page_url, soup, page_title))
+
+        # Visible text is an enrichment layer, not an emergency fallback. A page
+        # can provide its street address in JSON-LD while leaving the postal code,
+        # amenities, unit count, or classification only in rendered page content.
+        records.extend(self._records_from_visible_text(page_url, soup, page_title))
+        records = self._deduplicate_records(records)
+        return self._enrich_records_from_page(records, soup, page_url, page_title)
+
+    def _records_from_json_ld(
+        self,
+        page_url: str,
+        soup: BeautifulSoup,
+        page_title: str,
+    ) -> list[RecordCandidate]:
+        output: list[RecordCandidate] = []
+        organization_name = ""
+
+        nodes: list[dict] = []
+        for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
+            raw = script.string or script.get_text(" ", strip=True)
+            if not raw:
+                continue
+            raw = raw.strip().lstrip("\ufeff")
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                # Some sites wrap otherwise-valid JSON-LD in HTML comments.
+                cleaned = re.sub(r"^\s*<!--|-->\s*$", "", raw).strip()
+                try:
+                    parsed = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    continue
+            nodes.extend(self._flatten_json_ld(parsed))
+
+        for node in nodes:
+            node_types = self._schema_types(node.get("@type"))
+            if node_types & SCHEMA_ORG_TYPES and not organization_name:
+                organization_name = self._clean_text(node.get("name"))
+
+        for node in nodes:
+            node_types = self._schema_types(node.get("@type"))
+            address = node.get("address") if isinstance(node.get("address"), dict) else {}
+            has_property_type = bool(node_types & SCHEMA_PROPERTY_TYPES)
+            has_address = bool(address or node.get("streetAddress"))
+            if not has_property_type and not has_address:
+                continue
+
+            parent_org = node.get("provider") or node.get("seller") or node.get("brand") or {}
+            if isinstance(parent_org, str):
+                parent_org_name = parent_org
+            elif isinstance(parent_org, dict):
+                parent_org_name = parent_org.get("name", "")
+            else:
+                parent_org_name = ""
+
+            record = RecordCandidate(
+                building_name=self._clean_text(node.get("name")),
+                management_owner=self._clean_text(parent_org_name or organization_name),
+                street_address=self._clean_text(address.get("streetAddress") or node.get("streetAddress")),
+                address_line_2=self._clean_text(address.get("postOfficeBoxNumber")),
+                city=self._clean_text(address.get("addressLocality")),
+                province=self._clean_text(address.get("addressRegion")),
+                postal_code=self._normalize_postal(address.get("postalCode")),
+                country=self._country_value(address.get("addressCountry")),
+                phone=self._clean_text(node.get("telephone")),
+                primary_email=self._clean_text(node.get("email")),
+                website=self._clean_text(node.get("url") or page_url),
+                number_of_apartments=self._unit_count_from_node(node),
+                number_of_storeys=self._storey_count_from_node(node),
+                amenities=self._amenities_from_node(node),
+                building_classification=self._classification_from_text(
+                    " ".join(
+                        self._clean_text(str(node.get(key, "")))
+                        for key in ("@type", "additionalType", "description", "keywords")
+                    )
+                ),
+                source_url=page_url,
+                source_page_title=page_title,
+                extraction_method="JSON-LD structured data",
+                confidence=0.95 if has_address else 0.80,
+                evidence=self._evidence_text(node),
+            )
+            output.append(record)
+        return output
+
+    def _flatten_json_ld(self, value) -> list[dict]:
+        output: list[dict] = []
+        if isinstance(value, list):
+            for item in value:
+                output.extend(self._flatten_json_ld(item))
+        elif isinstance(value, dict):
+            graph = value.get("@graph")
+            if isinstance(graph, list):
+                output.extend(self._flatten_json_ld(graph))
+            output.append(value)
+            for key in ("itemListElement", "mainEntity", "about"):
+                child = value.get(key)
+                if isinstance(child, (list, dict)):
+                    output.extend(self._flatten_json_ld(child))
+        return output
+
+    @staticmethod
+    def _schema_types(value) -> set[str]:
+        if isinstance(value, str):
+            return {value.rsplit("/", 1)[-1]}
+        if isinstance(value, list):
+            return {str(item).rsplit("/", 1)[-1] for item in value}
+        return set()
+
+    def _unit_count_from_text(self, text: str) -> str:
+        """Return a supported TOTAL residential unit count from source wording.
+
+        Accept common synonyms and both number-first and label-first wording, but
+        reject vacancy/availability counts. If several distinct totals are stated,
+        preserve them with `` or `` so a human reviewer can resolve the conflict.
+        """
+        clean_text = self._clean_text(text)
+        if not clean_text:
+            return ""
+
+        matches: list[tuple[int, int, str]] = []
+        for pattern in (UNIT_COUNT_EXPLICIT_LABEL_RE, UNIT_COUNT_LABEL_RE, UNIT_COUNT_NARRATIVE_RE, UNIT_COUNT_RE):
+            for match in pattern.finditer(clean_text):
+                raw_number = match.group(1).replace(",", "")
+                if not raw_number.isdigit():
+                    continue
+                number = int(raw_number)
+                if not 1 <= number <= 50_000:
+                    continue
+
+                before = clean_text[max(0, match.start() - 90):match.start()]
+                after = clean_text[match.end():match.end() + 90]
+                if UNIT_COUNT_AVAILABILITY_BEFORE_RE.search(before):
+                    continue
+                if UNIT_COUNT_AVAILABILITY_AFTER_RE.search(after):
+                    continue
+
+                matches.append((match.start(), match.end(), str(number)))
+
+        values: list[str] = []
+        seen_spans: set[tuple[int, int]] = set()
+        for start, end, value in sorted(matches):
+            if (start, end) in seen_spans:
+                continue
+            seen_spans.add((start, end))
+            if value not in values:
+                values.append(value)
+        return " or ".join(values)
+
+    def _unit_count_from_node(self, node: dict) -> str:
+        """Prefer explicit structured TOTAL-unit fields, then descriptive evidence."""
+        for key in (
+            "numberOfUnits", "numberOfAccommodationUnits", "numberOfApartments",
+            "numberOfResidentialUnits", "numberOfDwellings", "unitCount", "totalUnits",
+        ):
+            value = node.get(key)
+            if value in (None, ""):
+                continue
+            clean_value = self._clean_text(str(value))
+            extracted = self._unit_count_from_text(f"number of units: {clean_value}")
+            if extracted:
+                return extracted
+
+        # Schema.org frequently stores custom facts in additionalProperty.
+        additional = node.get("additionalProperty")
+        properties = additional if isinstance(additional, list) else [additional]
+        for item in properties:
+            if not isinstance(item, dict):
+                continue
+            label = self._clean_text(str(item.get("name") or item.get("propertyID") or ""))
+            value = self._clean_text(str(item.get("value") or item.get("valueReference") or ""))
+            if re.search(r"\b(?:unit|suite|apartment|residence|door)s?\b", label, re.IGNORECASE):
+                extracted = self._unit_count_from_text(f"{label}: {value}")
+                if extracted:
+                    return extracted
+
+        descriptive_text = " ".join(
+            self._clean_text(str(node.get(key, "")))
+            for key in ("description", "keywords", "additionalType", "name")
+        )
+        return self._unit_count_from_text(descriptive_text)
+
+    def _storey_count_from_text(self, text: str) -> str:
+        """Return supported building-height evidence normalized as a storey count.
+
+        Canadian and US wording such as storey/storeys, story/stories, floor/floors,
+        and level/levels is treated as equivalent only when it clearly describes
+        building height. Unit-location wording and parking/basement/mechanical-level
+        wording is excluded rather than converted into a storey count.
+
+        When a page contains several supported counts, keep the distinct values joined
+        with `` or `` so downstream QA can preserve same-band alternatives and flag
+        cross-band conflicts instead of silently choosing one.
+        """
+        clean_text = self._clean_text(text)
+        if not clean_text:
+            return ""
+
+        matches: list[tuple[int, int, str]] = []
+        for pattern in (STOREY_RE, STOREY_LABEL_RE):
+            for match in pattern.finditer(clean_text):
+                number = int(match.group(1))
+                if not 1 <= number <= 200:
+                    continue
+
+                # Check nearby wording so a unit's location or non-residential level
+                # does not become the building's height.
+                before = clean_text[max(0, match.start() - 70):match.start()]
+                after = clean_text[match.end():match.end() + 40]
+                context = f"{before} {match.group(0)} {after}"
+
+                unit_location = bool(
+                    re.search(
+                        r"\b(?:apartment|apt|suite|unit)\b.{0,55}"
+                        r"\b(?:on|at|located(?:\s+on|\s+at)?)\b.{0,20}$",
+                        before,
+                        re.IGNORECASE,
+                    )
+                    or re.search(
+                        r"\b(?:on|at|located(?:\s+on|\s+at)?)\b.{0,20}$",
+                        before,
+                        re.IGNORECASE,
+                    )
+                )
+                excluded_level = bool(STOREY_EXCLUSION_CONTEXT_RE.search(context))
+
+                # Explicit building-height wording can override generic nearby words
+                # such as "parking" elsewhere in a long sentence.
+                explicit_building_height = bool(
+                    re.search(
+                        rf"\b(?:building|property|tower|structure)\b.{{0,35}}"
+                        rf"\b{re.escape(match.group(1))}\s*(?:[-–]\s*)?{STOREY_TERM_PATTERN}\b"
+                        rf"|\b{re.escape(match.group(1))}\s*(?:[-–]\s*)?{STOREY_TERM_PATTERN}\b"
+                        rf".{{0,35}}\b(?:building|property|tower|structure|high|tall)\b",
+                        context,
+                        re.IGNORECASE,
+                    )
+                )
+
+                if (unit_location or excluded_level) and not explicit_building_height:
+                    continue
+                matches.append((match.start(), match.end(), str(number)))
+
+        values: list[str] = []
+        seen_spans: set[tuple[int, int]] = set()
+        for start, end, value in sorted(matches):
+            if (start, end) in seen_spans:
+                continue
+            seen_spans.add((start, end))
+            if value not in values:
+                values.append(value)
+
+        return " or ".join(values)
+
+    def _storey_count_from_node(self, node: dict) -> str:
+        """Prefer explicit structured storey/floor fields, then page descriptions."""
+        for key in (
+            "numberOfStoreys", "numberOfStories", "numberOfFloors",
+            "storeys", "stories", "floors", "levels",
+        ):
+            value = node.get(key)
+            if value in (None, ""):
+                continue
+            clean_value = self._clean_text(str(value))
+            if re.fullmatch(r"\d{1,3}", clean_value):
+                number = int(clean_value)
+                if 1 <= number <= 200:
+                    return str(number)
+            extracted = self._storey_count_from_text(f"{key}: {clean_value}")
+            if extracted:
+                return extracted
+
+        descriptive_text = " ".join(
+            self._clean_text(str(node.get(key, "")))
+            for key in ("description", "keywords", "additionalType")
+        )
+        return self._storey_count_from_text(descriptive_text)
+
+    def _classification_from_text(self, text: str) -> str:
+        """Extract classification wording that is actually present on the page."""
+        clean_text = self._clean_text(text)
+        if not clean_text:
+            return ""
+
+        labels = [
+            label
+            for label, pattern in CLASSIFICATION_PATTERNS
+            if pattern.search(clean_text)
+        ]
+        labels = list(dict.fromkeys(labels))
+        storeys = self._storey_count_from_text(clean_text)
+
+        if labels:
+            classification = " | ".join(labels)
+            if storeys and len(labels) == 1:
+                classification = f"{classification} - {storeys}"
+            return classification
+        if storeys:
+            return f"{storeys} Storeys"
+        return ""
+
+    def _evidence_text(self, node: dict) -> str:
+        evidence_parts = []
+        for key in ("name", "description", "telephone", "email"):
+            value = self._clean_text(str(node.get(key, "")))
+            if value:
+                evidence_parts.append(value)
+        return " | ".join(evidence_parts)[:700]
+
+    def _records_from_microdata(
+        self,
+        page_url: str,
+        soup: BeautifulSoup,
+        page_title: str,
+    ) -> list[RecordCandidate]:
+        output: list[RecordCandidate] = []
+        for block in soup.select("[itemscope]"):
+            itemtype = self._clean_text(block.get("itemtype"))
+            if not any(schema_type.lower() in itemtype.lower() for schema_type in SCHEMA_PROPERTY_TYPES):
+                continue
+
+            def prop(name: str) -> str:
+                node = block.select_one(f'[itemprop="{name}"]')
+                if node is None:
+                    return ""
+                return self._clean_text(
+                    node.get("content") or node.get("href") or node.get_text(" ", strip=True)
+                )
+
+            street = prop("streetAddress")
+            if not street:
+                continue
+            output.append(
+                RecordCandidate(
+                    building_name=prop("name"),
+                    street_address=street,
+                    city=prop("addressLocality"),
+                    province=prop("addressRegion"),
+                    postal_code=self._normalize_postal(prop("postalCode")),
+                    country=prop("addressCountry"),
+                    phone=prop("telephone"),
+                    primary_email=prop("email").replace("mailto:", ""),
+                    website=prop("url") or page_url,
+                    number_of_apartments=(
+                        self._unit_count_from_text(
+                            f"number of units: {prop('numberOfUnits')}"
+                        )
+                        if prop("numberOfUnits")
+                        else self._unit_count_from_text(block.get_text(" ", strip=True))
+                    ),
+                    number_of_storeys=(
+                        self._storey_count_from_text(
+                            f"number of floors: {prop('numberOfFloors')}"
+                        )
+                        if prop("numberOfFloors")
+                        else self._storey_count_from_text(block.get_text(" ", strip=True))
+                    ),
+                    amenities=self._amenities_from_container(block),
+                    building_classification=self._classification_from_text(
+                        block.get_text(" ", strip=True)
+                    ),
+                    source_url=page_url,
+                    source_page_title=page_title,
+                    extraction_method="HTML microdata",
+                    confidence=0.90,
+                    evidence=self._clean_text(block.get_text(" ", strip=True))[:700],
+                )
+            )
+        return output
+
+    def _records_from_address_elements(
+        self,
+        page_url: str,
+        soup: BeautifulSoup,
+        page_title: str,
+    ) -> list[RecordCandidate]:
+        output: list[RecordCandidate] = []
+        organization_name = self._organization_name(soup)
+        for address_tag in soup.find_all("address"):
+            text = self._clean_text(address_tag.get_text(" ", strip=True))
+            if not text or not re.search(r"\d", text):
+                continue
+            heading = self._nearest_heading(address_tag) or self._page_heading(soup)
+            street, city, province, postal = self._split_address(text)
+            local_context = self._clean_text(
+                (address_tag.parent or address_tag).get_text(" ", strip=True)
+            )[:2500]
+            output.append(
+                RecordCandidate(
+                    building_name=heading,
+                    management_owner=organization_name,
+                    street_address=street or text,
+                    city=city,
+                    province=province,
+                    postal_code=postal,
+                    country="Canada" if postal else "",
+                    phone=self._first_match(PHONE_RE, text),
+                    primary_email=self._first_match(EMAIL_RE, text),
+                    website=page_url,
+                    number_of_apartments=self._unit_count_from_text(local_context),
+                    number_of_storeys=self._storey_count_from_text(local_context),
+                    amenities=self._amenities_from_text(local_context),
+                    building_classification=self._classification_from_text(local_context),
+                    source_url=page_url,
+                    source_page_title=page_title,
+                    extraction_method="HTML address element",
+                    confidence=0.82,
+                    evidence=text[:700],
+                )
+            )
+        return output
+
+    def _records_from_visible_text(
+        self,
+        page_url: str,
+        soup: BeautifulSoup,
+        page_title: str,
+    ) -> list[RecordCandidate]:
+        output: list[RecordCandidate] = []
+        organization_name = self._organization_name(soup)
+        page_heading = self._page_heading(soup)
+        page_text = self._visible_text(soup)
+        phones = list(dict.fromkeys(PHONE_RE.findall(page_text)))
+        emails = list(dict.fromkeys(EMAIL_RE.findall(page_text)))
+        address_matches = list(ADDRESS_LINE_RE.finditer(page_text))
+        # A page-wide total is safe only for a single-address property page. On a
+        # portfolio page, each count must be recovered from the address-local context.
+        page_unit_count = self._unit_count_from_text(page_text) if len(address_matches) == 1 else ""
+        amenities = self._amenities_from_container(soup) or self._amenities_from_text(page_text)
+
+        seen_addresses: set[str] = set()
+        for match in address_matches:
+            raw_address = self._clean_text(match.group(0))
+            key = self._record_key("", raw_address)
+            if not raw_address or key in seen_addresses:
+                continue
+            seen_addresses.add(key)
+            street, city, province, postal = self._split_address(raw_address)
+            local_context = page_text[max(0, match.start() - 1400):match.end() + 1400]
+            local_unit_count = self._unit_count_from_text(local_context) or page_unit_count
+            output.append(
+                RecordCandidate(
+                    building_name=page_heading,
+                    management_owner=organization_name,
+                    street_address=street or raw_address,
+                    city=city,
+                    province=province,
+                    postal_code=postal,
+                    country="Canada" if postal else "",
+                    phone=phones[0] if phones else "",
+                    primary_email=emails[0] if emails else "",
+                    website=page_url,
+                    number_of_apartments=local_unit_count,
+                    number_of_storeys=self._storey_count_from_text(local_context),
+                    amenities=amenities or self._amenities_from_text(local_context),
+                    building_classification=self._classification_from_text(local_context),
+                    source_url=page_url,
+                    source_page_title=page_title,
+                    extraction_method="Visible-text pattern",
+                    confidence=0.62 if postal else 0.52,
+                    evidence=self._clean_text(local_context)[:700],
+                )
+            )
+        return output
+
+    def _enrich_records_from_page(
+        self,
+        records: list[RecordCandidate],
+        soup: BeautifulSoup,
+        page_url: str,
+        page_title: str,
+    ) -> list[RecordCandidate]:
+        if not records:
+            return records
+
+        page_text = self._visible_text(soup)
+        page_heading = self._page_heading(soup)
+        page_amenities = self._amenities_from_container(soup) or self._amenities_from_text(page_text)
+        page_phones = list(dict.fromkeys(PHONE_RE.findall(page_text)))
+        page_emails = list(dict.fromkeys(EMAIL_RE.findall(page_text)))
+        # Never broadcast one page-level unit count across several property records.
+        page_unit_count = self._unit_count_from_text(page_text) if len(records) == 1 else ""
+        page_storeys = self._storey_count_from_text(page_text)
+        page_classification = self._classification_from_text(page_text)
+        page_postals = list(dict.fromkeys(POSTAL_RE.findall(page_text)))
+
+        for record in records:
+            if not record.building_name and page_heading:
+                record.building_name = page_heading
+            if not record.phone and page_phones:
+                record.phone = page_phones[0]
+            if not record.primary_email and page_emails:
+                record.primary_email = page_emails[0]
+            if not record.number_of_apartments:
+                local_unit_count = ""
+                street = self._clean_text(record.street_address)
+                if street:
+                    lowered = page_text.lower()
+                    position = lowered.find(street.lower())
+                    if position >= 0:
+                        local_context = page_text[max(0, position - 1400):position + len(street) + 1400]
+                        local_unit_count = self._unit_count_from_text(local_context)
+                record.number_of_apartments = local_unit_count or page_unit_count
+            if record.number_of_apartments and record.apartment_count_search_status == "Not Checked":
+                if " or " in str(record.number_of_apartments):
+                    record.apartment_count_search_status = "Conflict — Needs Review"
+                    record.apartment_count_confidence = "Low"
+                else:
+                    record.apartment_count_search_status = "Official page"
+                    record.apartment_count_confidence = "High"
+                record.apartment_count_source_url = page_url
+                record.apartment_count_evidence = f"Official website supports total unit count: {record.number_of_apartments}"
+            if not record.number_of_storeys and page_storeys:
+                record.number_of_storeys = page_storeys
+            if not record.amenities and page_amenities:
+                record.amenities = page_amenities
+            if not record.building_classification and page_classification:
+                record.building_classification = page_classification
+
+            if not record.postal_code:
+                # Prefer the postal code nearest this record's street address.
+                postal = ""
+                street = self._clean_text(record.street_address)
+                if street:
+                    lowered = page_text.lower()
+                    position = lowered.find(street.lower())
+                    if position >= 0:
+                        nearby = page_text[position:position + 500]
+                        nearby_match = POSTAL_RE.search(nearby)
+                        if nearby_match:
+                            postal = nearby_match.group(0)
+                if not postal and len(page_postals) == 1:
+                    postal = page_postals[0]
+                if postal:
+                    record.postal_code = self._normalize_postal(postal)
+                    if not record.country:
+                        record.country = "Canada"
+
+            record.source_url = record.source_url or page_url
+            record.source_page_title = record.source_page_title or page_title
+
+        return records
+
+    def _amenities_from_node(self, node: dict) -> str:
+        raw = node.get("amenityFeature") or node.get("amenities") or []
+        values: list[str] = []
+        if isinstance(raw, dict):
+            raw = [raw]
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    value = item.get("name") or item.get("value") or item.get("description")
+                else:
+                    value = item
+                cleaned = self._clean_text(str(value or ""))
+                if cleaned and cleaned.lower() not in {"true", "false"}:
+                    values.append(cleaned)
+        if values:
+            return "; ".join(dict.fromkeys(values))[:1500]
+        text = " ".join(
+            self._clean_text(str(node.get(key, "")))
+            for key in ("description", "keywords")
+        )
+        return self._amenities_from_text(text)
+
+    def _amenities_from_container(self, container) -> str:
+        """Prefer explicit amenity/feature sections over site-wide keyword guesses."""
+        values: list[str] = []
+        headings = container.find_all(["h1", "h2", "h3", "h4", "h5", "strong", "b"])
+        for heading in headings:
+            heading_text = self._clean_text(heading.get_text(" ", strip=True))
+            if not AMENITY_HEADING_RE.search(heading_text):
+                continue
+
+            parent = heading.parent or heading
+            if getattr(parent, "name", "") not in {"body", "html"}:
+                for node in parent.find_all(["li", "p"], limit=30):
+                    value = self._clean_text(node.get_text(" ", strip=True))
+                    if 1 < len(value) <= 140 and value.lower() != heading_text.lower():
+                        values.append(value)
+
+            # Some layouts put the amenity list in siblings following the heading.
+            sibling = heading.find_next_sibling()
+            sibling_count = 0
+            while sibling is not None and sibling_count < 8:
+                if getattr(sibling, "name", "") in {"h1", "h2", "h3", "h4", "h5"}:
+                    break
+                for node in sibling.find_all(["li", "p"], recursive=True) if hasattr(sibling, "find_all") else []:
+                    value = self._clean_text(node.get_text(" ", strip=True))
+                    if 1 < len(value) <= 140:
+                        values.append(value)
+                sibling = sibling.find_next_sibling()
+                sibling_count += 1
+
+        values = list(dict.fromkeys(values))
+        if values:
+            return "; ".join(values[:25])[:1500]
+        return ""
+
+    def _amenities_from_text(self, text: str) -> str:
+        labels = [label for label, pattern in AMENITY_PATTERNS if pattern.search(text or "")]
+        return "; ".join(dict.fromkeys(labels))
+
+    def _organization_name(self, soup: BeautifulSoup) -> str:
+        for selector in (
+            '[itemprop="legalName"]', '[itemprop="name"]',
+            'meta[property="og:site_name"]', 'meta[name="application-name"]',
+        ):
+            node = soup.select_one(selector)
+            if node:
+                value = self._clean_text(node.get("content") or node.get_text(" ", strip=True))
+                if value:
+                    return value[:250]
+        title = self._page_title(soup)
+        if " | " in title:
+            return self._clean_text(title.rsplit(" | ", 1)[-1])
+        return ""
+
+    def _nearest_heading(self, tag: Tag) -> str:
+        previous = tag.find_previous(["h1", "h2", "h3", "h4"])
+        return self._clean_text(previous.get_text(" ", strip=True) if previous else "")
+
+    def _split_address(self, text: str) -> tuple[str, str, str, str]:
+        text = self._clean_text(text)
+        postal_match = POSTAL_RE.search(text)
+        postal = self._normalize_postal(postal_match.group(0) if postal_match else "")
+        before_postal = text[: postal_match.start()].strip(" ,") if postal_match else text
+
+        province = ""
+        province_match = re.search(
+            r"(?:,|\s)\s*(ON|Ontario|QC|Quebec|Québec|BC|Alberta|AB|MB|Manitoba|NB|NS|PE|NL|SK)\s*$",
+            before_postal,
+            re.IGNORECASE,
+        )
+        if province_match:
+            province = province_match.group(1)
+            before_postal = before_postal[: province_match.start()].strip(" ,")
+
+        segments = [self._clean_text(part) for part in re.split(r"\s*,\s*", before_postal) if self._clean_text(part)]
+        street = segments[0] if segments else before_postal
+        city = segments[-1] if len(segments) >= 2 else ""
+        return street, city, province, postal
+
+    @staticmethod
+    def _normalize_postal(value) -> str:
+        value = re.sub(r"\s+", "", str(value or "")).upper()
+        if len(value) == 6:
+            return f"{value[:3]} {value[3:]}"
+        return value
+
+    def _country_value(self, value) -> str:
+        if isinstance(value, dict):
+            value = value.get("name") or value.get("@id") or ""
+        return self._clean_text(str(value or ""))
+
+    @staticmethod
+    def _first_match(pattern: re.Pattern, text: str) -> str:
+        match = pattern.search(text)
+        return match.group(0) if match else ""
+
+    @staticmethod
+    def _first_group(pattern: re.Pattern, text: str) -> str:
+        match = pattern.search(text)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _recovery_normalized_text(value: str) -> str:
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+    def _pdf_candidate_relevance(self, record: RecordCandidate, url: str, context: str) -> int:
+        haystack = self._recovery_normalized_text(f"{url} {context}")
+        address = self._recovery_normalized_text(record.street_address)
+        name = self._recovery_normalized_text(record.building_name)
+        score = 0
+        if address and address in haystack:
+            score += 8
+        elif address:
+            tokens = address.split()
+            if tokens and tokens[0].isdigit() and tokens[0] in haystack:
+                score += 2
+            if any(token in haystack for token in tokens[1:4] if len(token) >= 4):
+                score += 2
+        if name and name in haystack:
+            score += 5
+        elif name:
+            tokens = [token for token in name.split() if len(token) >= 5]
+            if tokens and sum(token in haystack for token in tokens[:4]) >= min(2, len(tokens)):
+                score += 2
+        if re.search(r"\b(?:brochure|property|building|apartment|residential|development|report)\b", haystack):
+            score += 1
+        return score
+
+    def _fetch_official_pdf_text(self, url: str) -> str:
+        if PdfReader is None:
+            return ""
+        self._ensure_public_url(url)
+        if not self._is_in_scope(url):
+            return ""
+        if self.options.obey_robots_txt and not self._robots_allows(url):
+            return ""
+        self._respect_delay(url)
+        response = self.session.get(
+            url, timeout=self.options.request_timeout_seconds,
+            allow_redirects=True, stream=True,
+        )
+        response.raise_for_status()
+        final_url = self._canonicalize_url(response.url)
+        self._ensure_public_url(final_url)
+        if not self._is_in_scope(final_url):
+            return ""
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+        if "pdf" not in content_type and not urlparse(final_url).path.lower().endswith(".pdf"):
+            return ""
+        raw = self._read_limited_response(response, MAX_PDF_BYTES)
+        try:
+            reader = PdfReader(BytesIO(raw))
+        except Exception:
+            return ""
+        chunks = []
+        for page in reader.pages[:250]:
+            try:
+                chunks.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return self._clean_text(" ".join(chunks))
+
+    _RECOVERY_STREET_ALIASES = {
+        "street": "st", "st": "st",
+        "avenue": "ave", "ave": "ave",
+        "road": "rd", "rd": "rd",
+        "boulevard": "blvd", "blvd": "blvd",
+        "drive": "dr", "dr": "dr",
+        "court": "ct", "ct": "ct",
+        "crescent": "cres", "cres": "cres",
+        "place": "pl", "pl": "pl",
+        "lane": "ln", "ln": "ln",
+        "terrace": "terr", "ter": "terr", "terr": "terr",
+        "parkway": "pkwy", "pkwy": "pkwy",
+        "highway": "hwy", "hwy": "hwy",
+        "trail": "trl", "trl": "trl",
+        "circle": "cir", "cir": "cir",
+        "way": "way",
+        "north": "n", "n": "n", "south": "s", "s": "s",
+        "east": "e", "e": "e", "west": "w", "w": "w",
+    }
+    _RECOVERY_STREET_QUALIFIERS = {
+        "st", "ave", "rd", "blvd", "dr", "ct", "cres", "pl", "ln",
+        "terr", "pkwy", "hwy", "trl", "cir", "way", "n", "s", "e", "w",
+    }
+    _RECOVERY_GENERIC_ADDRESS_TOKENS = _RECOVERY_STREET_QUALIFIERS | {
+        "unit", "suite", "apt", "apartment",
+    }
+
+    @classmethod
+    def _recovery_address_tokens(cls, value: str) -> list[str]:
+        normalized = cls._recovery_normalized_text(value)
+        return [
+            cls._RECOVERY_STREET_ALIASES.get(token, token)
+            for token in normalized.split()
+            if token
+        ]
+
+    @classmethod
+    def _exact_property_pdf_context(cls, record: RecordCandidate, pdf_text: str) -> str:
+        """Return PDF text only when the civic number and street name match safely.
+
+        The old fallback accepted a civic number plus any generic address word such as
+        ``road``. That could make ``1500 Riverside Road`` look like
+        ``1500 Walkley Road``. This token-level matcher requires the actual street-name
+        token(s), while still allowing common suffix variants such as Road/Rd.
+        """
+        if not pdf_text:
+            return ""
+
+        address_tokens = cls._recovery_address_tokens(record.street_address)
+        if not address_tokens or not address_tokens[0].isdigit():
+            return ""
+        civic = address_tokens[0]
+        street_name_tokens = [
+            token for token in address_tokens[1:]
+            if token not in cls._RECOVERY_GENERIC_ADDRESS_TOKENS
+            and not token.isdigit()
+        ]
+        required_qualifiers = [
+            token for token in address_tokens[1:]
+            if token in cls._RECOVERY_STREET_QUALIFIERS
+        ]
+        if not street_name_tokens:
+            return ""
+
+        raw_matches = list(re.finditer(r"[A-Za-z0-9À-ÿ]+", pdf_text))
+        pdf_tokens = [
+            cls._RECOVERY_STREET_ALIASES.get(
+                cls._recovery_normalized_text(match.group(0)),
+                cls._recovery_normalized_text(match.group(0)),
+            )
+            for match in raw_matches
+        ]
+
+        # Search each exact civic-number occurrence. The street-name tokens must then
+        # appear in order within a short address-sized window. Generic suffixes alone
+        # never qualify as a property match.
+        for civic_index, token in enumerate(pdf_tokens):
+            if token != civic:
+                continue
+            window_end = min(len(pdf_tokens), civic_index + 12)
+            cursor = civic_index + 1
+            matched_positions: list[int] = []
+            for wanted in street_name_tokens:
+                found = None
+                for position in range(cursor, window_end):
+                    if pdf_tokens[position] == wanted:
+                        found = position
+                        break
+                if found is None:
+                    matched_positions = []
+                    break
+                matched_positions.append(found)
+                cursor = found + 1
+            if not matched_positions:
+                continue
+
+            # The first true street-name token must be close to the civic number. This
+            # prevents a number at one address from matching an unrelated street name
+            # much later in a paragraph or table.
+            if matched_positions[0] - civic_index > 4:
+                continue
+            address_window = pdf_tokens[civic_index + 1:window_end]
+            if any(qualifier not in address_window for qualifier in required_qualifiers):
+                continue
+
+            raw_start = raw_matches[civic_index].start()
+            raw_end = raw_matches[matched_positions[-1]].end()
+            return pdf_text[max(0, raw_start - 2600):min(len(pdf_text), raw_end + 4200)]
+
+        return ""
+
+    def _unit_count_evidence_snippet(self, text: str, value: str) -> str:
+        for pattern in (
+            UNIT_COUNT_EXPLICIT_LABEL_RE, UNIT_COUNT_LABEL_RE,
+            UNIT_COUNT_NARRATIVE_RE, UNIT_COUNT_RE,
+        ):
+            for match in pattern.finditer(text):
+                if match.group(1).replace(",", "") == str(value).replace(",", ""):
+                    return self._clean_text(
+                        text[max(0, match.start() - 180):match.end() + 180]
+                    )[:700]
+        return f"Official PDF supports total unit count {value}."
+
+    def _recover_missing_unit_counts_from_official_pdfs(
+        self, records: list[RecordCandidate], report: ScanReport
+    ) -> list[RecordCandidate]:
+        unresolved = [
+            record for record in records
+            if not self._clean_text(record.number_of_apartments)
+            and self._clean_text(record.street_address)
+        ]
+        if not unresolved:
+            return records
+        if PdfReader is None:
+            for record in unresolved:
+                if self.official_pdf_candidates:
+                    record.apartment_count_evidence = (
+                        "Same-site official PDFs were discovered, but pypdf is not installed. "
+                        "Use the Datablix AI exact-address recovery pass."
+                    )
+            return records
+
+        cache: dict[str, str] = {}
+        for record in unresolved:
+            ranked = sorted(
+                ((self._pdf_candidate_relevance(record, url, context), url)
+                 for url, context in self.official_pdf_candidates.items()),
+                reverse=True,
+            )
+            attempted = False
+            inspected_for_record = 0
+            for relevance, url in ranked:
+                if relevance < 3:
+                    continue
+                if inspected_for_record >= self.options.maximum_unit_recovery_pdfs:
+                    break
+                attempted = True
+                inspected_for_record += 1
+                if url not in cache:
+                    try:
+                        cache[url] = self._fetch_official_pdf_text(url)
+                    except Exception as exc:
+                        report.errors.append(f"Official PDF unit-count recovery skipped {url}: {exc}")
+                        cache[url] = ""
+                context = self._exact_property_pdf_context(record, cache[url])
+                if not context:
+                    continue
+                total = self._unit_count_from_text(context)
+                if not total:
+                    continue
+                record.apartment_count_source_url = url
+                if " or " in total:
+                    record.apartment_count_search_status = "Conflict — Needs Review"
+                    record.apartment_count_confidence = "Low"
+                    record.apartment_count_evidence = (
+                        f"Official PDF contains multiple plausible exact-property totals: {total}."
+                    )
+                    break
+                record.number_of_apartments = total
+                record.apartment_count_search_status = "Official document"
+                record.apartment_count_confidence = "High"
+                record.apartment_count_evidence = self._unit_count_evidence_snippet(context, total)
+                record.evidence = (
+                    f"{record.evidence} | Unit-count recovery: {record.apartment_count_evidence}"
+                    if record.evidence else f"Unit-count recovery: {record.apartment_count_evidence}"
+                )
+                break
+            if (not record.number_of_apartments
+                and record.apartment_count_search_status == "Not Checked"
+                and attempted):
+                record.apartment_count_search_status = "Not Found after Search"
+                record.apartment_count_evidence = (
+                    "Relevant same-site official PDFs were checked without a safe exact-property total. "
+                    "Continue with the AI exact-address public-record recovery pass."
+                )
+        return records
+
+    def _deduplicate_records(self, records: Iterable[RecordCandidate]) -> list[RecordCandidate]:
+        winners: dict[str, RecordCandidate] = {}
+        for record in records:
+            record.website = record.website or record.source_url
+            record.postal_code = self._normalize_postal(record.postal_code)
+            key = self._record_key(record.building_name, record.street_address or record.source_url)
+            existing = winners.get(key)
+            if existing is None:
+                winners[key] = record
+                continue
+            winners[key] = self._merge_records(existing, record)
+        return sorted(
+            winners.values(),
+            key=lambda item: (
+                self._clean_text(item.building_name).lower(),
+                self._clean_text(item.street_address).lower(),
+                item.source_url,
+            ),
+        )
+
+    def _record_key(self, name: str, address_or_url: str) -> str:
+        normalized_name = re.sub(r"[^a-z0-9]", "", self._clean_text(name).lower())
+        normalized_location = re.sub(r"[^a-z0-9]", "", self._clean_text(address_or_url).lower())
+        return f"{normalized_name}|{normalized_location}"
+
+    @staticmethod
+    def _merge_records(first: RecordCandidate, second: RecordCandidate) -> RecordCandidate:
+        preferred = first if first.confidence >= second.confidence else second
+        other = second if preferred is first else first
+        for field_name in (
+            "building_name", "management_owner", "street_address", "address_line_2",
+            "city", "province", "postal_code", "country", "phone", "primary_email",
+            "website", "number_of_storeys", "building_classification",
+            "source_url", "source_page_title",
+            "extraction_method", "evidence", "inventory_evidence", "exclusion_reason",
+        ):
+            if not getattr(preferred, field_name) and getattr(other, field_name):
+                setattr(preferred, field_name, getattr(other, field_name))
+
+        # Keep apartment-count value and provenance together. ``Not Checked`` is a
+        # placeholder, not evidence. If two scanner records disagree on a resolved
+        # total, preserve both values as a review conflict rather than silently
+        # choosing the record with higher general extraction confidence.
+        def normalized_count(value: str) -> str:
+            text = str(value or "").strip().replace(",", "")
+            if re.fullmatch(r"\d+(?:\.0+)?", text):
+                return str(int(float(text)))
+            return text.lower()
+
+        first_count = str(first.number_of_apartments or "").strip()
+        second_count = str(second.number_of_apartments or "").strip()
+        first_normalized = normalized_count(first_count)
+        second_normalized = normalized_count(second_count)
+        if first_count and second_count and first_normalized != second_normalized:
+            values = list(dict.fromkeys([first_count, second_count]))
+            preferred.number_of_apartments = " or ".join(values)
+            preferred.apartment_count_search_status = "Conflict — Needs Review"
+            preferred.apartment_count_confidence = "Low"
+            sources = list(dict.fromkeys(v for v in [
+                str(first.apartment_count_source_url or "").strip(),
+                str(second.apartment_count_source_url or "").strip(),
+            ] if v))
+            preferred.apartment_count_source_url = sources[0] if sources else ""
+            evidence = list(dict.fromkeys(v for v in [
+                str(first.apartment_count_evidence or "").strip(),
+                str(second.apartment_count_evidence or "").strip(),
+            ] if v))
+            source_note = f" Sources checked: {'; '.join(sources)}." if sources else ""
+            preferred.apartment_count_evidence = (
+                "Conflicting apartment totals detected while merging scanner evidence: "
+                + " | ".join(evidence) + source_note
+            )[:1500]
+        else:
+            status_rank = {
+                "": 0, "Not Checked": 0, "Not Found after Search": 1,
+                "Reputable property source": 2, "Public record": 3,
+                "Official document": 4, "Official page": 5,
+                "Conflict — Needs Review": 6,
+            }
+            count_records = [item for item in (first, second) if str(item.number_of_apartments or "").strip()]
+            if count_records:
+                # Counts are equivalent here, so keep the preferred record's display
+                # value but take provenance from the strongest non-placeholder source.
+                preferred.number_of_apartments = (
+                    str(preferred.number_of_apartments or "").strip()
+                    or str(count_records[0].number_of_apartments or "").strip()
+                )
+                provenance = max(
+                    count_records,
+                    key=lambda item: status_rank.get(
+                        str(item.apartment_count_search_status or "").strip(), 1
+                    ),
+                )
+            else:
+                provenance = max(
+                    (first, second),
+                    key=lambda item: status_rank.get(
+                        str(item.apartment_count_search_status or "").strip(), 1
+                    ),
+                )
+            preferred.apartment_count_search_status = str(
+                provenance.apartment_count_search_status or "Not Checked"
+            ).strip() or "Not Checked"
+            preferred.apartment_count_source_url = str(
+                provenance.apartment_count_source_url or ""
+            ).strip()
+            preferred.apartment_count_evidence = str(
+                provenance.apartment_count_evidence or ""
+            ).strip()
+            preferred.apartment_count_confidence = str(
+                provenance.apartment_count_confidence or "Not Checked"
+            ).strip() or "Not Checked"
+
+        amenity_values = []
+        for value in (first.amenities, second.amenities):
+            amenity_values.extend(
+                part.strip() for part in str(value or "").split(";") if part.strip()
+            )
+        preferred.amenities = "; ".join(dict.fromkeys(amenity_values))[:1500]
+
+        preferred.found_on_city_page = first.found_on_city_page or second.found_on_city_page
+        preferred.found_on_html_sitemap = first.found_on_html_sitemap or second.found_on_html_sitemap
+        preferred.found_on_xml_sitemap = first.found_on_xml_sitemap or second.found_on_xml_sitemap
+        status_rank = {
+            INVENTORY_STATUS_EXCLUDED: 0,
+            INVENTORY_STATUS_REVIEW: 1,
+            INVENTORY_STATUS_CURRENT: 2,
+        }
+        preferred.inventory_status = max(
+            (first.inventory_status, second.inventory_status),
+            key=lambda value: status_rank.get(value, 1),
+        )
+        if preferred.inventory_status == INVENTORY_STATUS_CURRENT:
+            preferred.exclusion_reason = ""
+            evidence = []
+            if preferred.found_on_html_sitemap:
+                evidence.append("current HTML sitemap")
+            if preferred.found_on_city_page:
+                evidence.append("current city/portfolio page")
+            if evidence:
+                preferred.inventory_evidence = "; ".join(evidence)
+
+        preferred.confidence = max(first.confidence, second.confidence)
+        return preferred
+
+    # ------------------------------------------------------------------
+    # Progress reporting
+    # ------------------------------------------------------------------
+
+    def _checkpoint(self, report: ScanReport, force: bool = False) -> None:
+        """Preserve partial scan results without changing the crawl."""
+        if self.checkpoint_callback is None or not report.pages:
+            return
+        if (
+            not force
+            and len(report.pages) % self.options.checkpoint_every_pages != 0
+        ):
+            return
+        self.checkpoint_callback(report)
+
+    def _notify(self, report: ScanReport, current_url: str, outcome: str) -> None:
+        if self.progress_callback is None:
+            return
+        self.progress_callback(
+            {
+                "current_url": current_url,
+                "outcome": outcome,
+                "pages_processed": len(report.pages),
+                "records_found": len(report.records),
+                "blocked_count": len(report.blocked_urls),
+                "error_count": len(report.errors),
+                "max_pages": self.options.max_pages,
+            }
+        )
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def scan_website(
+    website_url: str,
+    options: ScanOptions | None = None,
+    progress_callback: ProgressCallback | None = None,
+    checkpoint_callback: CheckpointCallback | None = None,
+) -> ScanReport:
+    """Convenience entry point used by the Streamlit interface."""
+    scanner = FullSiteScanner(
+        start_url=website_url,
+        options=options,
+        progress_callback=progress_callback,
+        checkpoint_callback=checkpoint_callback,
+    )
+    return scanner.scan()
