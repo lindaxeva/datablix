@@ -298,8 +298,6 @@ Datablix improves the structure, traceability, and quality control of the resear
 
 # 13. Business Recommendations
 
-# 13. Business Recommendation
-
 The research involved collecting a wide range of information about apartment buildings and rental properties. This raised a broader question: **which property details matter most to the intended 55+ audience when considering a place to live?**
 
 Rather than making assumptions about how housing priorities may change with age, an opportunity for further exploration would be to gather direct feedback from the intended audience on the **relative importance of the property information being collected**.
