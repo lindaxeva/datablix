@@ -2,7 +2,7 @@
 
 **Datablix started with a simple question: how can repetitive research work be made more structured, efficient, and reliable?**
 
-While completing the **Ontario Senior Living Directory Development – Stage 3 research project** for **Coyle Media Group**, I encountered recurring challenges around **finding and verifying information, tracking evidence, reconciling findings with existing data, identifying gaps, and maintaining data quality**.
+While completing the **Ontario Senior Living Directory Development – Stage 3 research project** for **Coyle Media Group**, I encountered recurring challenges around **finding and verifying rental property information, tracking evidence, reconciling findings with existing data, identifying gaps, and maintaining data quality**.
 
 I translated these challenges into **workflow requirements** and began testing a more structured approach to improve the research process. This led to **Datablix**: a **human-in-the-loop research automation, reconciliation, and data-quality workflow tool** designed to automate repetitive work while preserving human judgment where evidence is incomplete, conflicting, or uncertain.
 
@@ -14,8 +14,8 @@ I translated these challenges into **workflow requirements** and began testing a
 
 | Information | Details |
 |---|---|
-| **Project Context** | Ottawa residential rental-property research for Coyle Media Group |
-| **Business Need** | Research and validate public property information to support a directory for the Fifty-Five Plus audience |
+| **Research Context** | Research apartment buildings and rental properties across multiple companies using public sources, validate findings, compare them with existing project data, and prepare usable project deliverables |
+| **Business Need** | Research and validate public rental property information to support a directory for the Fifty-Five Plus audience |
 | **My Role** | Researcher · Business Analysis · Solution Design |
 | **Challenge** | Fragmented web research, manual source comparison, evidence tracking, data-quality gaps, and reporting |
 | **Solution** | Datablix — a human-in-the-loop research, reconciliation, and data-quality workflow |
