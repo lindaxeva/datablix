@@ -1,12 +1,12 @@
 # DATABLIX
 
-Datablix is a **human-in-the-loop research automation, reconciliation, and data-quality workflow** I developed while completing residential rental-property research for **Coyle Media Group**.
+Datablix is a human-in-the-loop research automation, reconciliation, and data-quality workflow tool I developed while completing the Ontario Senior Living Directory Development – Stage 3 research project for Coyle Media Group.
 
-The original task required more than finding information online. Research findings had to be validated, compared with existing project data, supported with evidence, reviewed for quality, and transformed into usable deliverables.
+The project involved researching apartment buildings and rental properties across multiple companies using publicly available sources. The work went beyond information gathering: findings had to be validated, supported by evidence, compared with existing project data, reviewed for quality, and organized into usable project deliverables.
 
-As recurring research challenges emerged, I began translating them into requirements for a more structured workflow. Those requirements became **Datablix**.
+As the research progressed, recurring workflow challenges became visible—from finding and verifying information to tracking sources, identifying research gaps, reconciling new findings with existing records, and maintaining consistency across companies and properties.
 
-> **Main Goal:** Automate the repetitive work while preserving human judgment for evidence, ambiguity, and verification.
+I began translating these recurring challenges into requirements for a more structured and efficient workflow. Datablix emerged as a solution to automate the repetitive work while preserving human judgment for evidence, ambiguity, and verification.
 
  **Disclaimer:** Datablix was independently conceived and developed and is not an official Coyle Media Group product, commissioned software product, or endorsed technology.
 
@@ -24,20 +24,6 @@ As recurring research challenges emerged, I began translating them into requirem
 | **Tools** | Python · Streamlit · Pandas · Excel/OpenPyXL · Google Sheets · AI-assisted research · Git/GitHub |
 | **BA Methods** | Stakeholder Analysis · AS-IS/TO-BE · Requirements · User Stories · Acceptance Criteria · Data Quality Rules · KPI Framework |
 | **Scope** | Current residential rental properties physically located within the City of Ottawa |
-
----
-
-## The Story in One View
-
-| Stage | What Happened |
-|---|---|
-| **Assignment** | I conducted structured public-source rental-property research. |
-| **Observation** | Significant effort went into finding, comparing, validating, and documenting information across websites and spreadsheets. |
-| **Analysis** | I identified recurring issues involving reconciliation, discoveries, duplicates, missing information, availability, evidence, and data quality. |
-| **Requirements** | I translated these recurring problems into requirements for a more controlled workflow. |
-| **Solution** | I designed and developed Datablix. |
-| **Validation** | I tested the evolving solution against the same type of research workflow that motivated its development. |
-| **Outcome** | Datablix evolved into an integrated workflow for research, reconciliation, human review, QA, analysis, and reporting. |
 
 ---
 
