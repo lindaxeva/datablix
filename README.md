@@ -235,7 +235,7 @@ When information cannot be reliably confirmed, the preferred outcome is an **exp
 
 ---
 
-# 10. Results & Validation
+# 10. Outcomes
 
 | Measure | Result | What It Demonstrates |
 |---|---:|---|
