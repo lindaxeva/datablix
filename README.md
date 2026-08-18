@@ -328,62 +328,77 @@ Datablix improves the structure, traceability, and quality control of the resear
 
 ---
 
-# 13. Business Recommendation
+# 13. Business Recommendations
+
+The project highlighted opportunities that extend beyond improving the research workflow itself. 
+
+| # | Recommendation | Why It Matters | Proposed Next Step |
+|---|---|---|---|
+| **1** | **Validate property-information priorities with the intended 55+ audience** | Research can show what information is available, but it cannot determine which information matters most to the people the directory is intended to serve | Conduct a short questionnaire using a 1–5 importance scale and include an open-ended question for potentially missing information |
+| **2** | **Define a data freshness and verification approach** | Property information can change over time, and different fields may require different levels of ongoing verification | Define how important fields should be reviewed, dated, or marked when their current status cannot be confirmed |
+| **3** | **Conduct independent user testing** | The workflow has not yet been independently tested, and a researcher unfamiliar with its development may interact with it differently | Have an independent researcher complete research tasks and document usability issues, points of confusion, guidance needs, and differences in how the workflow is followed |
+
+---
+
+## Recommendation 1 — Validate 55+ User Priorities
 
 The research involved collecting a wide range of information about apartment buildings and rental properties. This raised a broader question: **which property details matter most to the intended 55+ audience when considering a place to live?**
 
 Rather than making assumptions about how housing information priorities may change with age, an opportunity for further exploration would be to ask the intended users directly.
 
-## Proposed Approach
+### Proposed Validation
 
-Consider conducting a short questionnaire with a sample of adults aged 55+ to understand the **relative importance of the property information being collected**.
-
-Participants could rate each property detail using a simple 5-point scale:
-
-| Rating | Meaning |
-|---:|---|
-| **1** | Not important to me |
-| **2** | Slightly important |
-| **3** | Moderately important |
-| **4** | Very important |
-| **5** | Essential when considering a property |
-
-To explore whether priorities change over time, participants could be asked to rate the same information from two perspectives:
-
-| Property Detail | When I Was Younger | Today |
-|---|---:|---:|
-| Example property field | 1–5 | 1–5 |
-| Example property field | 1–5 | 1–5 |
-| Example property field | 1–5 | 1–5 |
-
-An open-ended question could also be included:
-
-> **Is there any information about an apartment or rental property that would be important to you but was not included above?**
-
-This would allow participants to identify needs that may not already be represented in the existing information.
-
-## Potential Business Value
-
-| Business Opportunity | Potential Value |
-|---|---|
-| **Understand user priorities** | Provides direct evidence about which property information the intended audience considers most important |
-| **Identify changing priorities** | Helps explore whether particular housing information considerations become more or less important with age |
-| **Identify information gaps** | Reveals information users may value that is not currently represented |
-| **Prioritize fields and filters** | Provides additional evidence for deciding which information deserves greater research and visibility |
-| **Focus research effort** | Helps direct resources toward information that is both useful to users and realistically maintainable |
-
-## From User Priorities to Data Decisions
+Participants aged 55+ could rate each property field using a simple scale:
 
 | Rating | User Importance | Suggested Action |
 |---:|---|---|
-| **5** | Essential | **Prioritize** — give strong consideration in property listings, research, and relevant filters |
-| **4** | Very important | **Prioritize** — maintain as important property information |
-| **3** | Moderately important | **Consider** — include where it adds useful information for housing decisions |
-| **2** | Slightly important | **Secondary** — give lower priority compared with more important fields |
-| **1** | Not important | **Reconsider** — assess whether the field needs the same level of research or visibility |
+| **5** | Essential | **Prioritize** |
+| **4** | Very important | **High priority** |
+| **3** | Moderately important | **Consider** |
+| **2** | Slightly important | **Secondary** |
+| **1** | Not important | **Reconsider priority** |
 
-The results could then be summarized using the **most common rating (mode)** or the **median rating** across participants. 
+An open-ended question could also ask:
 
-### Key Recommendation
+> **Is there any information about an apartment or rental property that would be important to you but is not currently included?**
 
-> **Consider validating the relative importance of the property information with a sample of the intended 55+ audience.** Using direct user feedback could provide stronger evidence for deciding which information to **prioritize, reconsider, add, or obtain through alternative sources**.
+This would allow the intended users to identify needs that may not already be represented in the existing property information.
+
+### Proposed Business Value
+
+- Provides direct evidence of **what the intended audience values**
+- Supports better **field and filter prioritization**
+- Identifies potential **information gaps**
+- Reduces reliance on assumptions about age-related housing priorities
+- Provides additional evidence for future directory improvements
+
+---
+
+## Recommendation 2 — Define Data Freshness and Verification
+
+Property information collected from public sources can change over time. A verified finding therefore represents what could be supported **at the time of research**, rather than a guarantee that the information will remain unchanged.
+
+A future data-maintenance approach could define:
+
+- when important fields were last verified;
+- which information requires periodic review;
+- how unconfirmed or outdated information should be represented; and
+- when a record should return to the research queue.
+
+This could help preserve the value of the research after the initial project is completed.
+
+---
+
+## Recommendation 3 — Independent User Testing
+
+Datablix has been developed and iteratively tested against real research scenarios. However, an important next step is to conduct independent user testing with a **researcher who was not involved in its development**.
+
+The tests could observe:
+
+- whether the workflow is understandable without explanation;
+- where additional guidance or training is required;
+- whether research and verification steps are interpreted consistently;
+- where users encounter unnecessary friction; and
+- whether the resulting outputs remain consistent.
+
+The findings could inform future improvements to **usability, documentation, training, and workflow design**.
