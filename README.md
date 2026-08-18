@@ -173,7 +173,7 @@ Research establishes what can currently be supported by public evidence. Databli
 
 ---
 
-# 8. Proposed Solution: Datablix
+# 8. Proposed Solution
 
 Datablix translates the identified requirements into a working prototype organized around:
 
