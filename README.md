@@ -338,9 +338,7 @@ The project highlighted opportunities that extend beyond improving the research 
 | **2** | **Define a data freshness and verification approach** | Property information can change over time, and different fields may require different levels of ongoing verification | Define how important fields should be reviewed, dated, or marked when their current status cannot be confirmed |
 | **3** | **Conduct independent user testing** | The workflow has not yet been independently tested, and a researcher unfamiliar with its development may interact with it differently | Have an independent researcher complete research tasks and document usability issues, points of confusion, guidance needs, and differences in how the workflow is followed |
 
----
-
-## Recommendation 1 — Validate 55+ User Priorities
+## Recommendation 1: Validate 55+ User Priorities
 
 The research involved collecting a wide range of information about apartment buildings and rental properties. This raised a broader question: **which property details matter most to the intended 55+ audience when considering a place to live?**
 
@@ -372,9 +370,7 @@ This would allow the intended users to identify needs that may not already be re
 - Reduces reliance on assumptions about age-related housing priorities
 - Provides additional evidence for future directory improvements
 
----
-
-## Recommendation 2 — Define Data Freshness and Verification
+## Recommendation 2: Define Data Freshness and Verification
 
 Property information collected from public sources can change over time. A verified finding therefore represents what could be supported **at the time of research**, rather than a guarantee that the information will remain unchanged.
 
@@ -387,9 +383,7 @@ A future data-maintenance approach could define:
 
 This could help preserve the value of the research after the initial project is completed.
 
----
-
-## Recommendation 3 — Independent User Testing
+## Recommendation 3: Independent User Testing
 
 Datablix has been developed and iteratively tested against real research scenarios. However, an important next step is to conduct independent user testing with a **researcher who was not involved in its development**.
 
