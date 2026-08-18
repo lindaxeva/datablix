@@ -1,14 +1,14 @@
 # DATABLIX
 
-Datablix is a human-in-the-loop research automation, reconciliation, and data-quality workflow tool I developed while completing the Ontario Senior Living Directory Development – Stage 3 research project for Coyle Media Group.
+Datablix is a **human-in-the-loop research automation, reconciliation, and data-quality workflow tool** I developed while completing the **Ontario Senior Living Directory Development – Stage 3 research project** for **Coyle Media Group**.
 
-The project involved researching apartment buildings and rental properties across multiple companies using publicly available sources. The work went beyond information gathering: findings had to be validated, supported by evidence, compared with existing project data, reviewed for quality, and organized into usable project deliverables.
+The project involved researching **apartment buildings and rental properties across multiple companies** using publicly available sources. The work went beyond information gathering: findings had to be **validated, supported by evidence, compared with existing project data, reviewed for quality, and organized into usable project deliverables**.
 
-As the research progressed, recurring workflow challenges became visible—from finding and verifying information to tracking sources, identifying research gaps, reconciling new findings with existing records, and maintaining consistency across companies and properties.
+As the research progressed, recurring workflow challenges emerged—from **finding and verifying information** to **tracking sources, identifying research gaps, reconciling new findings with existing records, and maintaining consistency** across companies and properties.
 
-I began translating these recurring challenges into requirements for a more structured and efficient workflow. Datablix emerged as a solution to automate the repetitive work while preserving human judgment for evidence, ambiguity, and verification.
+I began translating these recurring challenges into **requirements for a more structured and efficient research workflow**. Datablix emerged from this process as a solution designed to **automate repetitive work while preserving human judgment** where evidence, ambiguity, and verification matter.
 
- **Disclaimer:** Datablix was independently conceived and developed and is not an official Coyle Media Group product, commissioned software product, or endorsed technology.
+**Disclaimer:** Datablix was **independently conceived and developed**. It is not an official Coyle Media Group product, commissioned software product, or endorsed technology.
 
 ---
 
