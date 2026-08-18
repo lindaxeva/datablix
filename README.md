@@ -1,12 +1,10 @@
 # DATABLIX
 
-Datablix is a **human-in-the-loop research automation, reconciliation, and data-quality workflow tool** I developed while completing the **Ontario Senior Living Directory Development – Stage 3 research project** for **Coyle Media Group**.
+**Datablix started with a simple question: how can repetitive research work be made more structured, efficient, and reliable?**
 
-The project involved researching **apartment buildings and rental properties across multiple companies** using publicly available sources. The work went beyond information gathering: findings had to be **validated, supported by evidence, compared with existing project data, reviewed for quality, and organized into usable project deliverables**.
+While completing the **Ontario Senior Living Directory Development – Stage 3 research project** for **Coyle Media Group**, I encountered recurring challenges around **finding and verifying information, tracking evidence, reconciling findings with existing data, identifying gaps, and maintaining data quality**.
 
-As the research progressed, recurring workflow challenges emerged—from **finding and verifying information** to **tracking sources, identifying research gaps, reconciling new findings with existing records, and maintaining consistency** across companies and properties.
-
-I began translating these recurring challenges into **requirements for a more structured and efficient research workflow**. Datablix emerged from this process as a solution designed to **automate repetitive work while preserving human judgment** where evidence, ambiguity, and verification matter.
+I translated these challenges into **workflow requirements** and began testing a more structured approach to improve the process. This led to **Datablix**: a **human-in-the-loop research automation, reconciliation, and data-quality workflow tool** designed to automate repetitive work while preserving human judgment where evidence is incomplete, conflicting, or uncertain.
 
 **Disclaimer:** Datablix was **independently conceived and developed**. It is not an official Coyle Media Group product, commissioned software product, or endorsed technology.
 
