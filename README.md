@@ -302,13 +302,20 @@ The research involved collecting a wide range of information about apartment bui
 
 Rather than making assumptions about how housing priorities may change with age, a useful next step would be to validate the information being collected directly with the intended users.
 
-| Observation | Recommendation | Suggested Approach | Potential Business Value |
-|---|---|---|---|
-| **The research covers many different property details** | **Validate which information matters most to adults aged 55+** | Present the current property fields to participants and ask which details they would use when considering an apartment | Helps identify the information that provides the most value to the intended audience |
-| **Different property details may have different levels of importance** | **Ask users to rank their priorities** | Have participants select and rank the 5–10 property details that matter most to them | Helps prioritize research effort and the information presented most prominently in listings |
-| **Housing priorities may change over time** | **Compare past and current housing priorities** | Ask participants which factors mattered when they were younger and which matter most to them today | Provides insight into how housing priorities may change with age |
-| **Users may value information that is not currently being collected** | **Include open-ended questions** | Ask participants what else they would want to know before considering an apartment or rental property | Helps identify possible information gaps directly from the intended audience rather than through assumptions |
-| **Some highly valued information may be difficult to find publicly** | **Compare user priorities with research availability** | Compare the highest-ranked information with Datablix field-coverage and research-gap results | Helps identify which high-value information can be maintained through public research and which may require other collection methods |
+## Proposed Business Value
+
+Validating the property information directly with the intended 55+ audience could provide value beyond the research process itself.
+
+| Business Value | Details |
+|---|---|
+| **Better Audience Alignment** | Helps confirm that the information being collected reflects what the intended 55+ audience actually considers important when evaluating rental properties |
+| **Clearer Field Prioritization** | Identifies which property details deserve greater research effort and visibility based on user importance |
+| **More Useful Property Listings** | Helps focus listings on information that supports real housing decisions rather than treating all available fields as equally valuable |
+| **Identification of Information Gaps** | Reveals important information users want but that may not currently be collected or consistently available |
+| **More Relevant Search & Filters** | User-ranked priorities could help guide which well-supported fields are most useful for future search, filtering, or comparison features |
+| **Better Use of Research Resources** | Helps focus research effort on high-value information and reconsider fields that require significant effort but provide limited user value |
+| **Evidence-Based Decisions** | Gives stakeholders direct user feedback to support future decisions about fields, content, and directory improvements rather than relying only on assumptions |
+| **Stronger 55+ Relevance** | Provides evidence for how the directory can better serve its intended audience and where its information needs may differ from a general rental directory |
 
 ## Proposed Validation Approach
 
