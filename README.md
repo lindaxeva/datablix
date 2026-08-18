@@ -296,53 +296,65 @@ Datablix improves the structure, traceability, and quality control of the resear
 
 ---
 
-# 13. Business Recommendations
+# 13. Business Recommendation
 
-The research involved collecting a wide range of information about apartment buildings and rental properties. This raised a broader question: **which property details matter most to the intended 55+ audience when considering a place to live?**
+The research involved collecting a wide range of information about apartment buildings and rental properties. While the research can show **what information is available**, it cannot by itself determine **which information matters most to the people the directory is intended to serve**.
 
-Rather than making assumptions about how housing priorities may change with age, an opportunity for further exploration would be to gather direct feedback from the intended audience on the **relative importance of the property information being collected**.
+This raised a broader question: **which property details matter most to the intended 55+ audience when considering a place to live?**
 
-This could complement the existing research and provide additional evidence for future decisions about property fields, categories, filters, and information priorities.
+Rather than making assumptions about how housing priorities may change with age, an opportunity for further exploration would be to ask the intended users directly.
 
-## Potential Business Value
+## Proposed Recommendation
 
-Combining direct user feedback with the data-availability patterns observed during the research could provide several business benefits.
+Consider conducting a short questionnaire with a sample of adults aged 55+ to understand the **relative importance of the property information being collected**.
 
-| Business Opportunity | Proposed Approach | Potential Business Value |
-|---|---|---|
-| **Understand what matters most to the intended audience** | Ask adults aged 55+ to identify and rank the property details most important to them when considering a place to live | Provides direct evidence of user priorities rather than relying on assumptions |
-| **Understand how housing priorities may change with age** | Compare what participants value today with what they considered important when they were younger | Helps identify property information that may become more relevant at different stages of life |
-| **Identify missing information** | Ask users what they would want to know that is not currently represented in the property information collected | Reveals potential gaps from the user's perspective |
-| **Prioritize fields, content, and filters** | Compare user-ranked priorities with the field availability observed during the research | Helps focus future research and directory features on information that is both useful and realistically maintainable |
-| **Improve the value of research effort** | Give greater attention to information with high user importance and reliable availability | Directs research resources toward information with stronger potential business and user value |
+Participants could rate each property detail using a simple 5-point scale:
 
-## Proposed Validation Approach
+| Rating | Meaning |
+|---:|---|
+| **1** | Not important to me |
+| **2** | Slightly important |
+| **3** | Moderately important |
+| **4** | Very important |
+| **5** | Essential when considering a property |
 
-A short questionnaire or interview with a sample of adults aged 55+ could be used to explore these priorities.
+To explore whether priorities change over time, participants could be asked to rate the same information from two perspectives:
 
-The existing property fields could provide a starting point, while open-ended questions could allow participants to identify information that may not currently be represented.
+| Property Detail | When I Was Younger | Today |
+|---|---:|---:|
+| Example property field | 1–5 | 1–5 |
+| Example property field | 1–5 | 1–5 |
+| Example property field | 1–5 | 1–5 |
 
-Example questions could include:
+An open-ended question could also be included:
 
-1. **Which 5–10 rental property details would be most important to you when deciding whether a property is worth considering?**
-2. **Thinking back to when you were younger, would your priorities have been different? Which factors have become more or less important to you today?**
-3. **Is there any information you would want to know about an apartment building or rental property that is not currently included?**
-4. **Which information would you expect to see directly on a property listing rather than having to contact the property manager to find out?**
+> **Is there any information about an apartment or rental property that would be important to you but was not included above?**
+
+This would allow participants to identify needs that may not already be represented in the existing information.
+
+## Proposed Business Value
+
+| Business Opportunity | Potential Value |
+|---|---|
+| **Understand user priorities** | Provides direct evidence about which property information the intended audience considers most important |
+| **Identify changing priorities** | Helps explore whether particular housing considerations become more or less important with age |
+| **Identify information gaps** | Reveals information users may value that is not currently represented |
+| **Prioritize fields and filters** | Provides additional evidence for deciding which information deserves greater research and visibility |
+| **Focus research effort** | Helps direct resources toward information that is both useful to users and realistically maintainable |
 
 ## From User Priorities to Data Decisions
 
-The results could then be compared with the **field-availability and research-gap patterns** observed during the project.
+The questionnaire results could then be compared with the **field-availability and research-gap patterns observed during the project**.
 
-| | **High Data Availability** | **Low Data Availability** |
+| User Importance | Data Availability | Suggested Action |
 |---|---|---|
-| **High User Importance** | **Prioritize** — strong candidate for continued research, property profiles, and relevant filters | **Investigate** — explore alternative sources or direct collection methods |
-| **Low User Importance** | **Secondary** — collect where useful and practical | **Reconsider** — assess whether the research and maintenance effort is justified |
+| **High** | **High** | **Prioritize** — strong candidate for continued research, property profiles, and relevant filters |
+| **High** | **Low** | **Investigate** — explore alternative or direct collection methods |
+| **Low** | **High** | **Secondary** — available, but may require less prominence |
+| **Low** | **Low** | **Reconsider** — assess whether continued research and maintenance effort is justified |
 
-This creates a simple decision framework:
-
-> **User Importance × Data Availability → Information Priority**
+> **Decision Principle:** **User Importance × Data Availability → Information Priority**
 
 ### Key Recommendation
 
-> **Consider validating the relative importance of the property information with a sample of the intended 55+ audience.** Comparing what users say matters most with what can be reliably researched could provide additional evidence for deciding which information to **prioritize, reconsider, add, or obtain through alternative sources**.
-
+> **Consider validating the relative importance of the property information with a sample of the intended 55+ audience.** Combining direct user feedback with the data-availability patterns observed during the research could provide stronger evidence for deciding which information to **prioritize, reconsider, add, or obtain through alternative sources**.
