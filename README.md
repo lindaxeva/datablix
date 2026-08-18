@@ -237,10 +237,6 @@ When information cannot be reliably confirmed, the preferred outcome is an **exp
 
 # 10. Results & Validation
 
-Datablix was tested against the same type of property-research workflow that originally motivated its development.
-
-Validation focuses on **observable research outcomes rather than unmeasured productivity claims**.
-
 | Measure | Result | What It Demonstrates |
 |---|---:|---|
 | Companies Researched | `TBD` | Research coverage |
@@ -252,8 +248,6 @@ Validation focuses on **observable research outcomes rather than unmeasured prod
 | Human-Verified Records | `TBD` | Review completion |
 | Research Gaps | `TBD` | Visibility into unavailable information |
 | QA Findings | `TBD` | Data-quality issues surfaced |
-
-> **Note:** Final figures will only be reported when supported by the completed project dataset.
 
 ---
 # 11. Testing, Iterations & Improvements
@@ -267,7 +261,7 @@ Some of the most important iterations were not simply bug fixes. They were **sol
 | Finding / Constraint | What It Revealed | Design Response |
 |---|---|---|
 | **Embedding AI research directly into Datablix would introduce recurring token/API costs** | Research can involve multiple companies, properties, webpages, and large amounts of source material, causing embedded AI costs to increase with usage | Introduced an **external AI-assisted research workflow supported by Datablix-generated structured prompts**, avoiding continuous paid AI usage inside the application |
-| **External AI research needed consistent prompting** | Results could vary depending on how the research request was structured and interpreted | Developed standardized **research prompts** defining scope, required fields, source rules, evidence expectations, uncertainty handling, and expected output structure |
+| **External AI research needed consistent prompting** | Results could vary depending on how the research request was structured and interpreted | Developed and tested standardized **research prompts** defining scope, required fields, source rules, evidence expectations, uncertainty handling, and expected output structure |
 | **Website scanning alone could not support the full research process** | Scanning could identify candidate pages, but contextual research and interpretation required broader research capability | Retained the **website scanner as an optional coverage and cross-checking tool** rather than the primary research method |
 | **AI-assisted findings still required validation** | A well-structured prompt could improve consistency but could not guarantee that AI findings were complete or correct | Kept AI-assisted findings separate from verified data and routed imported research through reconciliation, QA, evidence review, and human verification |
 | **Starting Data could influence independent research** | Providing existing records during discovery could encourage the research process to reproduce known information | Separated Starting Data from the research prompt and independent research stage, then moved reconciliation into Datablix after import |
