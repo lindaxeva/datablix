@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Source Baseline Integrity 2026.08.18-v91"
+DATABLIX_BUILD = "Deliverables Generator + Coverage Totals + Source Baseline Integrity 2026.08.18-v92"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -6817,6 +6817,43 @@ def closeout_research_coverage_matrix(qa_frame: pd.DataFrame, registry=None, bas
         })
 
     return pd.DataFrame(rows)
+
+
+def coverage_matrix_totals(coverage_matrix: pd.DataFrame) -> dict:
+    """Return safe project/company totals without changing the analytical matrix itself."""
+    numeric_columns = [
+        "Source Records",
+        "Research Records",
+        "Existing Matches",
+        "New Discoveries",
+        "Changed Existing Records",
+        "Discoveries Submitted",
+        "Needs Review",
+    ]
+    totals = {"Company": "TOTAL"}
+    for column in numeric_columns:
+        if isinstance(coverage_matrix, pd.DataFrame) and column in coverage_matrix.columns:
+            totals[column] = int(pd.to_numeric(coverage_matrix[column], errors="coerce").fillna(0).sum())
+        else:
+            totals[column] = 0
+    return totals
+
+
+def coverage_matrix_with_total_row(coverage_matrix: pd.DataFrame) -> pd.DataFrame:
+    """Append one presentation-only TOTAL row to the research coverage matrix.
+
+    The underlying analytical matrix is intentionally left unchanged so downstream
+    calculations that sum its columns do not double-count totals.
+    """
+    if not isinstance(coverage_matrix, pd.DataFrame):
+        return pd.DataFrame()
+    if coverage_matrix.empty:
+        return coverage_matrix.copy()
+    total_row = pd.DataFrame([coverage_matrix_totals(coverage_matrix)])
+    for column in coverage_matrix.columns:
+        if column not in total_row.columns:
+            total_row[column] = ""
+    return pd.concat([coverage_matrix.copy(), total_row[coverage_matrix.columns]], ignore_index=True)
 
 
 def verification_followup_summary(qa_frame: pd.DataFrame) -> pd.DataFrame:
@@ -14636,11 +14673,33 @@ elif section == "Analysis & report":
             height=min(700, 90 + 36 * max(len(full_company_summary), 1)),
         )
         st.markdown("#### Starting Data reconciliation")
+        coverage_totals = coverage_matrix_totals(coverage_matrix)
+        total_row_1 = st.columns(4)
+        total_row_1[0].metric("Total source records", f"{coverage_totals['Source Records']:,}")
+        total_row_1[1].metric("Total research records", f"{coverage_totals['Research Records']:,}")
+        total_row_1[2].metric("Existing matches", f"{coverage_totals['Existing Matches']:,}")
+        total_row_1[3].metric("New discoveries", f"{coverage_totals['New Discoveries']:,}")
+
+        total_row_2 = st.columns(3)
+        total_row_2[0].metric("Changed existing records", f"{coverage_totals['Changed Existing Records']:,}")
+        total_row_2[1].metric("Discoveries submitted", f"{coverage_totals['Discoveries Submitted']:,}")
+        total_row_2[2].metric("Needs review", f"{coverage_totals['Needs Review']:,}")
+
+        coverage_display = coverage_matrix_with_total_row(coverage_matrix)
+        coverage_styler = coverage_display.style.apply(
+            lambda row: [
+                "font-weight:700;background-color:#F3F4F6"
+                if safe_text(row.get("Company", "")) == "TOTAL"
+                else ""
+                for _ in row
+            ],
+            axis=1,
+        )
         st.dataframe(
-            coverage_matrix,
+            coverage_styler,
             width="stretch",
             hide_index=True,
-            height=min(700, 90 + 36 * max(len(coverage_matrix), 1)),
+            height=min(740, 90 + 36 * max(len(coverage_display), 1)),
         )
         discoveries = discovery_submission_summary(analysis_qa)
         with smart_expander("New discoveries and external submission tracking", count=len(discoveries), expanded=False):
