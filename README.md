@@ -101,56 +101,62 @@ Prepare Reporting
 
 The recurring research challenges were translated into requirements at different levels. 
 
-# 5. Requirements Analysis
-
-The recurring challenges observed during the research were translated into three levels of requirements: **Business, Stakeholder, and Solution Requirements**.
-
-## Business Requirements
+## 5.1 Business Requirements
+**Why is the change needed?**
 
 | ID | Business Requirement |
 |---|---|
-| **BR-01** | Improve the consistency and reliability of multi-company property research |
-| **BR-02** | Reduce repetitive manual work across research, reconciliation, QA, and reporting |
-| **BR-03** | Maintain traceability between research findings, evidence, and decisions |
-| **BR-04** | Preserve human oversight where findings require judgment or verification |
-| **BR-05** | Improve visibility into research progress, gaps, discoveries, and quality |
-| **BR-06** | Produce consistent and reusable project deliverables |
+| BR-01 | Improve the consistency and reliability of multi-company property research |
+| BR-02 | Reduce repetitive manual work across research, reconciliation, QA, and reporting |
+| BR-03 | Maintain traceability between research findings, evidence, and decisions |
+| BR-04 | Preserve human oversight where findings require judgment or verification |
+| BR-05 | Improve visibility into research progress, gaps, discoveries, and quality |
+| BR-06 | Produce consistent and reusable project deliverables |
 
-## Stakeholder Requirements
+## 5.2 Stakeholder Requirements
+**What do the people involved need?**
 
 | ID | Stakeholder Requirement |
 |---|---|
-| **STR-01** | Researchers need a structured and consistent company-level research workflow |
-| **STR-02** | Researchers need clear research scope, fields, source rules, and evidence expectations |
-| **STR-03** | Reviewers need to compare new research with Starting Data while keeping uncertainty and evidence visible |
-| **STR-04** | Stakeholders need visibility into research coverage, gaps, discoveries, and data quality |
-| **STR-05** | Stakeholders need research results that can be transformed into usable project deliverables |
+| STR-01 | Researchers need a structured and consistent company-level research workflow |
+| STR-02 | Researchers need clear research scope, fields, source rules, and evidence expectations |
+| STR-03 | Reviewers need to compare new research with Starting Data while keeping evidence and uncertainty visible |
+| STR-04 | Stakeholders need visibility into research coverage, gaps, discoveries, and data quality |
+| STR-05 | Stakeholders need research results that can be transformed into usable project deliverables |
 
-## Solution Requirements
+## 5.3 Solution Requirements
+**What must Datablix provide?**
 
-### Functional
+### Functional Requirements
 
 | ID | Datablix Shall... |
 |---|---|
-| **FR-01** | Generate structured prompts for external AI-assisted research and support standardized research imports |
-| **FR-02** | Keep Starting Data separate from independent research and reconcile findings after import |
-| **FR-03** | Preserve sources, evidence, confidence, uncertainty, and research status |
-| **FR-04** | Apply consistent QA, matching, status, and classification rules |
-| **FR-05** | Support human verification of ambiguous or uncertain findings |
-| **FR-06** | Track coverage, discoveries, gaps, verification, and quality indicators |
-| **FR-07** | Save and resume multi-company research and generate reusable project outputs |
-| **FR-08** | Provide optional website scanning for coverage and cross-checking |
+| FR-01 | Generate structured prompts for external AI-assisted research and support standardized imports |
+| FR-02 | Keep Starting Data separate from independent research and reconcile findings after import |
+| FR-03 | Preserve sources, evidence, confidence, uncertainty, and research status |
+| FR-04 | Apply consistent QA, matching, status, and classification rules |
+| FR-05 | Support human verification of ambiguous or uncertain findings |
+| FR-06 | Track coverage, discoveries, gaps, verification, and quality indicators |
+| FR-07 | Save and resume multi-company research and generate reusable project outputs |
+| FR-08 | Provide optional website scanning for coverage and cross-checking |
 
-### Non-Functional
+### Non-Functional Requirements
 
 | ID | Requirement | Quality |
 |---|---|---|
-| **NFR-01** | Findings should remain connected to their supporting evidence | **Traceability** |
-| **NFR-02** | Project work should survive interruptions and be recoverable | **Reliability** |
-| **NFR-03** | Uncertain findings should remain distinguishable from verified information | **Transparency** |
-| **NFR-04** | The workflow should remain understandable while preserving required human decision points | **Usability & Human Control** |
+| NFR-01 | Findings should remain connected to supporting evidence | Traceability |
+| NFR-02 | Project work should survive interruptions and be recoverable | Reliability |
+| NFR-03 | Uncertain findings should remain distinguishable from verified information | Transparency |
+| NFR-04 | The workflow should remain understandable while preserving human decision points | Usability & Human Control |
 
-> **Requirements flow:** Business Need → Stakeholder Need → Solution Requirement → Datablix Feature → Validation
+## 5.4 Transition Requirements
+**What is needed to move into the new workflow?**
+
+| ID | Transition Requirement |
+|---|---|
+| TR-01 | Existing Starting Data should be importable without losing original records or fields |
+| TR-02 | Existing research should be transferred while preserving sources and evidence |
+| TR-03 | Users should receive basic guidance or training on the research, reconciliation, review, and verification workflow |
 
 ---
 
