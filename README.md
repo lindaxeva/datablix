@@ -22,7 +22,7 @@ I began translating these recurring challenges into **requirements for a more st
 | **Challenge** | Fragmented web research, manual source comparison, evidence tracking, data-quality gaps, and reporting |
 | **Solution** | Datablix — a human-in-the-loop research, reconciliation, and data-quality workflow |
 | **Tools** | Python · Streamlit · Pandas · Excel/OpenPyXL · Google Sheets · AI-assisted research · Git/GitHub |
-| **BA Methods** | Stakeholder Analysis · AS-IS/TO-BE · Requirements · User Stories · Acceptance Criteria · Data Quality Rules · KPI Framework |
+| **BA Methods** | Stakeholder Analysis · AS-IS/TO-BE · Requirements Analysis · User Stories · Acceptance Criteria · Data Quality Rules · KPI Framework |
 | **Scope** | Current residential rental properties physically located within the City of Ottawa |
 
 ---
@@ -97,20 +97,35 @@ Prepare Reporting
 
 ---
 
-# 5. Business Requirements
+# 5. Business Requirements Analysis
 
-| ID | Business Requirement | Origin |
+The recurring research challenges were translated into requirements at different levels. 
+
+| ID | Business Requirement | Business Need |
 |---|---|---|
-| **BR-01** | Keep Starting Data separate from independent website research | Reduce comparison bias |
-| **BR-02** | Support structured company-level research | Fragmented research process |
-| **BR-03** | Import standardized research results | Inconsistent research outputs |
-| **BR-04** | Reconcile research findings against Starting Data | Manual comparison |
-| **BR-05** | Keep inventory status separate from rental availability | Status ambiguity |
-| **BR-06** | Preserve sources, evidence, confidence, and uncertainty | Verification difficulty |
-| **BR-07** | Apply consistent QA and classification rules | Data inconsistency |
-| **BR-08** | Require human verification before final use | Automated research uncertainty |
-| **BR-09** | Measure coverage, discoveries, gaps, and quality | Limited progress visibility |
-| **BR-10** | Generate reusable project deliverables | Manual reporting |
+| **BR-01** | Improve the reliability and consistency of multi-company property research | Research was fragmented and difficult to manage consistently |
+| **BR-02** | Maintain traceability from research findings to supporting evidence and final decisions | Verification was difficult when sources, evidence, and uncertainty were not consistently preserved |
+| **BR-03** | Reduce repetitive manual effort across research, comparison, QA, and reporting | Repeated manual activities increased effort across the research lifecycle |
+| **BR-04** | Preserve human oversight for findings that require judgment or verification | Automated and AI-assisted research can produce incomplete, ambiguous, or uncertain findings |
+| **BR-05** | Improve visibility into research progress, coverage, gaps, discoveries, and data quality | Project-level progress and research quality were difficult to assess consistently |
+| **BR-06** | Produce consistent, reusable outputs from completed research | Final reporting required manual consolidation of research and QA results |
+
+## Stakeholder & Solution Requirements
+
+The business requirements were translated into more specific workflow and system requirements.
+
+| ID | Requirement | Supports |
+|---|---|---|
+| **SR-01** | Keep Starting Data separate from independent research | BR-01, BR-04 |
+| **SR-02** | Support structured company-level research | BR-01 |
+| **SR-03** | Generate structured prompts for external AI-assisted research and support standardized research imports | BR-01, BR-03 |
+| **SR-04** | Reconcile imported research findings against Starting Data | BR-01, BR-03 |
+| **SR-05** | Keep Current Inventory Status separate from Rental Availability Status | BR-01, BR-02 |
+| **SR-06** | Preserve sources, evidence, confidence, research status, and uncertainty | BR-02, BR-04 |
+| **SR-07** | Apply consistent QA and classification rules | BR-01, BR-02 |
+| **SR-08** | Require human verification before uncertain findings are treated as final | BR-04 |
+| **SR-09** | Measure research coverage, discoveries, gaps, and quality | BR-05 |
+| **SR-10** | Generate company- and project-level reusable deliverables | BR-06 |
 
 ---
 
