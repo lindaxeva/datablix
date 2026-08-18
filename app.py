@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Evidence-Backed Counts 2026.08.17-v90"
+DATABLIX_BUILD = "Deliverables Generator + Source Baseline Integrity 2026.08.18-v91"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -1327,6 +1327,27 @@ def display_values(series, blank="Blank"):
 
 def csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def dataframe_content_fingerprint(df: pd.DataFrame) -> str:
+    """Return a deterministic fingerprint for a DataFrame's current contents.
+
+    Reporting snapshots use this to detect when the active Starting Data baseline
+    has changed.  A snapshot may intentionally preserve older research values, but
+    it must never preserve counts from a different source workbook.
+    """
+    if not isinstance(df, pd.DataFrame):
+        return ""
+    if df.empty:
+        return "empty"
+
+    stable = coalesce_duplicate_columns(df.copy())
+    stable.columns = [str(column).strip() for column in stable.columns]
+    stable = stable.reindex(sorted(stable.columns), axis=1)
+    for column in stable.columns:
+        stable[column] = stable[column].astype("string").fillna("").str.strip()
+    payload = stable.to_csv(index=False, lineterminator="\n")
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def safe_filename(name):
@@ -3876,25 +3897,44 @@ def company_source_records_for_research(
     company_id: str = "",
     company_name: str = "",
 ) -> pd.DataFrame:
-    """Return the original Starting Data rows for one company."""
+    """Return current Starting Data rows for one company.
+
+    Company ID is preferred, but it is not trusted blindly.  Older saved projects
+    can contain stale IDs after company-registry migrations, so an ID match is
+    cross-checked against the owner name when both values are available.
+    """
     if not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame()
 
     rows = df.copy()
     clean_company_id = safe_text(company_id)
+    clean_company_name = safe_text(company_name)
 
     matched = pd.DataFrame(columns=rows.columns)
     if clean_company_id and "Company ID" in rows.columns:
-        matched = rows.loc[
+        by_id = rows.loc[
             rows["Company ID"].astype("string").fillna("").str.strip().eq(clean_company_id)
         ].copy()
 
-    if matched.empty and company_name and "Management/Owner" in rows.columns:
+        if not by_id.empty and clean_company_name and "Management/Owner" in by_id.columns:
+            owner_is_compatible = by_id["Management/Owner"].apply(
+                lambda value: (
+                    not safe_text(value)
+                    or _company_core_matches(safe_text(value), clean_company_name)
+                )
+            )
+            by_id = by_id.loc[owner_is_compatible].copy()
+
+        matched = by_id
+
+    # Fall back to the canonical/alias-aware company-name matcher when no reliable
+    # ID rows remain.  This repairs stale IDs without broad substring counting.
+    if matched.empty and clean_company_name and "Management/Owner" in rows.columns:
         matched = rows.loc[
             rows["Management/Owner"].apply(
                 lambda value: _company_core_matches(
                     safe_text(value),
-                    safe_text(company_name),
+                    clean_company_name,
                 )
             )
         ].copy()
@@ -6884,6 +6924,10 @@ def freeze_reporting_snapshot() -> dict:
         "working": working.copy(deep=True),
         "registry": registry.copy(deep=True),
         "baseline": baseline.copy(deep=True) if isinstance(baseline, pd.DataFrame) else pd.DataFrame(),
+        "baseline_fingerprint": dataframe_content_fingerprint(baseline),
+        "source_hash": safe_text(
+            (st.session_state.get(S_SOURCE_BASELINE_META, {}) or {}).get("source_hash", "")
+        ),
     }
     st.session_state[S_REPORTING_SNAPSHOT] = snapshot
     autosave_current_project()
@@ -6897,25 +6941,44 @@ def clear_reporting_snapshot() -> None:
 
 
 def reporting_snapshot_state() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, bool]:
-    """Return QA data, registry, baseline, timestamp label, and whether a frozen snapshot is active."""
+    """Return the reporting state, never pairing a snapshot with stale Starting Data.
+
+    A frozen snapshot remains valid while research changes, which is its purpose.
+    If the active Starting Data baseline changes, however, the old snapshot is
+    automatically invalidated so source counts always come from the current source.
+    """
     snapshot = st.session_state.get(S_REPORTING_SNAPSHOT)
+    live_baseline = current_starting_source_records()
+
     if isinstance(snapshot, dict) and isinstance(snapshot.get("working"), pd.DataFrame):
-        frozen_working = normalize_workflow(prepare_data(snapshot["working"].copy()))
-        frozen_qa = qa_checks(frozen_working) if not frozen_working.empty else frozen_working.copy()
-        frozen_registry = normalize_company_registry(snapshot.get("registry"))
         frozen_baseline = snapshot.get("baseline")
         if not isinstance(frozen_baseline, pd.DataFrame):
             frozen_baseline = pd.DataFrame()
-        created = safe_text(snapshot.get("created_at", ""))
-        label = created.replace("T", " ")[:16] if created else "Frozen snapshot"
-        return frozen_qa, frozen_registry, frozen_baseline.copy(), label, True
+
+        frozen_fingerprint = (
+            safe_text(snapshot.get("baseline_fingerprint", ""))
+            or dataframe_content_fingerprint(frozen_baseline)
+        )
+        live_fingerprint = dataframe_content_fingerprint(live_baseline)
+
+        if frozen_fingerprint != live_fingerprint:
+            # Legacy or current snapshot refers to a different Starting Data source.
+            # Remove it rather than silently reporting old source-record counts.
+            st.session_state.pop(S_REPORTING_SNAPSHOT, None)
+            autosave_current_project()
+        else:
+            frozen_working = normalize_workflow(prepare_data(snapshot["working"].copy()))
+            frozen_qa = qa_checks(frozen_working) if not frozen_working.empty else frozen_working.copy()
+            frozen_registry = normalize_company_registry(snapshot.get("registry"))
+            created = safe_text(snapshot.get("created_at", ""))
+            label = created.replace("T", " ")[:16] if created else "Frozen snapshot"
+            return frozen_qa, frozen_registry, frozen_baseline.copy(), label, True
 
     live_working = st.session_state.get(S_WORKING)
     if not isinstance(live_working, pd.DataFrame):
         live_working = pd.DataFrame(columns=INTERNAL_COLUMNS)
     live_qa = qa_checks(live_working.copy()) if not live_working.empty else live_working.copy()
     live_registry = normalize_company_registry(st.session_state.get(S_COMPANIES))
-    live_baseline = current_starting_source_records()
     return live_qa, live_registry, live_baseline, "Live project state", False
 
 
@@ -7981,6 +8044,7 @@ def open_workspace(
         st.session_state[S_SOURCE_BASELINE_META] = {}
         st.session_state[S_SOURCE_VERSIONS] = []
         st.session_state[S_CLASSIFICATION_RULES] = pd.DataFrame()
+        st.session_state.pop(S_REPORTING_SNAPSHOT, None)
         st.session_state[S_PROJECT_LOADED] = True
         st.session_state[S_CLOUD_PROJECT_ID] = str(uuid.uuid4())
         st.session_state.pop(S_CLOUD_STATE_HASH, None)
@@ -8848,6 +8912,7 @@ def clear_current_starting_source() -> tuple[bool, str]:
     st.session_state[S_SOURCE_TYPE] = ""
     st.session_state[S_SOURCE_REF] = ""
     st.session_state[S_SHEET] = ""
+    st.session_state.pop(S_REPORTING_SNAPSHOT, None)
 
     current = st.session_state.get(S_WORKING, pd.DataFrame(columns=INTERNAL_COLUMNS))
     if isinstance(current, pd.DataFrame):
@@ -9195,6 +9260,9 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
     st.session_state[S_SHEET] = safe_text(assignment_sheet)
     st.session_state[S_CLASSIFICATION_RULES] = rules
     st.session_state[S_SOURCE_BASELINE_META] = dict(meta)
+    # A frozen report contains a copy of the previous source baseline.  Once the
+    # Starting Data changes, that report is no longer valid for source counts.
+    st.session_state.pop(S_REPORTING_SNAPSHOT, None)
     st.session_state[S_PROJECT_LOADED] = True
 
     if st.session_state.get(S_FILE) in {None, "", "blank-workspace"}:
@@ -10165,8 +10233,12 @@ def _analytics_company_reference(row, registry: pd.DataFrame) -> tuple[str, str]
     if company_id and not registry.empty:
         exact = registry.loc[registry["Company ID"].astype(str).eq(company_id)]
         if not exact.empty:
-            name = safe_text(exact.iloc[0].get("Management/Owner", "")) or owner
-            return company_id, name or "Unnamed company"
+            canonical_name = safe_text(exact.iloc[0].get("Management/Owner", ""))
+            # Trust the ID only when the row has no owner label or the owner label
+            # agrees with the canonical registry company.  Otherwise treat the ID
+            # as stale and resolve the row by name below.
+            if not owner or not canonical_name or _company_core_matches(owner, canonical_name):
+                return company_id, canonical_name or owner or "Unnamed company"
 
     if owner and not registry.empty:
         match_index = _registry_match_index(owner, registry)
