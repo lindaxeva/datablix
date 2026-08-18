@@ -298,42 +298,56 @@ Datablix improves the structure, traceability, and quality control of the resear
 
 # 13. Business Recommendations
 
-The research involved collecting a wide range of information about apartment buildings and rental properties. This further raised an important question: **which property details matter most to the intended 55+ audience when they are considering a place to live?**
+# 13. Business Recommendation
 
-Rather than making assumptions about how housing priorities may change with age, a useful next step would be to validate the information being collected directly with the intended users.
+The research involved collecting a wide range of information about apartment buildings and rental properties. This raised a broader question: **which property details matter most to the intended 55+ audience when considering a place to live?**
+
+Rather than making assumptions about how housing priorities may change with age, an opportunity for further exploration would be to gather direct feedback from the intended audience on the **relative importance of the property information being collected**.
+
+This could complement the existing research and provide additional evidence for future decisions about property fields, categories, filters, and information priorities.
 
 ## Proposed Business Value
 
-Validating the property information directly with the intended 55+ audience could provide value beyond the research process itself.
+Combining direct user feedback with the data-availability patterns observed during the research could provide several business benefits.
 
-| Business Value | Details |
+| Business Value | Potential Value |
 |---|---|
-| **Better Audience Alignment** | Helps confirm that the information being collected reflects what the intended 55+ audience actually considers important when evaluating rental properties |
-| **Clearer Field Prioritization** | Identifies which property details deserve greater research effort and visibility based on user importance |
-| **More Useful Property Listings** | Helps focus listings on information that supports real housing decisions rather than treating all available fields as equally valuable |
-| **Identification of Information Gaps** | Reveals important information users want but that may not currently be collected or consistently available |
-| **More Relevant Search & Filters** | User-ranked priorities could help guide which well-supported fields are most useful for future search, filtering, or comparison features |
-| **Better Use of Research Resources** | Helps focus research effort on high-value information and reconsider fields that require significant effort but provide limited user value |
-| **Evidence-Based Decisions** | Gives stakeholders direct user feedback to support future decisions about fields, content, and directory improvements rather than relying only on assumptions |
-| **Stronger 55+ Relevance** | Provides evidence for how the directory can better serve its intended audience and where its information needs may differ from a general rental directory |
+| **Better Audience Alignment** | Provides direct insight into which property information the intended 55+ audience considers most important when evaluating rental options |
+| **Clearer Field Prioritization** | Helps distinguish high-priority information from fields that may have lower decision value for the intended audience |
+| **More Useful Property Listings** | Supports decisions about which information should be most visible and useful when users compare properties |
+| **Identification of Information Gaps** | Could reveal important property information that users value but that is not currently collected or consistently available |
+| **More Relevant Search & Filters** | User priorities could provide additional evidence for deciding which well-supported fields may be useful as search, filter, or comparison options |
+| **Better Use of Research Resources** | Helps focus future research effort on information that combines strong user value with practical data availability |
+| **Evidence-Based Decisions** | Adds direct user feedback to the evidence available for future decisions about fields, content, and directory improvements |
+| **Stronger 55+ Relevance** | Provides insight into whether particular housing information becomes more important with age and how the directory can better reflect those priorities |
 
 ## Proposed Validation Approach
 
-A short questionnaire or interview with adults aged 55+ could help validate and prioritize the information being collected.
+A short questionnaire or interview with a sample of adults aged 55+ could be used to explore these priorities.
+
+The existing property fields could provide a starting point, while open-ended questions could allow participants to identify information that may not currently be represented.
 
 Example questions could include:
 
 1. **Which 5–10 rental property details would be most important to you when deciding whether a property is worth considering?**
 2. **Thinking back to when you were younger, would your priorities have been different? Which factors have become more or less important to you today?**
-3. **Is there any information you would want to know about an apartment building or rental property that is missing from the current list?**
+3. **Is there any information you would want to know about an apartment building or rental property that is not currently included?**
 4. **Which information would you expect to see directly on a property listing rather than having to contact the property manager to find out?**
 
-The results could then be compared with the field-availability patterns observed during the research:
+## From User Priorities to Data Decisions
+
+The results could then be compared with the **field-availability and research-gap patterns** observed during the project.
 
 | | **High Data Availability** | **Low Data Availability** |
 |---|---|---|
-| **High User Importance** | **Prioritize** — strong candidate for research, property profiles, and filters | **Investigate** — consider alternative data sources or direct collection |
-| **Low User Importance** | **Secondary** — collect when useful and practical | **Deprioritize** — may not justify the research and maintenance effort |
+| **High User Importance** | **Prioritize** — strong candidate for continued research, property profiles, and relevant filters | **Investigate** — explore alternative sources or direct collection methods |
+| **Low User Importance** | **Secondary** — collect where useful and practical | **Reconsider** — assess whether the research and maintenance effort is justified |
 
-> **Key Recommendation:** Validate the property information being collected with a sample of the intended 55+ audience. Comparing what users say matters most with what can be reliably researched could help determine which information should be **prioritized, reconsidered, added, or collected through alternative sources**.
+This creates a simple decision framework:
+
+> **User Importance × Data Availability → Information Priority**
+
+### Key Recommendation
+
+> **Consider validating the relative importance of the property information with a sample of the intended 55+ audience.** Comparing what users say matters most with what can be reliably researched could provide additional evidence for deciding which information to **prioritize, reconsider, add, or obtain through alternative sources**.
 
