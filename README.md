@@ -304,11 +304,11 @@ Rather than making assumptions about how housing priorities may change with age,
 
 This could complement the existing research and provide additional evidence for future decisions about property fields, categories, filters, and information priorities.
 
-## Proposed Business Value
+## Potential Business Value
 
 Combining direct user feedback with the data-availability patterns observed during the research could provide several business benefits.
 
-| Business Value | Potential Value |
+| Business Value | Details |
 |---|---|
 | **Better Audience Alignment** | Provides direct insight into which property information the intended 55+ audience considers most important when evaluating rental options |
 | **Clearer Field Prioritization** | Helps distinguish high-priority information from fields that may have lower decision value for the intended audience |
