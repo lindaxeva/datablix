@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Evidence-Backed Counts 2026.08.14-v89"
+DATABLIX_BUILD = "Deliverables Generator + Evidence-Backed Counts 2026.08.17-v90"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -4113,10 +4113,17 @@ def _comparison_province(value) -> str:
 
 
 def _comparison_classification(value) -> str:
-    if not safe_text(value):
+    """Normalize the height-only Building Classification for source comparison.
+
+    Building Classification is a single controlled height band derived from
+    Number of Storeys (Low-rise, Mid-rise, or High-rise). Property-form labels
+    belong in Property Type, so this comparison must not use the older
+    multi-part classification parser.
+    """
+    normalized = normalize_height_classification(value)
+    if is_unresolved(normalized):
         return ""
-    parts = _classification_parts(value)
-    return "|".join(sorted(_comparison_ascii_key(part) for part in parts if safe_text(part)))
+    return _comparison_ascii_key(normalized)
 
 
 def _comparison_field_key(field: str, value) -> str:
