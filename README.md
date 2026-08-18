@@ -1,6 +1,6 @@
 # DATABLIX
 
-**Datablix started with a simple question: how can repetitive research work be made more structured, efficient, and reliable?**
+**Datablix started with a simple question: how can repetitive rental property research work be made more structured, efficient, and reliable?**
 
 While completing the **Ontario Senior Living Directory Development – Stage 3 research project** for **Coyle Media Group**, I encountered recurring challenges around **finding and verifying rental property information, tracking evidence, reconciling findings with existing data, identifying gaps, and maintaining data quality**.
 
