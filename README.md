@@ -258,7 +258,7 @@ Validation focuses on **observable research outcomes rather than unmeasured prod
 ---
 # 11. Testing, Iterations & Improvements
 
-Datablix evolved through repeated testing against real research scenarios. Testing surfaced both technical behaviours and broader workflow limitations, leading to changes in how research is prompted, conducted, imported, reconciled, reviewed, and preserved.
+Datablix evolved through repeated testing against real research scenarios. Testing surfaced both technical behaviours and broader workflow limitations, leading to changes in how research was prompted, conducted, imported, reconciled, reviewed, and preserved.
 
 Some of the most important iterations were not simply bug fixes. They were **solution-design decisions** shaped by research quality, reliability, operating cost, traceability, and the need to preserve human judgment.
 
