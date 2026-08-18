@@ -36,7 +36,7 @@ The challenge was not simply finding property information. For each researched r
 
 ### Main Research Question
 
-> **How might I make public-source property research more structured, traceable, and efficient while maintaining the human verification required for reliable research decisions?**
+> **How could public-source rental property research made to be more structured, traceable, and efficient while maintaining the human verification required for reliable research decisions?**
 
 ---
 
