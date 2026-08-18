@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Coverage Totals + Source Baseline Integrity 2026.08.18-v92"
+DATABLIX_BUILD = "Deliverables Generator + Full Source Counts + Geographic Scope Reporting 2026.08.18-v93"
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -3897,11 +3897,12 @@ def company_source_records_for_research(
     company_id: str = "",
     company_name: str = "",
 ) -> pd.DataFrame:
-    """Return current Starting Data rows for one company.
+    """Return *all* current Starting Data rows for one company.
 
-    Company ID is preferred, but it is not trusted blindly.  Older saved projects
-    can contain stale IDs after company-registry migrations, so an ID match is
-    cross-checked against the owner name when both values are available.
+    Source Records means rows that physically exist in the current Starting Data.
+    Geographic scope is assessed separately and must never silently remove a source
+    row from this count.  Company ID and canonical company-name matching are UNIONED
+    so a stale/partial ID assignment cannot hide valid Starting Data rows.
     """
     if not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame()
@@ -3909,36 +3910,35 @@ def company_source_records_for_research(
     rows = df.copy()
     clean_company_id = safe_text(company_id)
     clean_company_name = safe_text(company_name)
+    match_mask = pd.Series(False, index=rows.index)
 
-    matched = pd.DataFrame(columns=rows.columns)
+    # Keep compatible rows carrying the canonical Company ID.
     if clean_company_id and "Company ID" in rows.columns:
-        by_id = rows.loc[
-            rows["Company ID"].astype("string").fillna("").str.strip().eq(clean_company_id)
-        ].copy()
-
-        if not by_id.empty and clean_company_name and "Management/Owner" in by_id.columns:
-            owner_is_compatible = by_id["Management/Owner"].apply(
+        id_mask = rows["Company ID"].astype("string").fillna("").str.strip().eq(clean_company_id)
+        if clean_company_name and "Management/Owner" in rows.columns:
+            owner_compatible = rows["Management/Owner"].apply(
                 lambda value: (
                     not safe_text(value)
                     or _company_core_matches(safe_text(value), clean_company_name)
                 )
             )
-            by_id = by_id.loc[owner_is_compatible].copy()
+            id_mask &= owner_compatible
+        match_mask |= id_mask
 
-        matched = by_id
-
-    # Fall back to the canonical/alias-aware company-name matcher when no reliable
-    # ID rows remain.  This repairs stale IDs without broad substring counting.
-    if matched.empty and clean_company_name and "Management/Owner" in rows.columns:
-        matched = rows.loc[
-            rows["Management/Owner"].apply(
-                lambda value: _company_core_matches(
-                    safe_text(value),
-                    clean_company_name,
-                )
+    # UNION canonical/alias-aware owner-name matches with ID matches.  This is the
+    # important difference from v92: name matches are not merely a fallback when
+    # some ID rows already exist.  Therefore Lepine's 3 out-of-scope rows still
+    # remain part of its original Starting Data count.
+    if clean_company_name and "Management/Owner" in rows.columns:
+        name_mask = rows["Management/Owner"].apply(
+            lambda value: _company_core_matches(
+                safe_text(value),
+                clean_company_name,
             )
-        ].copy()
+        )
+        match_mask |= name_mask
 
+    matched = rows.loc[match_mask].copy()
     if matched.empty:
         return matched
 
@@ -3950,6 +3950,10 @@ def company_source_records_for_research(
         "City",
         "Province",
         "Postal Code",
+        "Country",
+        "Geographic Scope Status",
+        "Geographic Evidence",
+        "Geographic Confidence",
         "Property Type",
         "Building Classification",
         "Number of Storeys",
@@ -3967,6 +3971,89 @@ def company_source_records_for_research(
 
     # Starting Data can legitimately contain blanks. Export them as blank cells.
     return matched.replace({pd.NA: ""}).fillna("")
+
+
+def _starting_source_scope_status(row) -> str:
+    """Classify source geography without changing or filtering the source baseline.
+
+    Prefer an explicit Geographic Scope Status.  When source rows have not yet been
+    geocoded, use only the project's explicit municipality/province/country labels.
+    Uncertain locations remain Needs Geographic Review rather than being guessed.
+    """
+    explicit = safe_text(row.get("Geographic Scope Status", ""))
+    if explicit in {"Inside City of Ottawa", "Outside City of Ottawa", "Needs Geographic Review"}:
+        return explicit
+
+    city = safe_text(row.get("City", "")).lower()
+    province = safe_text(row.get("Province", "")).lower()
+    country = safe_text(row.get("Country", "")).lower()
+
+    if country and country not in {"canada", "ca"}:
+        return "Outside City of Ottawa"
+    if province and province not in {"ontario", "on"}:
+        return "Outside City of Ottawa"
+    if city in OUT_OF_SCOPE_NEARBY_LOCALITIES:
+        return "Outside City of Ottawa"
+    if city in OTTAWA_MUNICIPAL_LOCALITIES:
+        return "Inside City of Ottawa"
+    return "Needs Geographic Review"
+
+
+def starting_data_geographic_scope_table(
+    baseline: pd.DataFrame,
+    registry=None,
+) -> pd.DataFrame:
+    """Return one row per Starting Data record with a separate scope assessment."""
+    registry = normalize_company_registry(registry)
+    columns = [
+        "Company", "Building Name", "Street Address", "City", "Province",
+        "Postal Code", "Scope Status", "Scope Basis",
+    ]
+    if not isinstance(baseline, pd.DataFrame) or baseline.empty or registry.empty:
+        return pd.DataFrame(columns=columns)
+
+    output_rows = []
+    seen = set()
+    for _, company in registry.iterrows():
+        company_id = safe_text(company.get("Company ID", ""))
+        company_name = safe_text(company.get("Management/Owner", "")) or company_id or "Unassigned"
+        source = company_source_records_for_research(
+            baseline,
+            company_id=company_id,
+            company_name=company_name,
+        )
+        for source_index, row in source.iterrows():
+            record_id = safe_text(row.get("Record ID", ""))
+            identity = record_id or "|".join([
+                company_name,
+                safe_text(row.get("Building Name", "")),
+                safe_text(row.get("Street Address", "")),
+                safe_text(row.get("City", "")),
+                safe_text(row.get("Postal Code", "")),
+            ])
+            if identity in seen:
+                continue
+            seen.add(identity)
+
+            status = _starting_source_scope_status(row)
+            explicit = safe_text(row.get("Geographic Scope Status", ""))
+            if explicit in {"Inside City of Ottawa", "Outside City of Ottawa", "Needs Geographic Review"}:
+                basis = "Recorded geographic scope status"
+            else:
+                basis = "Starting Data municipality/province/country label"
+
+            output_rows.append({
+                "Company": company_name,
+                "Building Name": safe_text(row.get("Building Name", "")),
+                "Street Address": safe_text(row.get("Street Address", "")),
+                "City": safe_text(row.get("City", "")),
+                "Province": safe_text(row.get("Province", "")),
+                "Postal Code": safe_text(row.get("Postal Code", "")),
+                "Scope Status": status,
+                "Scope Basis": basis,
+            })
+
+    return pd.DataFrame(output_rows, columns=columns)
 
 
 def company_source_presence_reconciliation(
@@ -14684,6 +14771,70 @@ elif section == "Analysis & report":
         total_row_2[0].metric("Changed existing records", f"{coverage_totals['Changed Existing Records']:,}")
         total_row_2[1].metric("Discoveries submitted", f"{coverage_totals['Discoveries Submitted']:,}")
         total_row_2[2].metric("Needs review", f"{coverage_totals['Needs Review']:,}")
+
+        st.markdown("##### Starting Data geographic scope")
+        st.caption(
+            "Source Records always includes every original Starting Data row. "
+            "Geographic scope is reported separately so out-of-scope records remain visible in the audit trail."
+        )
+        source_scope = starting_data_geographic_scope_table(
+            deliverable_baseline,
+            analysis_registry,
+        )
+        scope_status = (
+            source_scope["Scope Status"].astype(str)
+            if not source_scope.empty and "Scope Status" in source_scope.columns
+            else pd.Series(dtype="string")
+        )
+        scope_inside = int(scope_status.eq("Inside City of Ottawa").sum())
+        scope_outside = int(scope_status.eq("Outside City of Ottawa").sum())
+        scope_review = int(scope_status.eq("Needs Geographic Review").sum())
+
+        scope_cols = st.columns(3)
+        scope_cols[0].metric("In Ottawa scope", f"{scope_inside:,}")
+        scope_cols[1].metric("Out of scope", f"{scope_outside:,}")
+        scope_cols[2].metric("Needs scope review", f"{scope_review:,}")
+
+        outside_records = (
+            source_scope.loc[source_scope["Scope Status"].eq("Outside City of Ottawa")].copy()
+            if not source_scope.empty
+            else pd.DataFrame()
+        )
+        with smart_expander(
+            "Out-of-scope Starting Data records",
+            count=len(outside_records),
+            expanded=False,
+        ):
+            if outside_records.empty:
+                st.success("No Starting Data records are currently classified outside the City of Ottawa.")
+            else:
+                st.caption(
+                    "These rows remain included in Total Source Records. They are shown separately only to document scope assessment."
+                )
+                st.dataframe(
+                    outside_records,
+                    width="stretch",
+                    hide_index=True,
+                    height=min(460, 90 + 36 * max(len(outside_records), 1)),
+                )
+
+        review_records = (
+            source_scope.loc[source_scope["Scope Status"].eq("Needs Geographic Review")].copy()
+            if not source_scope.empty
+            else pd.DataFrame()
+        )
+        if not review_records.empty:
+            with smart_expander(
+                "Starting Data records needing geographic review",
+                count=len(review_records),
+                expanded=False,
+            ):
+                st.dataframe(
+                    review_records,
+                    width="stretch",
+                    hide_index=True,
+                    height=min(460, 90 + 36 * max(len(review_records), 1)),
+                )
 
         coverage_display = coverage_matrix_with_total_row(coverage_matrix)
         coverage_styler = coverage_display.style.apply(
