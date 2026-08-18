@@ -252,11 +252,11 @@ When information cannot be reliably confirmed, the preferred outcome is an **exp
 ---
 # 11. Testing, Iterations & Improvements
 
-Datablix evolved through repeated testing against real research scenarios. Testing surfaced both technical behaviours and broader workflow limitations, leading to changes in how research was prompted, conducted, imported, reconciled, reviewed, and preserved.
+Datablix evolved through repeated testing across the research lifecycle of each project company. This process surfaced both technical issues and broader workflow limitations, informing improvements to how research was prompted, conducted, imported, reconciled, reviewed, and preserved.
 
 Some of the most important iterations were not simply bug fixes. They were **solution-design decisions** shaped by research quality, reliability, operating cost, traceability, and the need to preserve human judgment.
 
-## Major Workflow Iterations
+## Major Workflow Iterations & Improvements
 
 | Finding / Constraint | What It Revealed | Design Response |
 |---|---|---|
@@ -272,20 +272,6 @@ Some of the most important iterations were not simply bug fixes. They were **sol
 | **Project work needed to survive beyond a Streamlit session** | Session-dependent storage was not sufficient for longer multi-company research | Added **Save Master Project**, **Resume Saved Project**, persistent project structure, and research preservation |
 | **Separate company research created unnecessary fragmentation** | Company-level research needed to contribute to one project-level view | Added a dynamic company registry and master multi-company project structure |
 | **Reporting still required work after research was complete** | Research, reconciliation, QA, and company results needed to become decision-ready outputs | Added company/project analysis, quality-impact summaries, and report-ready exports |
-
-```
-
-Five design priorities emerged:
-
-| Priority | Testing Insight | Design Response |
-|---|---|---|
-| **Cost Awareness** | Embedded generative AI could introduce recurring token/API costs that increase with research volume | External AI-assisted research supported by Datablix-generated prompts and standardized imports |
-| **Consistency** | External AI research could vary significantly depending on how the task was prompted | Structured prompting defining scope, fields, source rules, evidence requirements, uncertainty handling, and output format |
-| **Reliability** | Work needed to survive interruptions and session changes | Checkpointing, persistence, recovery, and partial-result preservation |
-| **Traceability** | Findings needed to remain connected to their source, company, evidence, research method, and status | Structured imports, IDs, evidence fields, reconciliation states, and explicit research gaps |
-| **Human Control** | AI-assisted and automated findings could be incomplete, ambiguous, or contextually incorrect | Human verification, possible-match states, confidence tracking, and explicit decision points |
-
-> **Iteration principle:** A successful improvement should not simply automate more. It should make the workflow more consistent, reliable, traceable, cost-aware, and easier to verify.
 
 ---
 
@@ -306,60 +292,41 @@ Datablix improves the structure, traceability, and quality control of the resear
 | **Data quality depends partly on source quality** | Software cannot create authoritative information that does not exist publicly | Preserve uncertainty rather than replace missing evidence with assumptions |
 | **Human review remains necessary** | Fully automated decisions could accept incorrect matches, classifications, exclusions, or statuses | Preserve explicit verification and review stages |
 
-### What Datablix Does — and Does Not — Solve
-
-**Datablix can:**
-
-- Structure the research workflow
-- Standardize research outputs
-- Reconcile findings against Starting Data
-- Surface discoveries, changes, possible duplicates, and gaps
-- Apply rule-based data-quality checks
-- Preserve supporting evidence
-- Measure research coverage and quality
-- Support human verification and reporting
-
-**Datablix cannot:**
-
-- Make an outdated website current
-- Guarantee that every public property page is discoverable
-- Confirm information that has no reliable public evidence
-- Guarantee that AI-assisted research is correct
-- Replace human judgment in ambiguous decisions
-- Verify external systems it cannot access
-
-> **The design goal is not perfect automation. It is controlled automation: reducing repetitive work while making uncertainty, evidence, and human decision points explicit.**
+> **The design goal here is not perfect automation. It is controlled automation: reducing repetitive work while making uncertainty, evidence, and human decision points explicit.**
 
 ---
 
-# 13. Recommendation
+# 13. Business Recommendations
 
-Based on the workflow analysis and prototype validation, I recommend a **structured human-in-the-loop approach** for future directory research rather than relying entirely on manual spreadsheets or automated research.
+The research involved collecting a wide range of information about apartment buildings and rental properties. This further raised an important question: **which property details matter most to the intended 55+ audience when they are considering a place to live?**
 
-### 1. Independent Research
+Rather than making assumptions about how housing priorities may change with age, a useful next step would be to validate the information being collected directly with the intended users.
 
-Establish current public-source evidence without allowing existing records to determine what should be found.
+| Observation | Recommendation | Suggested Approach | Potential Business Value |
+|---|---|---|---|
+| **The research covers many different property details** | **Validate which information matters most to adults aged 55+** | Present the current property fields to participants and ask which details they would use when considering an apartment | Helps identify the information that provides the most value to the intended audience |
+| **Different property details may have different levels of importance** | **Ask users to rank their priorities** | Have participants select and rank the 5–10 property details that matter most to them | Helps prioritize research effort and the information presented most prominently in listings |
+| **Housing priorities may change over time** | **Compare past and current housing priorities** | Ask participants which factors mattered when they were younger and which matter most to them today | Provides insight into how housing priorities may change with age |
+| **Users may value information that is not currently being collected** | **Include open-ended questions** | Ask participants what else they would want to know before considering an apartment or rental property | Helps identify possible information gaps directly from the intended audience rather than through assumptions |
+| **Some highly valued information may be difficult to find publicly** | **Compare user priorities with research availability** | Compare the highest-ranked information with Datablix field-coverage and research-gap results | Helps identify which high-value information can be maintained through public research and which may require other collection methods |
 
-### 2. Structured Reconciliation
+## Proposed Validation Approach
 
-Compare completed research with Starting Data to identify existing records, material changes, possible duplicates, and new discoveries.
+A short questionnaire or interview with adults aged 55+ could help validate and prioritize the information being collected.
 
-### 3. Human Verification
+Example questions could include:
 
-Retain human judgment for ambiguous matches, conflicting evidence, availability decisions, exclusions, and unresolved information.
+1. **Which 5–10 rental property details would be most important to you when deciding whether a property is worth considering?**
+2. **Thinking back to when you were younger, would your priorities have been different? Which factors have become more or less important to you today?**
+3. **Is there any information you would want to know about an apartment building or rental property that is missing from the current list?**
+4. **Which information would you expect to see directly on a property listing rather than having to contact the property manager to find out?**
 
-### 4. Evidence-Based Directory Design
+The results could then be compared with the field-availability patterns observed during the research:
 
-Evaluate potential directory fields according to:
+| | **High Data Availability** | **Low Data Availability** |
+|---|---|---|
+| **High User Importance** | **Prioritize** — strong candidate for research, property profiles, and filters | **Investigate** — consider alternative data sources or direct collection |
+| **Low User Importance** | **Secondary** — collect when useful and practical | **Deprioritize** — may not justify the research and maintenance effort |
 
-> **User Decision Value × Demonstrated Data Availability**
+> **Key Recommendation:** Validate the property information being collected with a sample of the intended 55+ audience. Comparing what users say matters most with what can be reliably researched could help determine which information should be **prioritized, reconsidered, added, or collected through alternative sources**.
 
-High-value fields with reliable coverage are stronger candidates for profiles, categories, and filters.
-
-High-value fields with poor public availability should trigger additional data-collection strategies rather than unsupported assumptions.
-
----
-
-# Key Takeaway
-
-> **Datablix began as a response to repetitive research work, but the analysis revealed a larger problem: reliable directory research requires more than finding information — it requires managing evidence, uncertainty, reconciliation, data quality, and human judgment.**
