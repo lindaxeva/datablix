@@ -4,7 +4,7 @@
 
 While completing the **Ontario Senior Living Directory Development – Stage 3 research project** for **Coyle Media Group**, I encountered recurring challenges around **finding and verifying information, tracking evidence, reconciling findings with existing data, identifying gaps, and maintaining data quality**.
 
-I translated these challenges into **workflow requirements** and began testing a more structured approach to improve the process. This led to **Datablix**: a **human-in-the-loop research automation, reconciliation, and data-quality workflow tool** designed to automate repetitive work while preserving human judgment where evidence is incomplete, conflicting, or uncertain.
+I translated these challenges into **workflow requirements** and began testing a more structured approach to improve the research process. This led to **Datablix**: a **human-in-the-loop research automation, reconciliation, and data-quality workflow tool** designed to automate repetitive work while preserving human judgment where evidence is incomplete, conflicting, or uncertain.
 
 **Disclaimer:** Datablix was **independently conceived and developed**. It is not an official Coyle Media Group product, commissioned software product, or endorsed technology.
 
