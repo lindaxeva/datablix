@@ -1,335 +1,501 @@
-# Datablix
+# DATABLIX
 
-Datablix turns rental property research into structured, trackable, and review-ready listings.
+Datablix is a **human-in-the-loop research automation, reconciliation, and data-quality workflow** I developed while completing residential rental-property research for **Coyle Media Group**.
 
-Datablix was developed to support **the Ontario Senior Living Directory Development Stage 3 project** by improving how publicly available rental property information is collected, organized, reviewed, verified, saved, analysed, and prepared for directory use.
+The original task required more than finding information online. Research findings had to be validated, compared with existing project data, supported with evidence, reviewed for quality, and transformed into usable deliverables.
 
-The application combines file and Google Sheets intake, a human-reviewed website scanner, dynamic company management, column matching, source tracking, data-quality checks, research monitoring, record correction, project saving and resuming, company-level and project-level analysis, report generation, optional AI note assistance, and task-specific exports in one workflow.
+As recurring research challenges emerged, I began translating them into requirements for a more structured workflow. Those requirements became **Datablix**.
 
-Users can scan permitted public webpages, upload CSV or Excel files, connect a viewable Google Sheet, resume a saved Datablix project, or begin with a blank workspace. Imported sources are opened as editable working copies; the original file or Sheet is not changed.
+> **Main Goal:** Automate the repetitive work while preserving human judgment for evidence, ambiguity, and verification.
 
-## Live Demos
+ **Disclaimer:** Datablix was independently conceived and developed and is not an official Coyle Media Group product, commissioned software product, or endorsed technology.
 
-Each demo represents a stage in the development of Datablix.
-
-| Demo | Main capabilities | Live application |
-|---|---|---|
-| Datablix 1.0 | Spreadsheet upload, automated quality checks, review queue, reviewer notes, and basic exports | [Open Datablix 1.0](https://datablix.streamlit.app/) |
-| Datablix 2.0 | Direct record correction, QA reruns, filters, verification KPIs, workspace reset, and status-based exports | [Open Datablix 2.0](https://datablix-v2.streamlit.app/) |
-| Datablix 3.0 | CSV, Excel, Google Sheets, blank-workspace, saved-project, and public-website intake; human-reviewed scanner candidates; dynamic company management; source evidence; editable records; integrated QA; freshness monitoring; Save and Resume; company and project analysis; quality-impact tracking; report generation; formatted listings; platform field recommendations; and optional AI note summaries | [Open Datablix 3.0](https://datablix-v3.streamlit.app/) |
+---
 
 ## Project Snapshot
 
-| Area | Summary |
+| Information | Details |
 |---|---|
-| Business need | Prepare publicly sourced rental-property information for consistent review, verification, follow-up, directory use, analysis, and stakeholder reporting |
-| Primary challenge | Repetitive website and spreadsheet research, inconsistent headings, scattered source evidence, limited company-level progress visibility, temporary application sessions, and dependence on manual checks |
-| Users | Researchers, reviewers, project coordinators, directory administrators, and project stakeholders |
-| Organization | Coyle Media Group × Riipen Level Up |
-| Solution | Human-in-the-loop rental-property research, data-quality, source-tracking, website-scanning, project-saving, analysis, and reporting assistant |
-| Inputs | Permitted public webpages, manual entries, CSV files, Excel files, viewable Google Sheets, and saved Datablix project workbooks |
-| Outputs | Formatted building listings, master working directory, company registry, approved scanner records, scan history, scanner candidates, pages scanned, research log, review queue, issue summaries, quality-impact results, draft profiles, readiness reports, report summaries, platform field recommendations, and task-specific exports |
-| In scope | Website scanning of permitted public pages; CSV, Excel, Google Sheets, blank-workspace, and saved-project intake; dynamic company management; column matching; preservation of imported fields; source and researcher tracking; freshness and data-quality checks; direct record correction; human verification; Save and Resume; company and project analysis; quality baseline and issue-resolution tracking; formatted listing exports; optional AI note summaries; and downloadable outputs |
-| Out of scope | Automatic factual verification; autonomous approval; unrestricted cross-domain crawling; bypassing access controls or robots.txt; guaranteed portfolio completeness; user authentication; permanent hosted database storage; full multi-user collaboration; formal approval routing; confidential production data; continuous website monitoring; and a complete versioned audit-history system |
+| **Project Context** | Ottawa residential rental-property research for Coyle Media Group |
+| **Business Need** | Research and validate public property information to support a directory for the Fifty-Five Plus audience |
+| **My Role** | Researcher · Business Analysis · Solution Design |
+| **Challenge** | Fragmented web research, manual source comparison, evidence tracking, data-quality gaps, and reporting |
+| **Solution** | Datablix — a human-in-the-loop research, reconciliation, and data-quality workflow |
+| **Tools** | Python · Streamlit · Pandas · Excel/OpenPyXL · Google Sheets · AI-assisted research · Git/GitHub |
+| **BA Methods** | Stakeholder Analysis · AS-IS/TO-BE · Requirements · User Stories · Acceptance Criteria · Data Quality Rules · KPI Framework |
+| **Scope** | Current residential rental properties physically located within the City of Ottawa |
 
-## Current State and Future State
+---
 
-| Current-state challenge | Future state with Datablix |
+## The Story in One View
+
+| Stage | What Happened |
 |---|---|
-| Rental-property portfolios must be checked page by page | Scan bounded, permitted public pages and place detected candidates in a review queue |
-| Research for different companies can become separated across files | Research one company at a time while consolidating approved records into one master project |
-| Similar information appears under different headings | Match imported columns to a consistent rental-property structure |
-| Main listing details and supporting evidence are disconnected | Keep the source page, extraction method, confidence, scan evidence, and supporting text with each scanner candidate |
-| Every row must be inspected manually | Focus first on records requiring attention |
-| Reviewer decisions depend on memory | Apply documented rules, statuses, readiness categories, and review decisions consistently |
-| Source details and progress are tracked separately | Keep companies, sources, dates, researchers, notes, scan records, and decisions connected |
-| Outdated research must be checked manually | Calculate source freshness automatically |
-| Corrections require returning to the original spreadsheet | Edit records and rerun checks within the application |
-| Streamlit sessions are temporary | Save the master project as Excel and resume it later |
-| Company progress is difficult to compare | Analyse one company or all companies from the same master project |
-| Quality improvement is difficult to demonstrate | Capture a quality baseline and calculate resolved, remaining, and newly detected issues |
-| Cross-company duplicates may be missed | Run a final consolidated audit across all companies |
-| Reports and work queues are prepared manually | Generate company-level and project-level downloads automatically |
-| Potential website categories and filters are not documented | Produce structured field recommendations for search, filtering, display, and administration |
-| Long notes are difficult to review | Optionally create a shorter AI-assisted summary for human review |
-| The stakeholder may add more companies | Add companies dynamically and update project totals without changing the application design |
+| **Assignment** | I conducted structured public-source rental-property research. |
+| **Observation** | Significant effort went into finding, comparing, validating, and documenting information across websites and spreadsheets. |
+| **Analysis** | I identified recurring issues involving reconciliation, discoveries, duplicates, missing information, availability, evidence, and data quality. |
+| **Requirements** | I translated these recurring problems into requirements for a more controlled workflow. |
+| **Solution** | I designed and developed Datablix. |
+| **Validation** | I tested the evolving solution against the same type of research workflow that motivated its development. |
+| **Outcome** | Datablix evolved into an integrated workflow for research, reconciliation, human review, QA, analysis, and reporting. |
 
-## Project Objectives
+---
 
-Datablix helps users:
+# 1. Problem Statement
 
-- Collect rental-property candidates from files, Google Sheets, manual entry, saved projects, or permitted public websites.
-- Research one company at a time while preserving one consolidated master project.
-- Add newly assigned companies without creating a separate application or workflow.
-- Standardize listing research and review.
-- Prioritize the required listing fields while preserving additional findings.
-- Reduce repetitive website and spreadsheet inspection.
-- Improve company, source, scan, evidence, and decision traceability.
-- Track research ownership, source freshness, verification, company status, and progress.
-- Identify missing, duplicate, invalid, inconsistent, or outdated information.
-- Distinguish data-quality problems from information that is simply unavailable or unconfirmed.
-- Keep scanner approval separate from final human verification.
-- Preserve original imported columns.
-- Save and resume project work across Streamlit sessions.
-- Analyse one company or the complete project.
-- Track quality baselines and issue-resolution results.
-- Produce organized listings, research logs, follow-up queues, analysis files, and stakeholder-ready summaries.
-- Recommend fields, categories, and filters that may support an online rental-property directory.
-- Use optional AI assistance without allowing automatic or unsupervised approval or record changes.
+The original workflow depended heavily on **manual web research and spreadsheet comparison**.
 
-## Key Requirements
+The challenge was not simply finding property information. For each researched record, I needed to establish:
 
-| Requirement type | Requirement |
+**Is it current? → Is it in scope? → Does it already exist? → Has something changed? → Is it a duplicate? → Is it actually available? → What evidence supports it? → What remains unknown?**
+
+### Main Research Question
+
+> **How might I make public-source property research more structured, traceable, and efficient while maintaining the human verification required for reliable research decisions?**
+
+---
+
+# 2. Stakeholders
+
+| Stakeholder | Primary Need |
 |---|---|
-| Business requirement | Improve the consistency, visibility, efficiency, traceability, continuity, analysis, and reuse of rental-property research |
-| Stakeholder requirement | Help users collect records, review scanner findings, preserve evidence, identify issues, document decisions, monitor company progress, save work, analyse results, and prepare outputs |
-| Functional requirement | Support public-website scanning, data intake, dynamic company management, column matching, validation, correction, filtering, verification, monitoring, Save and Resume, quality-impact analysis, reporting, optional AI note summaries, and exports |
-| Non-functional requirement | Provide a clear, reliable, accessible, privacy-aware, bounded, human-controlled, and easy-to-use experience |
-| Transition requirement | Provide templates, fictional test data, deployment guidance, configuration instructions, dependency files, resumable project workbooks, and downloadable outputs |
+| **Researcher** | Consistent and efficient research workflow |
+| **Project Lead / Reviewer** | Progress visibility, supporting evidence, and quality control |
+| **Directory / Content Stakeholder** | Reliable structured information for profiles, categories, and filters |
+| **End User** | Useful and sufficiently reliable housing information |
 
-## Core Functional Requirements
+---
 
-| ID | Requirement | Expected behaviour |
-|---|---|---|
-| FR-01 | Workspace setup | Scan a permitted public website, upload a file, connect a Google Sheet, resume a saved project, or start a blank workspace |
-| FR-02 | Dynamic company registry | Add, identify, select, and track companies without a fixed project limit |
-| FR-03 | Active company control | Associate each new scan and approved scanner record with the selected company |
-| FR-04 | Website scope | Limit crawling to configured public pages, domains, page counts, depths, queues, and delays |
-| FR-05 | Robots and sitemap support | Respect robots.txt and optionally use XML sitemaps to discover permitted pages |
-| FR-06 | Scanner extraction | Detect rental-property candidates, main listing fields, source details, confidence, and evidence |
-| FR-07 | Ontario-scope classification | Classify candidates as confirmed, likely, unclear, or outside Ontario |
-| FR-08 | Scanner review | Allow users to edit findings and approve selected candidates before import |
-| FR-09 | Approval separation | Add approved candidates as Needs Review rather than Verified |
-| FR-10 | Scan evidence | Preserve scan history, detected candidates, pages scanned, blocked URLs, errors, and completion reasons |
-| FR-11 | Data intake | Accept row-based rental-property records from CSV, Excel, Google Sheets, manual entry, and saved Datablix projects |
-| FR-12 | Column matching | Recognize similar imported headings and map them to consistent fields |
-| FR-13 | Data preservation | Keep original and additional imported columns available in the working data |
-| FR-14 | Source tracking | Store source URL, research date, researcher, source status, scan ID, company ID, and supporting notes |
-| FR-15 | Data validation | Flag missing fields, possible duplicates, invalid URLs, email formats, phone numbers, postal codes, apartment counts, and date issues |
-| FR-16 | Freshness monitoring | Identify stale, missing, invalid, or future research dates |
-| FR-17 | Record correction | Edit records and rerun checks |
-| FR-18 | Workflow filtering | Filter by company, management/owner, research status, QA result, verification status, readiness, and follow-up priority |
-| FR-19 | Progress monitoring | Display company, scan, research, source health, field coverage, quality, verification, and readiness metrics |
-| FR-20 | Research documentation | Preserve reviewer notes, missing information, decisions, and follow-up status |
-| FR-21 | Record readiness | Convert data, research, verification, and decision conditions into actionable readiness states |
-| FR-22 | Project saving | Download a master project workbook containing accumulated records, company information, scan evidence, QA, and analysis |
-| FR-23 | Project resuming | Reopen a saved Datablix master project and continue the work |
-| FR-24 | Quality baseline | Capture the issue condition before correction for one company or the complete project |
-| FR-25 | Quality-impact analysis | Calculate resolved, remaining, newly detected, and current issues |
-| FR-26 | Analysis scope | Analyse one company or all companies |
-| FR-27 | Company analysis | Summarize buildings, scans, candidates, QA, field coverage, gaps, and status for one company |
-| FR-28 | Project analysis | Consolidate all companies for final cross-company analysis |
-| FR-29 | Listing presentation | Present the required fields in the prescribed listing order and vertical layout |
-| FR-30 | Platform recommendations | Recommend field groups, data types, categories, and potential directory uses |
-| FR-31 | AI note summary | Optionally summarize research notes without changing the original notes |
-| FR-32 | Human review | Require review before AI-generated text is saved or scanner candidates are treated as verified |
-| FR-33 | AI configuration control | Keep AI unavailable unless deliberately enabled and configured |
-| FR-34 | Report generation | Produce company-level and project-level summaries, assumptions, limitations, and recommendations |
-| FR-35 | Export | Download formatted listings, master projects, analyses, working data, research logs, scanner evidence, summaries, review queues, and other focused files |
+# 3. AS-IS Process
 
-## Business Rules
-
-| Rule | System response |
-|---|---|
-| A company has not been selected | Prevent the scan from being added to an unidentified company project |
-| The stakeholder adds another company | Add the company to the existing registry and update project totals dynamically |
-| A website target is private, local, unsupported, malformed, or outside the permitted scope | Block or skip the target |
-| robots.txt disallows a page | Do not scan the page |
-| A scan is interrupted | Preserve and recover the latest available checkpoint where possible |
-| A scan reaches its page limit | Keep the collected results and disclose that additional eligible pages may remain |
-| A scanner candidate is outside Ontario or location-unclear | Prevent approval until the scope issue is resolved |
-| A scanner candidate has not been approved | Keep it outside the working directory |
-| A scanner candidate is approved | Add it as Needs Review rather than Verified |
-| Scanner confidence is high | Prioritize review, but do not treat the value as proven |
-| Core information is missing | Flag the record as requiring attention |
-| A useful research field is blank | Record it as an open research gap rather than automatically treating it as an error |
-| An amenity or detail is not mentioned | Leave it blank rather than assuming No |
-| Similar company, building, address, or source combinations appear more than once | Flag or skip the records as possible duplicates |
-| A source URL lacks http:// or https:// | Flag the URL format |
-| An email address has an invalid format | Flag the email |
-| A phone number does not contain 10 or 11 digits | Flag the phone number |
-| A Canadian postal code has an invalid format | Flag the postal code |
-| A research date is invalid or in the future | Flag the date |
-| A research date is older than 180 days | Mark the source as stale |
-| A correction resolves an issue | Recalculate the QA result |
-| A quality baseline has been captured | Preserve the original issue condition separately from current QA |
-| A reviewer verifies a record | Preserve the status, decision, notes, and supporting source information |
-| Additional imported columns are present | Preserve them in the working data and complete outputs |
-| AI is not enabled | Keep regular Datablix features available and prevent AI requests |
-| AI generates a note summary | Require human review before saving |
-| Information cannot be confirmed | Document it as unavailable or unresolved rather than estimating it |
-| A Streamlit session ends | Rely on the latest downloaded project workbook instead of assuming session persistence |
-
-Automated findings, quality checks, and AI-generated summaries support human review. They do not determine whether a rental-property record is factually correct.
-
-## Solution Workflow
-
-| Stage | User action | System response |
-|---|---|---|
-| Set scope | Add or select a company | Preserves the active Company ID, company name, website, and status |
-| Collect | Scan a permitted website, upload a file, connect a Google Sheet, resume a saved project, or begin with a blank workspace | Creates scanner candidates or an editable working copy |
-| Review | Check required listing fields, Ontario scope, additional findings, evidence, confidence, and quality flags | Keeps uncertain values visible and editable |
-| Approve | Select scanner candidates supported by the source | Adds approved candidates to the active company as Needs Review |
-| Correct | Edit property, ownership, contact, source, status, or notes | Holds the updated values for confirmation |
-| Verify | Save changes, document the source, and record the human decision | Reruns checks and preserves the review outcome |
-| Save | Download the master project workbook | Preserves companies, building records, scans, candidates, pages, QA, and report data |
-| Resume | Upload a saved Datablix project | Restores the project for continued research |
-| Monitor | Review company progress, quality, field coverage, source freshness, and readiness | Highlights records and companies requiring attention |
-| Analyse | Choose one company or all companies | Calculates company, scan, quality, coverage, and issue-resolution results |
-| Recommend | Review proposed field types, categories, and filters | Supports future platform-integration planning |
-| Assist | Optionally summarize long research notes | Produces editable AI-generated text without changing records automatically |
-| Report | Review the generated project summary, assumptions, limitations, and recommendations | Produces stakeholder-ready report data |
-| Download | Select a complete or focused output | Generates files for review, follow-up, analysis, platform planning, or handoff |
-
-The visible product workflow is summarized as:
-
-**Set scope → Collect → Review → Approve → Verify → Save → Analyse → Report → Download**
-
-## Testing and Acceptance
-
-Testing uses fictional, synthetic, or approved non-confidential records and controlled website content covering:
-
-- Complete and incomplete rental-property records
-- Multiple companies and dynamically added companies
-- Active-company assignment during website scanning
-- Company switching after a scan begins
-- Similar and inconsistent imported headings
-- Required listing-field order and vertical listing exports
-- Preservation of additional imported columns
-- Public URL validation and private-network blocking
-- Bounded page, depth, queue, and delay settings
-- robots.txt and sitemap handling
-- HTML and optional JavaScript rendering modes
-- Candidate extraction, evidence, source titles, and confidence values
-- Ontario-scope classification
-- Scanner approval and Needs Review status
-- Scan history, candidates, pages, blocked URLs, and errors
-- Duplicate scanner submissions
-- Possible duplicate names and addresses
-- Invalid URLs, email addresses, phone numbers, postal codes, and apartment counts
-- Missing, invalid, stale, and future research dates
-- Research, source, verification, company, and decision statuses
-- Direct record corrections and revalidation
-- Combined filters and workspace reset
-- CSV, Excel, Google Sheets, blank-workspace, and saved-project intake
-- Save-project workbook generation
-- Resume-project restoration
-- Quality-baseline capture
-- Issue-resolution calculations
-- One-company analysis
-- All-company analysis
-- Company and project report summaries
-- Formatted listings, research logs, review queues, scanner reports, and workbook exports
-- AI disabled by default
-- AI note-summary generation and human review before saving
-
-Python syntax compilation and synthetic smoke tests can confirm that the code loads and the core functions behave as expected. Live website results still require human review because page structure, wording, access rules, and current content vary by source.
-
-## Value Delivered
-
-| Value | Outcome |
-|---|---|
-| Efficiency | Researchers can scan likely pages and focus on records requiring attention |
-| Consistency | Standard listing fields, company identifiers, statuses, and review rules are applied across the project |
-| Visibility | Metrics show company progress, scan coverage, quality, verification, freshness, and readiness |
-| Traceability | Companies, scans, source pages, evidence, dates, decisions, and notes remain connected |
-| Data preservation | Original and additional imported columns are retained |
-| Continuity | The master project can be saved and resumed across Streamlit sessions |
-| Human control | Records are not automatically verified, approved for publication, removed, or overwritten |
-| Quality evidence | Baseline and current QA results support transparent issue-resolution reporting |
-| Reduced manual work | Listing blocks, scanner reports, research logs, analyses, summaries, profiles, and focused files are generated automatically |
-| Stakeholder communication | Company-level and project-level outputs support a defensible final report and presentation |
-| Dynamic scope | Additional companies can be added without redesigning the project |
-| Platform readiness | Field, category, data-type, and filter recommendations support future integration planning |
-| Research guidance | Optional AI helps shorten long notes without changing the source material |
-| Cost control | AI remains disabled unless deliberately enabled |
-| Reusability | The workflow can support similar rental-property and directory-research projects |
-| Future readiness | The storage layer can later move to SQL if centralized multi-user persistence becomes necessary |
-
-## Technology
-
-Python · pandas · Streamlit · requests · Beautiful Soup · lxml · tldextract · Playwright (optional browser rendering) · openpyxl · OpenAI API (optional) · CSV · Excel · Google Sheets · GitHub · Streamlit Community Cloud
-
-## Installation
-
-Install the Python dependencies from the repository root:
-
-```bash
-pip install -r requirements.txt
-```
-
-To enable browser rendering for JavaScript-dependent pages, install the Playwright Chromium browser:
-
-```bash
-python -m playwright install chromium
-```
-
-Run the application locally:
-
-```bash
-streamlit run app.py
-```
-
-The scanner can still read standard HTML pages when browser rendering is unavailable. Selecting **Always render JavaScript** requires a working Playwright browser installation.
-
-The main application files should remain together in the repository root:
+### Original Workflow
 
 ```text
-app.py
-datablix_scanner_panel.py
-full_site_scanner.py
-requirements.txt
+Starting Data
+      ↓
+Select Company
+      ↓
+Search Public Sources
+      ↓
+Identify Properties
+      ↓
+Collect Property Information
+      ↓
+Manually Compare with Starting Data
+      ↓
+Investigate Differences
+      ↓
+Record Evidence & Missing Information
+      ↓
+Update Spreadsheet
+      ↓
+Prepare Reporting
 ```
 
-Optional supporting files include:
+**Original workflow tools:** Web research + spreadsheets + manual comparison + researcher judgment.
+
+---
+
+# 4. Pain Points
+
+| Observed Pain Point | Business Impact | Opportunity |
+|---|---|---|
+| Information distributed across multiple webpages | Repeated searching and possible omissions | Structured research workflow |
+| Manual comparison with Starting Data | Repetitive reconciliation | Assisted record matching |
+| Website presence did not equal rental availability | Potentially incorrect status conclusions | Separate inventory and availability |
+| New, existing, and duplicate records were difficult to distinguish | Reconciliation risk | Discovery classification |
+| Missing information could be confused with data-quality issues | Unclear completeness | Explicit research-gap tracking |
+| Evidence had to be maintained manually | Harder review and verification | Evidence-linked records |
+| Classification inconsistencies | Reduced data reliability | Controlled validation rules |
+| Reporting occurred separately from research | Additional work after research | Reusable generated deliverables |
+
+---
+
+# 5. Business Requirements
+
+| ID | Business Requirement | Origin |
+|---|---|---|
+| **BR-01** | Keep Starting Data separate from independent website research | Reduce comparison bias |
+| **BR-02** | Support structured company-level research | Fragmented research process |
+| **BR-03** | Import standardized research results | Inconsistent research outputs |
+| **BR-04** | Reconcile research findings against Starting Data | Manual comparison |
+| **BR-05** | Keep inventory status separate from rental availability | Status ambiguity |
+| **BR-06** | Preserve sources, evidence, confidence, and uncertainty | Verification difficulty |
+| **BR-07** | Apply consistent QA and classification rules | Data inconsistency |
+| **BR-08** | Require human verification before final use | Automated research uncertainty |
+| **BR-09** | Measure coverage, discoveries, gaps, and quality | Limited progress visibility |
+| **BR-10** | Generate reusable project deliverables | Manual reporting |
+
+---
+
+# 6. User Stories & Acceptance Criteria
+
+| User Story | Acceptance Criteria |
+|---|---|
+| **As a researcher, I want structured research instructions so that companies are investigated consistently.** | Scope, fields, source rules, and output structure are defined before research begins. |
+| **As a researcher, I want findings compared with Starting Data so that I can identify discoveries and changes.** | Imported research can be reconciled against available source records. |
+| **As a reviewer, I want supporting evidence attached to important findings so that I can verify decisions.** | Relevant source and evidence fields remain available during review. |
+| **As a reviewer, I want unresolved information identified rather than guessed.** | Unconfirmed information remains visible as a research gap. |
+| **As a project lead, I want project-level metrics so that I can understand progress and quality.** | Research, verification, discovery, quality, and gap measures can be generated. |
+| **As a downstream stakeholder, I want structured outputs so that the research can support directory decisions.** | Research datasets, trackers, recommendations, and reports can be exported. |
+
+---
+
+# 7. TO-BE Process
 
 ```text
-datablix_logo.svg
-datablix_logo.png
-.streamlit/config.toml
+Import Starting Data
+        ↓
+Create Project & Register Companies
+        ↓
+Generate Structured Research Instructions
+        ↓
+Conduct Independent Public-Source Research
+        ↓
+Import Consolidated Research Results
+        ↓
+Reconcile Against Starting Data
+        ↓
+Flag Discoveries · Changes · Duplicates · Gaps
+        ↓
+Human Review & Verification
+        ↓
+Data Quality Analysis
+        ↓
+Generate Deliverables
+        ↓
+Export
 ```
 
-API keys and other secrets must be stored through Streamlit Secrets and must never be committed to the repository.
+A key design decision was to keep **research and reconciliation separate**.
 
-## Privacy and Responsible Use
+Research establishes what can currently be supported by public evidence. Datablix performs comparison with Starting Data after the research is imported.
 
-Use only fictional, approved, publicly available, or non-confidential information.
+---
 
-Do not upload confidential user information, private communications, employer-restricted files, protected records, API keys, credentials, or unapproved production data to a public application or repository.
+# 8. Proposed Solution: Datablix
 
-Only scan websites that the user is permitted to access. Respect robots.txt, website terms, applicable laws, reasonable request delays, and configured crawl limits.
+Datablix translates the identified requirements into a working prototype organized around:
 
-Public information may still be outdated, incomplete, duplicated, inconsistent, or incorrect. Scanner results, quality checks, quality-impact measures, and optional AI summaries support structured review, but final verification and publication decisions remain human responsibilities.
+### Project → Research → Review → Deliverables → Export
 
-The current Save and Resume workflow uses downloadable Excel project workbooks. Streamlit Session State and temporary scanner checkpoints should not be treated as permanent cloud storage.
+### Core Capabilities
 
-## Datablix Known Issues and Fixes
+- Project and company-level research organization
+- Starting Data baseline management
+- Structured research instructions
+- Standardized research imports
+- AI-assisted public-source research workflow
+- Google Sheets and spreadsheet integration
+- Optional website scanning for coverage cross-checking
+- Starting Data reconciliation
+- Existing/new/possible duplicate classification
+- Inventory and rental-availability separation
+- Evidence and research-gap tracking
+- Human verification
+- Rule-based data-quality checks
+- Field-coverage analysis
+- Project-level reporting
+- Structured exports
 
-This log documents unexpected application behaviours observed during testing, how they affected the workflow, and the changes made to address them.
+### Human-in-the-Loop by Design
 
-| Unexpected behaviour | What was observed | How it was fixed | Status |
+```text
+Research Finding
+      ↓
+Candidate Information
+      ↓
+Reconciliation + QA
+      ↓
+Human Review
+      ↓
+Verified Information
+```
+
+Datablix does not assume that an automated or AI-assisted finding is correct simply because it has been returned in a structured format.
+
+When information cannot be reliably confirmed, the preferred outcome is an **explicit research gap rather than an invented value**.
+
+---
+
+# 9. KPIs
+
+| KPI | What It Measures |
+|---|---|
+| **Research Records Analyzed** | Overall research coverage |
+| **Starting Data Matches** | Existing records successfully reconciled |
+| **New Discoveries** | Properties identified beyond Starting Data |
+| **Material Changes** | Existing records with meaningful researched differences |
+| **Possible Duplicates** | Records requiring reconciliation |
+| **Human-Verified Records** | Verification progress |
+| **Approved for Export** | Records meeting completion and quality conditions |
+| **Unresolved Records / Gaps** | Remaining research workload |
+| **Field Coverage %** | Availability of individual research fields |
+| **QA Findings** | Rule-based data-quality issues |
+
+---
+
+# 10. Results & Validation
+
+Datablix was tested against the same type of property-research workflow that originally motivated its development.
+
+Validation focuses on **observable research outcomes rather than unmeasured productivity claims**.
+
+| Measure | Result | What It Demonstrates |
+|---|---:|---|
+| Companies Researched | `TBD` | Research coverage |
+| Starting Records | `TBD` | Comparison baseline |
+| Existing Records Matched | `TBD` | Reconciliation capability |
+| New Discoveries | `TBD` | Discovery capability |
+| Material Changes Identified | `TBD` | Value of source comparison |
+| Possible Duplicates | `TBD` | Reconciliation support |
+| Human-Verified Records | `TBD` | Review completion |
+| Research Gaps | `TBD` | Visibility into unavailable information |
+| QA Findings | `TBD` | Data-quality issues surfaced |
+
+> **Note:** Final figures will only be reported when supported by the completed project dataset.
+
+---
+# 11. Testing, Iterations & Improvements
+
+Datablix evolved through repeated testing against real research scenarios. Testing surfaced both technical behaviours and broader workflow limitations, leading to changes in how research is prompted, conducted, imported, reconciled, reviewed, and preserved.
+
+Some of the most important iterations were not simply bug fixes. They were **solution-design decisions** shaped by research quality, reliability, operating cost, traceability, and the need to preserve human judgment.
+
+## Major Workflow Iterations
+
+| Finding / Constraint | What It Revealed | Design Response |
+|---|---|---|
+| **Embedding AI research directly into Datablix would introduce recurring token/API costs** | Research can involve multiple companies, properties, webpages, and large amounts of source material, causing embedded AI costs to increase with usage | Introduced an **external AI-assisted research workflow supported by Datablix-generated structured prompts**, avoiding continuous paid AI usage inside the application |
+| **External AI research needed consistent prompting** | Results could vary depending on how the research request was structured and interpreted | Developed standardized **research prompts** defining scope, required fields, source rules, evidence expectations, uncertainty handling, and expected output structure |
+| **Website scanning alone could not support the full research process** | Scanning could identify candidate pages, but contextual research and interpretation required broader research capability | Retained the **website scanner as an optional coverage and cross-checking tool** rather than the primary research method |
+| **AI-assisted findings still required validation** | A well-structured prompt could improve consistency but could not guarantee that AI findings were complete or correct | Kept AI-assisted findings separate from verified data and routed imported research through reconciliation, QA, evidence review, and human verification |
+| **Starting Data could influence independent research** | Providing existing records during discovery could encourage the research process to reproduce known information | Separated Starting Data from the research prompt and independent research stage, then moved reconciliation into Datablix after import |
+| **Website presence could be mistaken for rental availability** | A property appearing on an official website did not necessarily mean a unit was currently available | Separated **Current Inventory Status** from **Rental Availability Status** |
+| **Missing information could be mistaken for poor data quality** | Some information genuinely could not be confirmed from available public evidence | Distinguished **research gaps** from **rule-based QA findings** and instructed the research process not to infer unsupported values |
+| **Automated matching could produce ambiguous classifications** | Similar names, addresses, or identifiers did not always prove that two records represented the same property | Retained possible-match states and human reconciliation rather than forcing uncertain matches |
+| **Storey and apartment counts required stronger evidence controls** | Unsupported values could affect building classification and overall data reliability | Added dedicated search status, source, evidence, and confidence fields and strengthened their treatment in the research prompt |
+| **Project work needed to survive beyond a Streamlit session** | Session-dependent storage was not sufficient for longer multi-company research | Added **Save Master Project**, **Resume Saved Project**, persistent project structure, and research preservation |
+| **Separate company research created unnecessary fragmentation** | Company-level research needed to contribute to one project-level view | Added a dynamic company registry and master multi-company project structure |
+| **Reporting still required work after research was complete** | Research, reconciliation, QA, and company results needed to become decision-ready outputs | Added company/project analysis, quality-impact summaries, and report-ready exports |
+
+---
+
+## How the Research Model Evolved
+
+One of the most significant iterations was redefining the relationship between **prompting, external AI research, Datablix, and the website scanner**.
+
+Instead of embedding generative AI directly into the application, Datablix became responsible for creating the structure around the AI-assisted research process.
+
+```text
+Datablix
+   ↓
+Generate Structured Research Prompt
+   ↓
+External AI-Assisted Research
+   ↓
+Structured Research Output
+   ↓
+Import into Datablix
+   ↓
+Reconcile with Starting Data
+   ↓
+Data Quality + Evidence Checks
+   ↓
+Human Review & Verification
+   ↓
+Analysis & Deliverables
+
+Optional supporting path:
+Company Website → Datablix Scanner → Coverage / Cross-Check
+```
+
+### The Role of Structured Prompting
+
+The research prompt became an important control within the workflow.
+
+Rather than relying on a general request such as *"research this company,"* Datablix structures the research task around defined expectations, including:
+
+- research scope and geographic boundaries,
+- fields to investigate,
+- source priorities,
+- evidence requirements,
+- handling of missing or conflicting information,
+- inventory and rental-availability distinctions,
+- storey and apartment-count verification,
+- confidence and research-status expectations, and
+- required output structure for re-import into Datablix.
+
+The purpose of prompting is therefore not simply to obtain an AI response. It is to make external AI-assisted research **more consistent, structured, evidence-aware, and compatible with the downstream Datablix workflow**.
+
+A structured prompt can improve consistency, but it does not make AI output authoritative. Research findings remain candidates until they pass through Datablix's reconciliation and human-review process.
+
+### Why External AI?
+
+Embedding generative AI directly into Datablix was considered, but property research can involve many companies, webpages, and substantial amounts of source material.
+
+For the current prototype, continuous API usage would introduce **recurring token-based operating costs that scale with research volume**.
+
+The external AI-assisted approach was therefore a deliberate design trade-off:
+
+> **Retain AI-assisted research capability → control operating cost → standardize the process through prompting → validate the results inside Datablix.**
+
+This also keeps the architecture modular. An embedded AI service could be evaluated in the future if usage data demonstrates that the additional automation provides enough value to justify its operating cost.
+
+### Clear Separation of Responsibilities
+
+| Component | Role |
+|---|---|
+| **Datablix Prompting Layer** | Generates structured research prompts defining scope, fields, source rules, evidence expectations, uncertainty handling, and output requirements |
+| **External AI** | Uses the structured prompt to assist with public-source investigation and produce research findings |
+| **Datablix Core Workflow** | Imports research, reconciles it with Starting Data, applies QA, preserves evidence, supports verification, analyzes results, and generates deliverables |
+| **Website Scanner** | Provides optional coverage checking and candidate-page discovery |
+| **Human Reviewer** | Resolves ambiguity, evaluates evidence, and makes final verification decisions |
+
+---
+
+## Technical Testing & Fixes
+
+Alongside the larger workflow iterations, application testing identified technical behaviours affecting reliability, usability, and research continuity.
+
+| Finding During Testing | Workflow Impact | Improvement Made | Status |
 |---|---|---|---|
-| Scan progress was lost after a Streamlit interruption or session reconnection | A longer scan could be interrupted when the application refreshed, redeployed, or connected to a new Streamlit session | Datablix now creates in-session and durable JSON checkpoints every 10 processed pages, restores the latest available checkpoint after an interruption, and preserves partial results | Retesting |
-| Streamlit displayed a widget Session State warning | The scanner’s coverage selector produced a warning because the widget had a default value while its value was also controlled through Session State | The duplicate widget-state assignment was removed so the coverage selector is controlled through one Session State method | Fixed |
-| Scan produced no visible output | After the website scan stopped, Datablix displayed no collected records, completion summary, warning, or explanation | The scanner now preserves partial results and shows a final outcome explaining whether the scan completed, reached a limit, encountered repeated failures, or was interrupted | Retesting |
-| Scan stopped before reaching the selected 500-page maximum | A Recommended scan stopped below 500 pages even though the preset allowed up to 500 pages | The scanner now reports why it stopped. The 500-page setting is treated as a maximum, so scanning may finish earlier when no additional eligible pages remain | Retesting |
-| Scan completion status was unclear | It was not possible to tell whether the scan completed successfully, failed, was interrupted, or stopped because no more eligible pages were available | A final scan-status summary now records the completion reason, pages processed, skipped pages, failures, blocked URLs, and candidates collected | Retesting |
-| Duplicate buttons or workflow controls appeared | Some actions and workflow controls appeared more than once in the interface | Repeated interface blocks were removed, leaving one primary control for each action | Fixed |
-| Unsupported or malformed links could interrupt scanning | Telephone, email, SMS, JavaScript, fax, or malformed links could be treated as ordinary website pages | URL validation was strengthened. Unsupported link types such as tel:, mailto:, sms:, fax:, and javascript: are ignored | Fixed |
-| Website scanner was difficult to locate | The scanner appeared hidden because the initial screen focused on opening a file, Google Sheet, or blank workspace | The scanner was made accessible from the starting-point selector, sidebar, overview, and main navigation | Fixed |
-| Datablix encountered an application error | An application log was generated after the deployed application failed while running | Defensive error handling was expanded, although hosting-specific failures may still require monitoring | Monitoring |
-| Imported headings were not recognized | Datablix reported that no matching imported column was found even when equivalent information existed under another heading | Heading normalization and additional aliases were added to recognize variations in capitalization, punctuation, spacing, and field names | Fixed |
-| Existing values were treated as missing | Data was flagged as missing because its imported column heading had not been matched to the corresponding Datablix field | Column matching now occurs before missing-value checks, while original imported columns remain available | Fixed |
-| Logo was hidden, clipped, or incorrectly sized | The Datablix logo was not fully visible in the desktop layout | The logo container height, spacing, positioning, overflow, and responsive sizing rules were revised | Fixed |
-| Initial logo correction did not work | The logo remained incorrectly displayed after the first adjustment | The first implementation was replaced with revised desktop and mobile logo-layout rules | Fixed |
-| Streamlit sessions did not permanently preserve project work | Research could be lost after the session ended or the application restarted | Save Master Project and Resume Saved Project were added | Fixed |
-| Separate company results were difficult to consolidate | Company work risked being stored in disconnected files | A dynamic company registry and one master multi-company project were added | Fixed |
-| Scan findings could lose company context | Changing the active company after scanning could create assignment confusion | Each scan is tied to the company selected when it begins, and Company ID and Scan ID are preserved | Fixed |
-| Final reporting required manual consolidation | Company, scan, and QA results had to be combined manually | One-company and all-company analysis, quality-impact summaries, and report-ready exports were added | Fixed |
+| **Long scans could lose progress after a Streamlit interruption or session reconnection** | Partial scan results could be lost during refreshes, redeployments, or new sessions | Added in-session and durable JSON checkpoints every 10 processed pages, checkpoint restoration, and partial-result preservation | 🟡 Retesting |
+| **Scan outcomes were not always visible or clearly explained** | It could be unclear whether a scan completed, reached a limit, failed, was interrupted, or exhausted eligible pages | Added final scan-status reporting covering completion reason, pages processed, skipped pages, failures, blocked URLs, and candidates collected | 🟡 Retesting |
+| **A scan could stop below the selected 500-page maximum** | The page setting could be interpreted as a required target rather than a maximum | Clarified the setting as a maximum and added reporting explaining why scanning stopped earlier | 🟡 Retesting |
+| **Unsupported or malformed links could enter scanning** | Non-web or malformed links could interrupt or reduce scan quality | Strengthened URL validation and excluded `tel:`, `mailto:`, `sms:`, `fax:`, `javascript:`, and malformed links | 🟢 Fixed |
+| **Scanner findings could lose company context** | Changing the active company could create uncertainty about ownership of scan results | Bound each scan to its selected company and preserved Company ID and Scan ID | 🟢 Fixed |
+| **The scanner was difficult to discover** | Users could overlook an available workflow option | Added scanner access through the starting-point selector, sidebar, overview, and navigation | 🟢 Fixed |
+| **Scanner coverage selector generated a Session State warning** | Multiple state-control methods generated Streamlit warnings | Consolidated the selector under one Session State method | 🟢 Fixed |
+| **Duplicate workflow controls appeared** | Repeated actions created uncertainty about which control to use | Removed duplicate interface blocks | 🟢 Fixed |
+| **Imported headings were not always recognized** | Equivalent information could be overlooked because of naming variations | Added heading normalization and additional field aliases | 🟢 Fixed |
+| **Existing imported values could be treated as missing** | Valid information could generate false missing-data findings | Moved column matching ahead of missing-value checks while preserving original columns | 🟢 Fixed |
+| **Property type and building classification could be confused** | Property form and building height could be represented inconsistently | Separated property-form rules from building-height classification | 🟢 Fixed |
+| **Replacing Starting Data could disrupt completed research** | Updating the baseline could risk losing existing research | Separated the Starting Data baseline from saved research so existing work can be preserved and re-compared | 🟢 Fixed |
+| **Logo display was inconsistent across layouts** | Branding could be clipped or incorrectly sized | Revised positioning, spacing, overflow, container, and responsive sizing rules | 🟢 Fixed |
+| **A deployed application failure generated an application error** | Hosting or runtime failures could interrupt the workflow | Expanded defensive error handling; hosting-specific failures remain under observation | 🔵 Monitoring |
 
-### Status labels
+### Status Key
 
-- **Fixed:** The correction has been implemented and confirmed.
-- **Retesting:** A correction has been implemented but still requires live testing.
-- **Open:** The behaviour is still occurring or its cause has not been resolved.
-- **Monitoring:** The issue has not reappeared but remains under observation.
+- 🟢 **Fixed** — correction implemented and behaviour confirmed
+- 🟡 **Retesting** — correction implemented; additional validation is in progress
+- 🔵 **Monitoring** — mitigation is in place; continued observation is required
+
+---
+
+## What Testing Changed
+
+Testing changed more than individual features. It changed the role Datablix plays in the research workflow.
+
+Early versions focused more heavily on **collecting and organizing research within the application**. Iteration showed that greater value came from coordinating the research lifecycle and assigning each part of the process to the method best suited to it.
+
+The workflow evolved toward:
+
+```text
+Prompt
+   ↓
+Research
+   ↓
+Import
+   ↓
+Reconcile
+   ↓
+Preserve Evidence
+   ↓
+Check Quality
+   ↓
+Review
+   ↓
+Verify
+   ↓
+Deliver
+```
+
+Five design priorities emerged:
+
+| Priority | Testing Insight | Design Response |
+|---|---|---|
+| **Cost Awareness** | Embedded generative AI could introduce recurring token/API costs that increase with research volume | External AI-assisted research supported by Datablix-generated prompts and standardized imports |
+| **Consistency** | External AI research could vary significantly depending on how the task was prompted | Structured prompting defining scope, fields, source rules, evidence requirements, uncertainty handling, and output format |
+| **Reliability** | Work needed to survive interruptions and session changes | Checkpointing, persistence, recovery, and partial-result preservation |
+| **Traceability** | Findings needed to remain connected to their source, company, evidence, research method, and status | Structured imports, IDs, evidence fields, reconciliation states, and explicit research gaps |
+| **Human Control** | AI-assisted and automated findings could be incomplete, ambiguous, or contextually incorrect | Human verification, possible-match states, confidence tracking, and explicit decision points |
+
+> **Iteration principle:** A successful improvement should not simply automate more. It should make the workflow more consistent, reliable, traceable, cost-aware, and easier to verify.
+
+---
+
+# 12. Current Limitations
+
+Datablix improves the structure, traceability, and quality control of the research workflow, but it does not eliminate the limitations of public-source research or the need for human judgment.
+
+| Current Limitation | Impact | Current Mitigation |
+|---|---|---|
+| **Public information can be incomplete or outdated** | Property details may be stale, unavailable, or inconsistent | Prioritize official sources and record unresolved information as gaps |
+| **Website accessibility varies** | Blocked, changed, or JavaScript-heavy pages can limit research | Support permitted alternative/manual research |
+| **Inventory does not prove rental availability** | A listed property may not currently have available units | Track inventory and rental availability separately |
+| **Some fields are difficult to verify publicly** | Storeys, apartment counts, accessibility, utilities, and other attributes may lack reliable evidence | Track source, evidence, search status, and confidence rather than infer unsupported values |
+| **Automated matching is probabilistic** | Similar records can produce uncertain matches | Retain human reconciliation for ambiguous cases |
+| **AI-assisted research can be incomplete or incorrect** | Structured AI output cannot automatically be considered authoritative | Treat imported findings as candidates requiring evidence and review |
+| **Website scanning cannot guarantee complete discovery** | Dynamic, blocked, or unlinked listings may be missed | Use scanning as a coverage cross-check rather than the primary research method |
+| **Datablix cannot independently verify external actions** | An external submission status does not prove another system was updated | Treat external submission as workflow tracking only |
+| **Data quality depends partly on source quality** | Software cannot create authoritative information that does not exist publicly | Preserve uncertainty rather than replace missing evidence with assumptions |
+| **Human review remains necessary** | Fully automated decisions could accept incorrect matches, classifications, exclusions, or statuses | Preserve explicit verification and review stages |
+
+### What Datablix Does — and Does Not — Solve
+
+**Datablix can:**
+
+- Structure the research workflow
+- Standardize research outputs
+- Reconcile findings against Starting Data
+- Surface discoveries, changes, possible duplicates, and gaps
+- Apply rule-based data-quality checks
+- Preserve supporting evidence
+- Measure research coverage and quality
+- Support human verification and reporting
+
+**Datablix cannot:**
+
+- Make an outdated website current
+- Guarantee that every public property page is discoverable
+- Confirm information that has no reliable public evidence
+- Guarantee that AI-assisted research is correct
+- Replace human judgment in ambiguous decisions
+- Verify external systems it cannot access
+
+> **The design goal is not perfect automation. It is controlled automation: reducing repetitive work while making uncertainty, evidence, and human decision points explicit.**
+
+---
+
+# 13. Recommendation
+
+Based on the workflow analysis and prototype validation, I recommend a **structured human-in-the-loop approach** for future directory research rather than relying entirely on manual spreadsheets or automated research.
+
+### 1. Independent Research
+
+Establish current public-source evidence without allowing existing records to determine what should be found.
+
+### 2. Structured Reconciliation
+
+Compare completed research with Starting Data to identify existing records, material changes, possible duplicates, and new discoveries.
+
+### 3. Human Verification
+
+Retain human judgment for ambiguous matches, conflicting evidence, availability decisions, exclusions, and unresolved information.
+
+### 4. Evidence-Based Directory Design
+
+Evaluate potential directory fields according to:
+
+> **User Decision Value × Demonstrated Data Availability**
+
+High-value fields with reliable coverage are stronger candidates for profiles, categories, and filters.
+
+High-value fields with poor public availability should trigger additional data-collection strategies rather than unsupported assumptions.
+
+---
+
+# Key Takeaway
+
+> **Datablix began as a response to repetitive research work, but the analysis revealed a larger problem: reliable directory research requires more than finding information — it requires managing evidence, uncertainty, reconciliation, data quality, and human judgment.**
