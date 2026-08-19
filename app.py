@@ -28,7 +28,7 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "SaaS Dashboard UI V1 + Deliverables Generator 2026.08.18-v95"
+DATABLIX_BUILD = "SaaS Dashboard UI V1 + Deliverables Generator 2026.08.18-v96"
 
 SOURCE_BASELINE_PARSE_VERSION = 2
 
@@ -12068,7 +12068,7 @@ h2{margin-bottom:.1rem}
 }
 .db-card-copy{min-height:3.6rem}
 
-div[data-testid="stSidebar"]{
+[data-testid="stSidebar"]{
     border-right:1px solid var(--db-border);
 }
 
@@ -12147,7 +12147,7 @@ button[data-testid="stSidebarCollapseButton"]{
     gap:.35rem !important;
 }
 button[data-testid="stSidebarCollapseButton"]::after{
-    content:"Progress";
+    content:"Menu";
     font-size:.86rem;
     font-weight:700;
     white-space:nowrap;
@@ -12634,7 +12634,7 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
 
 
 /* =========================================================
-   v95 SaaS shell — visual-only upgrade
+   v96 SaaS shell — visual-only upgrade
    ========================================================= */
 html, body, [data-testid="stAppViewContainer"]{
     background:#F5F7FB !important;
@@ -12650,23 +12650,27 @@ html, body, [data-testid="stAppViewContainer"]{
 }
 
 /* Sidebar shell */
-div[data-testid="stSidebar"]{
+[data-testid="stSidebar"]{
     width:288px !important;
     min-width:288px !important;
     background:#0C1824 !important;
     border-right:0 !important;
-    box-shadow:8px 0 30px rgba(15,23,42,.08);
+    box-shadow:8px 0 30px rgba(15,23,42,.14) !important;
 }
-div[data-testid="stSidebar"] > div{
+[data-testid="stSidebar"] > div:first-child,
+[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
     background:#0C1824 !important;
 }
-div[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
+[data-testid="stSidebar"] > div{
+    background:#0C1824 !important;
+}
+[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
     padding-top:.5rem;
 }
-div[data-testid="stSidebar"] p,
-div[data-testid="stSidebar"] label,
-div[data-testid="stSidebar"] small,
-div[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] small,
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{
     color:#AFC0D0 !important;
 }
 .db-side-brand{
@@ -12748,7 +12752,7 @@ div[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{
 .db-side-section-label.progress{margin-top:1.15rem}
 .db-side-section-label.account{margin-top:1.1rem}
 
-div[data-testid="stSidebar"] .stButton > button{
+[data-testid="stSidebar"] .stButton > button{
     min-height:2.35rem;
     justify-content:flex-start !important;
     padding:.44rem .7rem;
@@ -12758,15 +12762,15 @@ div[data-testid="stSidebar"] .stButton > button{
     font-size:.78rem;
     font-weight:650;
 }
-div[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]{
+[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]{
     color:#AFC0D0 !important;
     background:transparent !important;
 }
-div[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]:hover{
+[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]:hover{
     color:#F7FBFF !important;
     background:rgba(255,255,255,.06) !important;
 }
-div[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{
+[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{
     color:#FFFFFF !important;
     background:linear-gradient(135deg,#1287CE,#0E6BA4) !important;
     border-color:rgba(79,182,240,.24) !important;
@@ -12820,7 +12824,7 @@ div[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{
 .db-side-next span{color:#68B9EB;font-size:.54rem;font-weight:800;letter-spacing:.1em}
 .db-side-next strong{color:#F3F8FC;font-size:.72rem;line-height:1.35}
 .db-side-next small{color:#8FA6B8 !important;font-size:.62rem;line-height:1.4}
-div[data-testid="stSidebar"] details{
+[data-testid="stSidebar"] details{
     border-color:rgba(255,255,255,.08) !important;
     background:rgba(255,255,255,.025) !important;
 }
@@ -12978,7 +12982,7 @@ div[data-testid="stTabs"] button[aria-selected="true"]{
 .db-health-check small{font-size:.68rem;color:#7B8997;line-height:1.35}
 
 @media(max-width:1050px){
-    div[data-testid="stSidebar"]{width:260px !important;min-width:260px !important}
+    [data-testid="stSidebar"]{width:260px !important;min-width:260px !important}
     .block-container{padding-left:1.2rem;padding-right:1.2rem}
 }
 
