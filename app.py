@@ -28,7 +28,9 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "Deliverables Generator + Full Source Counts + Geographic Scope Reporting 2026.08.18-v93"
+DATABLIX_BUILD = "Deliverables Generator + Source Baseline Self-Repair 2026.08.18-v94"
+
+SOURCE_BASELINE_PARSE_VERSION = 2
 
 # Project-wide municipal boundary. A company's marketing label (for example,
 # "Ottawa Region" or "National Capital Region") is never sufficient evidence.
@@ -2379,7 +2381,20 @@ def _candidate_source_positions(research: dict, indexes: dict) -> set[int]:
 
 
 def current_starting_source_records() -> pd.DataFrame:
-    """Return the active structured Starting Data with a safe legacy fallback."""
+    """Return the active structured Starting Data with a safe legacy fallback.
+
+    Saved projects may contain a structured baseline produced by an older Datablix
+    parser.  When the original workbook bytes are still preserved, v94 rebuilds that
+    structured baseline once before returning it.  This prevents an old cached subset
+    (for example, Lepine=4) from surviving after the counting/parser rules were fixed.
+    """
+    try:
+        _repair_active_source_baseline_from_raw_if_needed()
+    except Exception:
+        # Never make an existing project unusable because a legacy source cannot be
+        # reparsed. The existing baseline remains available as a safe fallback.
+        pass
+
     versions = st.session_state.get(S_SOURCE_VERSIONS, [])
     if isinstance(versions, list):
         for version in reversed(versions):
@@ -8853,6 +8868,106 @@ def _safe_int(value, default=0) -> int:
     return default if pd.isna(number) else int(number)
 
 
+def _repair_active_source_baseline_from_raw_if_needed() -> bool:
+    """Rebuild an old saved structured baseline from its preserved raw workbook.
+
+    Starting Data is immutable evidence: the raw workbook is the source of truth for
+    how many rows were originally supplied. Older Datablix builds may have saved a
+    structured baseline whose company linkage/counts were incomplete. When raw bytes
+    are available, re-run the *current* parser once and replace only the derived
+    structured baseline. Research rows, notes and review decisions are preserved.
+    """
+    versions = st.session_state.get(S_SOURCE_VERSIONS, [])
+    if not isinstance(versions, list) or not versions:
+        return False
+
+    active_index = None
+    for index in range(len(versions) - 1, -1, -1):
+        item = versions[index]
+        if isinstance(item, dict) and bool(item.get("is_active")):
+            active_index = index
+            break
+    if active_index is None:
+        for index in range(len(versions) - 1, -1, -1):
+            if isinstance(versions[index], dict):
+                active_index = index
+                break
+    if active_index is None:
+        return False
+
+    active = dict(versions[active_index])
+    meta = dict(active.get("meta", {}) or {})
+    parse_version = _safe_int(meta.get("structured_parse_version", 0))
+    if parse_version >= SOURCE_BASELINE_PARSE_VERSION:
+        return False
+
+    raw_bytes = active.get("raw_bytes", b"")
+    if not isinstance(raw_bytes, (bytes, bytearray)) or not raw_bytes:
+        # Legacy projects without preserved raw bytes cannot be reconstructed safely.
+        # Leave their current baseline untouched rather than inventing missing rows.
+        return False
+
+    assignment_sheet = safe_text(meta.get("assignment_sheet", ""))
+    current_registry = normalize_company_registry(
+        st.session_state.get(S_COMPANIES, empty_company_registry())
+    )
+
+    repaired_source, repaired_registry, rules, mapping, building_sheet = (
+        _source_baseline_from_workbook(
+            bytes(raw_bytes),
+            assignment_sheet=assignment_sheet,
+            existing_registry=current_registry,
+        )
+    )
+    if not isinstance(repaired_source, pd.DataFrame) or repaired_source.empty:
+        return False
+
+    relevant = _source_records_for_project_companies(
+        repaired_source,
+        repaired_registry,
+    )
+
+    meta.update({
+        "building_sheet": safe_text(building_sheet),
+        "assigned_companies": len(repaired_registry),
+        "source_records": len(repaired_source),
+        "project_company_source_records": len(relevant),
+        "classification_rules": len(rules) if isinstance(rules, pd.DataFrame) else 0,
+        "structured_parse_version": SOURCE_BASELINE_PARSE_VERSION,
+        "structured_reparse_status": "rebuilt from preserved original workbook",
+        "structured_reparsed_at": datetime.now().isoformat(timespec="seconds"),
+    })
+
+    active["records"] = repaired_source.copy()
+    active["rules"] = rules.copy() if isinstance(rules, pd.DataFrame) else pd.DataFrame()
+    active["meta"] = meta
+    versions[active_index] = active
+
+    st.session_state[S_SOURCE_VERSIONS] = versions
+    st.session_state[S_ORIGINAL] = repaired_source.copy()
+    st.session_state[S_COMPANIES] = normalize_company_registry(repaired_registry)
+    st.session_state[S_MAPPING] = mapping if isinstance(mapping, pd.DataFrame) else pd.DataFrame()
+    st.session_state[S_CLASSIFICATION_RULES] = (
+        rules.copy() if isinstance(rules, pd.DataFrame) else pd.DataFrame()
+    )
+    st.session_state[S_SOURCE_BASELINE_META] = dict(meta)
+
+    # Recompare current research against the repaired source without injecting source
+    # rows into the research dataset or discarding any researcher-entered values.
+    working = st.session_state.get(S_WORKING)
+    if isinstance(working, pd.DataFrame):
+        repaired_working = ensure_ids(normalize_workflow(working.copy()))
+        st.session_state[S_WORKING] = classify_discovery_status(
+            repaired_working,
+            repaired_source,
+        )
+
+    # Any frozen report may contain the old structured baseline and is no longer valid.
+    st.session_state.pop(S_REPORTING_SNAPSHOT, None)
+    autosave_current_project()
+    return True
+
+
 def _source_versions_state() -> list[dict]:
     """Return normalized Starting Data history, migrating older projects when needed."""
     raw = st.session_state.get(S_SOURCE_VERSIONS, [])
@@ -9350,6 +9465,8 @@ def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dic
         "source_hash": source_hash,
         "source_mode": source_mode,
         "raw_source_available": True,
+        "structured_parse_version": SOURCE_BASELINE_PARSE_VERSION,
+        "structured_reparse_status": "fresh import",
     }
 
     current_source = {
