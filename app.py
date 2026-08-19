@@ -28,7 +28,54 @@ except ImportError:  # Cloud persistence remains optional until dependencies are
 
 st.set_page_config(page_title="Datablix", page_icon="✅", layout="wide")
 
-DATABLIX_BUILD = "SaaS Dashboard UI V1 + Deliverables Generator 2026.08.18-v96"
+# =========================================================
+# MAINTAINER ORIENTATION — READ BEFORE CHANGING WORKFLOW LOGIC
+# =========================================================
+# Datablix is a human-in-the-loop rental-property research, reconciliation,
+# quality-assurance, and directory-preparation application built in Streamlit.
+#
+# HIGH-LEVEL DATA FLOW
+# 1. Create/open a project and maintain one canonical company registry.
+# 2. Load a project-wide Starting Data baseline (the comparison reference).
+# 3. Research each company's CURRENT official website inventory independently.
+#    Starting Data is deliberately NOT sent to the AI research step.
+# 4. Import the returned research CSV into the working research dataset.
+# 5. Reconcile research records against Starting Data inside Datablix.
+# 6. Run derived QA checks, then keep a human reviewer in control of decisions.
+# 7. Generate directory-ready exports and close-out deliverables from the same
+#    reviewed evidence trail.
+#
+# CORE INVARIANTS — changing these can silently change reported counts/results
+# - Starting Data is a REFERENCE BASELINE. Research imports must not overwrite it.
+# - Current Inventory Status and Rental Availability Status answer DIFFERENT
+#   questions. A property can be Current on a website and still be Rented.
+# - Property Type describes residential form (Apartment, Townhome, etc.).
+#   Building Classification describes HEIGHT and is derived from verified storeys.
+# - Never infer apartment totals or storeys merely to eliminate blanks. Datablix
+#   treats a documented unresolved value as safer than an unsupported estimate.
+# - Record ID and Company ID are stable internal links. Preserve them through edits,
+#   imports, autosave/restore, reconciliation, and export workflows.
+# - Discovery classification happens AFTER independent website research is imported.
+#   Do not move Starting Data comparison into the AI research prompt.
+# - "Removed", "excluded/not current", and "outside Ottawa" rows may remain useful
+#   audit evidence even when they are excluded from public-directory populations.
+#
+# MAINTENANCE STRATEGY
+# - Reuse the shared normalization, reconciliation, QA, and export-gating helpers.
+#   Do not duplicate their logic in UI pages; duplicated rules eventually drift.
+# - Keep presentation/CSS changes downstream of calculation helpers. A UI redesign
+#   should not require changing business definitions merely to make a card/chart work.
+# - Add any new persistent session-state key to AUTOSAVE_STATE_KEYS if it must survive
+#   refresh/cloud restore. Otherwise the value is intentionally session-only.
+# - datablix_scanner_panel.py is a separate dependency used by Website Scanner; keep
+#   it beside this main app file (or update the import intentionally).
+#
+# This commented copy intentionally restores the pre-SaaS-shell visual structure.
+# Comments below explain WHY sensitive sections exist; obvious Python is not narrated.
+# =========================================================
+
+
+DATABLIX_BUILD = "Deliverables Generator + Source Baseline Self-Repair 2026.08.18-v94"
 
 SOURCE_BASELINE_PARSE_VERSION = 2
 
@@ -483,6 +530,12 @@ PROVINCES = {
 
 FRESHNESS_DAYS = 180
 
+# MAINTAINER NOTE — SESSION STATE IS THE APPLICATION MODEL
+# S_WORKING is the canonical in-session research dataframe. S_ORIGINAL preserves
+# the opened/imported source context. S_COMPANIES is the canonical company registry.
+# S_SOURCE_VERSIONS stores versioned Starting Data baselines; S_REPORTING_SNAPSHOT
+# can freeze close-out reporting. Cloud/local persistence serializes only keys in
+# AUTOSAVE_STATE_KEYS, so add new persistent state there deliberately.
 S_FILE = "db_file_signature"
 S_ORIGINAL = "db_original"
 S_WORKING = "db_working"
@@ -550,6 +603,11 @@ def _secret_value(name: str, default: str = "") -> str:
 
 
 @st.cache_resource(show_spinner=False)
+# MAINTAINER NOTE — CLOUD PERSISTENCE VS USER AUTH
+# Datablix intentionally uses two Supabase clients: a server-side persistence client
+# (service-role key) and a session-local auth client (publishable key). Keep those
+# responsibilities separate. The local pickle autosave is a refresh fallback, not a
+# substitute for project access control or the canonical cloud copy.
 def get_supabase_client():
     """Create the server-side Supabase client when cloud saving is configured."""
     if create_client is None:
@@ -1793,6 +1851,11 @@ def synchronize_missing_information(df):
     return out
 
 
+# MAINTAINER NOTE — CENTRAL NORMALIZATION GATE
+# Most imports/restores/edits eventually pass through normalize_workflow(). Treat it
+# as the canonical place for schema completion, status normalization, derived fields,
+# and workflow defaults. Avoid creating a second normalization path in a UI section;
+# two slightly different normalizers will produce hard-to-debug count differences.
 def normalize_workflow(df):
     out = coalesce_duplicate_columns(df.copy())
     for c in INTERNAL_COLUMNS:
@@ -2019,6 +2082,11 @@ def _is_official_property_subdomain(value, company_website) -> bool:
     )
 
 
+# MAINTAINER NOTE — URL ROLE SEPARATION
+# Company Website = root/corporate management site; Property Website = exact property
+# page or confirmed official microsite. Source URL is evidence for the row. These are
+# related but not interchangeable. Preserving the hierarchy prevents subdomains from
+# being misread as separate companies and keeps evidence auditable.
 def normalize_official_website_roles(
     df: pd.DataFrame,
     company_website: str,
@@ -2380,6 +2448,11 @@ def _candidate_source_positions(research: dict, indexes: dict) -> set[int]:
     return positions
 
 
+# MAINTAINER NOTE — ONE ACTIVE STARTING DATA BASELINE
+# Reconciliation must compare against the CURRENT active source version, not whichever
+# workbook happened to be opened first. This helper also protects older saved projects
+# through a legacy fallback. Reuse it instead of reading S_ORIGINAL directly when you
+# mean "the baseline Datablix should compare research against now".
 def current_starting_source_records() -> pd.DataFrame:
     """Return the active structured Starting Data with a safe legacy fallback.
 
@@ -2416,6 +2489,11 @@ def current_starting_source_records() -> pd.DataFrame:
     return pd.DataFrame()
 
 
+# MAINTAINER NOTE — DISCOVERY STATUS IS A RECONCILIATION RESULT
+# Existing Source Record / Newly Discovered / Possible Duplicate must be computed from
+# the independent research result versus Starting Data. Do not pre-label research rows
+# before import and do not equate "new to the website" with "new to the directory".
+# Matching is intentionally conservative; ambiguous matches should stay reviewable.
 def classify_discovery_status(df, original=None):
     """Classify website-research rows against the current project Starting Data.
 
@@ -3018,6 +3096,11 @@ def _record_company_domains(row) -> list[str]:
     return domains
 
 
+# MAINTAINER NOTE — COMPANY REGISTRY IS CANONICAL
+# Company aliases, legacy duplicate company rows, and official-domain matches are
+# reconciled here so building records keep one stable Company ID. If company-link logic
+# is changed, test old saved projects too: orphaned Company IDs can make company counts,
+# filters, reconciliation, and progress dashboards disagree with one another.
 def synchronize_company_registry(records, registry=None):
     """Keep building records linked to one canonical company registry row.
 
@@ -4071,6 +4154,10 @@ def starting_data_geographic_scope_table(
     return pd.DataFrame(output_rows, columns=columns)
 
 
+# MAINTAINER NOTE — PRESENCE RECONCILIATION DOES NOT MODIFY EVIDENCE
+# This comparison answers whether Starting Data records were rediscovered in current
+# website research. It should surface source-only, possible-match, and excluded/current
+# distinctions without overwriting either side. Human review decides what to keep.
 def company_source_presence_reconciliation(
     source_records: pd.DataFrame,
     research_records: pd.DataFrame,
@@ -5032,6 +5119,11 @@ def prompt_record_identity_lines(
     return lines
 
 
+# MAINTAINER NOTE — KEEP AI RESEARCH INDEPENDENT OF STARTING DATA
+# The research prompt is intentionally inventory-first and evidence-first. Starting
+# Data is withheld so the AI does not merely confirm known records or inherit old
+# errors. Datablix performs source comparison AFTER the consolidated research CSV is
+# imported. Preserve that boundary when editing prompt wording.
 def build_company_website_research_prompt(
     *,
     company_name: str,
@@ -5723,6 +5815,10 @@ def consolidate_shared_leasing_rows(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=work.columns)
 
 
+# MAINTAINER NOTE — IMPORT IS WHERE EXTERNAL RESEARCH BECOMES DATABLIX DATA
+# Map/normalize the returned research schema, attach the selected Company ID, merge it
+# into S_WORKING, and only then classify discovery status against the active baseline.
+# Do not silently replace the Starting Data reference during this process.
 def append_external_research_results(
     imported: pd.DataFrame,
     *,
@@ -5800,6 +5896,12 @@ def append_external_research_results(
 # Quality checks and output views
 # =========================================================
 
+# MAINTAINER NOTE — QA FLAGS ARE DERIVED, REVIEW DECISIONS ARE HUMAN
+# qa_checks() derives issues from the current normalized record state. It should not
+# silently make Record Decision choices for the reviewer. Keep evidence-backed count
+# checks here aligned with the research rules: a verified apartment/storey value needs
+# its source tier, evidence, source URL, and confidence; a blank can be valid when the
+# required search was completed and documented.
 @st.cache_data(show_spinner=False, ttl=300, max_entries=16)
 def qa_checks(df):
     out = normalize_workflow(df)
@@ -6251,6 +6353,10 @@ def render_listing_preview(df, limit=5):
         )
 
 
+# MAINTAINER NOTE — SINGLE EXPORT-APPROVAL GATE
+# Reuse this helper anywhere the app needs "approved for export" counts. Do not recreate
+# the conditions in dashboard/report/download code; otherwise displayed readiness can
+# diverge from what the export actually includes.
 def approved_for_export_mask(df):
     """Return records a reviewer has explicitly approved for CSV export."""
     if "Export Status" in df.columns:
@@ -6505,6 +6611,10 @@ CLOSEOUT_FIELD_SPECS = [
 ]
 
 
+# MAINTAINER NOTE — AUDIT POPULATION VS DIRECTORY-RELEVANT POPULATION
+# Datablix deliberately keeps some rows for audit history even when they should not
+# affect public-directory field coverage (removed, excluded/not-current, confirmed
+# outside Ottawa). Keep this distinction when adding close-out metrics or reports.
 def closeout_research_population(qa_frame: pd.DataFrame) -> pd.DataFrame:
     """Return directory-relevant researched rows for field-availability analysis.
 
@@ -7051,6 +7161,10 @@ h1{{margin-bottom:.2rem}} h2{{margin-top:2rem;border-bottom:1px solid #d1d5db;pa
     return html.encode("utf-8")
 
 
+# MAINTAINER NOTE — REPORTING SNAPSHOTS MUST BELONG TO THE CURRENT BASELINE
+# A frozen report may preserve a close-out view, but it must not preserve counts from a
+# different Starting Data workbook. Baseline fingerprints/version metadata exist to
+# prevent stale snapshots from being presented as current source reconciliation.
 def freeze_reporting_snapshot() -> dict:
     """Freeze the current project state used by all deliverable exports."""
     working = st.session_state.get(S_WORKING)
@@ -7881,6 +7995,10 @@ def project_info_dataframe(qa_frame, registry):
     ])
 
 
+# MAINTAINER NOTE — MASTER PROJECT WORKBOOK IS A PORTABLE PROJECT STATE
+# This export is more than a flat listing: it can preserve company registry, research,
+# source versions/rules, scan history, and project metadata for later restoration.
+# When adding new restorable project structures, update BOTH writer and loader paths.
 def project_workbook_bytes():
     working = st.session_state.get(S_WORKING)
     if not isinstance(working, pd.DataFrame):
@@ -8790,6 +8908,10 @@ def _parse_classification_rules(data: bytes, sheet_name: str | None) -> pd.DataF
     return pd.DataFrame(rows)
 
 
+# MAINTAINER NOTE — SOURCE PARSING IS DEFENSIVE BY DESIGN
+# Real project workbooks may have renamed sheets, headings below row 1, notes, or legacy
+# layouts. Baseline parsing therefore detects structure rather than assuming one exact
+# worksheet. Prefer a documented unresolved parse over treating the wrong sheet as data.
 def _source_baseline_from_workbook(
     data: bytes,
     assignment_sheet: str = "",
@@ -8968,6 +9090,11 @@ def _repair_active_source_baseline_from_raw_if_needed() -> bool:
     return True
 
 
+# MAINTAINER NOTE — STARTING DATA IS VERSIONED
+# Only one source version is CURRENT for reconciliation, but prior versions remain useful
+# audit history. Replacing Starting Data should create/update the active version rather
+# than mutating historical versions in place. Never combine rows across versions when
+# calculating current source counts.
 def _source_versions_state() -> list[dict]:
     """Return normalized Starting Data history, migrating older projects when needed."""
     raw = st.session_state.get(S_SOURCE_VERSIONS, [])
@@ -9421,6 +9548,10 @@ def _merge_source_baseline_with_working(current: pd.DataFrame, baseline: pd.Data
     return classify_discovery_status(out, baseline)
 
 
+# MAINTAINER NOTE — REPLACING STARTING DATA MUST NOT ERASE RESEARCH
+# This workflow changes the comparison baseline while preserving S_WORKING research.
+# After replacement, discovery/reconciliation classifications may legitimately change.
+# That is expected: the baseline changed, not necessarily the research evidence.
 def import_source_baseline_workbook(uploaded, assignment_sheet: str = "") -> dict:
     """Replace the project's Starting Data with one current baseline.
 
@@ -9702,6 +9833,10 @@ def generate_id(df):
     return f"DB-NEW-{n:03d}"
 
 
+# MAINTAINER NOTE — SAVE BY STABLE RECORD ID
+# Streamlit dataframe positions can change after filtering/sorting/reruns. Save edits by
+# Record ID, not display position. After edits, refresh normalization + QA so every page
+# sees the same derived state and approved-for-export count.
 def save_edits(edited, columns):
     """Save review edits against stable Record IDs, not only dataframe positions.
 
@@ -9796,6 +9931,14 @@ def directory_entry_record_label(row) -> str:
     return " · ".join(parts) if parts else str(row.get("Record ID", "Record"))
 
 
+# =========================================================
+# Interface
+# =========================================================
+# MAINTAINER NOTE — KEEP UI AND BUSINESS LOGIC SEPARATE
+# The UI below should call shared helpers for calculations and mutations. When changing
+# layout, navigation, CSS, cards, tables, or charts, avoid moving/reimplementing source
+# reconciliation, QA, progress, or export rules inside presentation code. This makes a
+# future visual redesign much safer and keeps counts consistent across pages.
 # =========================================================
 # Interface
 # =========================================================
@@ -10506,6 +10649,10 @@ def _active_research_for_comparison(records: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[~excluded].copy()
 
 
+# MAINTAINER NOTE — ANALYTICS SHOULD CONSUME, NOT REDEFINE, RECONCILIATION
+# Dashboard source/research counts come from this shared snapshot. If a number looks
+# wrong in the UI, trace the active baseline + reconciliation logic first; do not patch
+# the displayed number independently in a card or chart.
 def source_reconciliation_snapshot(
     registry: pd.DataFrame,
     records: pd.DataFrame,
@@ -10757,23 +10904,9 @@ def _render_analytics_kpis(items: list[dict]) -> None:
         value = escape(str(item.get("value", "0")))
         helper = escape(str(item.get("helper", "")))
         tone = re.sub(r"[^a-z]+", "-", str(item.get("tone", "neutral")).lower()).strip("-")
-        icon_map = {
-            "Companies": "▦",
-            "Source records": "≡",
-            "Research records": "⌕",
-            "Verified": "✓",
-            "Needs attention": "!",
-            "Project readiness": "↗",
-            "Researched": "⌕",
-            "Reviewed": "✓",
-            "Source coverage": "↔",
-            "Passing QA": "✓",
-        }
-        icon = escape(icon_map.get(str(item.get("label", "")), "•"))
         cards.append(
             f'<article class="db-analytics-kpi {tone}">'
-            f'<div class="db-analytics-kpi-top"><span class="db-analytics-kpi-icon">{icon}</span>'
-            f'<div class="db-analytics-kpi-label">{label}</div></div>'
+            f'<div class="db-analytics-kpi-label">{label}</div>'
             f'<div class="db-analytics-kpi-value">{value}</div>'
             f'<div class="db-analytics-kpi-helper">{helper}</div>'
             f'</article>'
@@ -11486,6 +11619,10 @@ def _company_checklist(
     ]
 
 
+# MAINTAINER NOTE — PRESENTATION LAYER ONLY
+# This function renders already-derived project/company analytics. Keep metric meaning
+# in the snapshot/QA/reconciliation helpers so this page can be restyled without
+# changing the underlying business definitions.
 def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFrame) -> None:
     """Render chart-free project and company health analytics."""
     registry = normalize_company_registry(registry)
@@ -11496,7 +11633,7 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
     project = project_progress_snapshot(registry, comparison_records)
 
     _render_analytics_header(source_details, reconciliation)
-    project_tab, company_tab = st.tabs(["Project dashboard", "Company dashboard"])
+    project_tab, company_tab = st.tabs(["Project health", "Company health"])
 
     # ================================================================
     # PROJECT HEALTH
@@ -11519,22 +11656,15 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
         _render_analytics_callout(priority_title, priority_copy, priority_chips, priority_tone)
 
         _render_analytics_section(
-            "Project health",
-            "Compare company readiness with source reconciliation in one dashboard view.",
+            "Project health matrix",
+            "A single row per company combines research progress, source matching, verification, quality and the next action.",
             "PROJECT READINESS",
         )
         health_matrix = _project_health_matrix(registry, comparison_records, project, reconciliation)
-        health_left, health_right = st.columns([1.7, 1], gap="large")
-        with health_left:
-            with st.container(border=True):
-                st.markdown("#### Company health matrix")
-                st.caption("Research, source matching, verification, quality and the next action for every company.")
-                if health_matrix.empty:
-                    st.info("Add companies to activate the project health matrix.")
-                else:
-                    st.dataframe(health_matrix, width="stretch", hide_index=True, height=315)
-        with health_right:
-            _render_source_comparison_summary(reconciliation)
+        if health_matrix.empty:
+            st.info("Add companies to activate the project health matrix.")
+        else:
+            st.dataframe(health_matrix, width="stretch", hide_index=True)
 
         companies_missing_websites = int(registry["Main Website"].fillna("").astype(str).str.strip().eq("").sum()) if not registry.empty else 0
         project_checks = [
@@ -11585,9 +11715,9 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
             },
         ]
         _render_health_checklist(
-            "Data quality & workflow checklist",
+            "Overall project checklist",
             project_checks,
-            "Research readiness, source reconciliation, quality and completion checks for final close-out.",
+            "Research readiness, source reconciliation, quality and completion are combined in one decision-focused checklist.",
         )
 
         if reconciliation["available"]:
@@ -11809,22 +11939,15 @@ def render_project_company_analytics(registry: pd.DataFrame, records: pd.DataFra
 
 
 def render_project_progress_sidebar() -> None:
-    """Render a navigation-first SaaS sidebar while preserving project controls."""
-    st.markdown(
-        """
-        <div class="db-side-brand">
-            <div class="db-side-brand-mark">D</div>
-            <div>
-                <div class="db-side-brand-name">DATABLIX</div>
-                <div class="db-side-brand-sub">RESEARCH INTELLIGENCE</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Keep the sidebar focused on context, progress, and one next action."""
+    st.markdown("## Research progress")
+    st.caption("Project and company status at a glance.")
 
     if S_WORKING not in st.session_state:
-        st.markdown('<div class="db-side-empty">No project is open yet.</div>', unsafe_allow_html=True)
+        st.info("No project is open.")
+        st.caption(
+            "Use the main page to start a new project or continue a saved one."
+        )
         return
 
     records, registry = synchronize_company_registry(
@@ -11838,122 +11961,139 @@ def render_project_progress_sidebar() -> None:
         st.session_state.get(S_PROJECT_NAME, "Datablix project")
     ).strip() or "Datablix project"
     project = project_progress_snapshot(registry, records)
+
+    st.caption("CURRENT PROJECT")
+    st.markdown(f"**{project_name}**")
+    if project["companies"]:
+        st.progress(
+            project["progress"],
+            text=(
+                f"{project['completed']:,} of {project['companies']:,} "
+                "companies complete"
+            ),
+        )
+    else:
+        st.progress(0.0, text="No companies registered")
+
+    project_metrics = st.columns(2)
+    project_metrics[0].metric("Companies", f"{project['companies']:,}")
+    project_metrics[1].metric("Complete", f"{project['completed']:,}")
+    project_metrics[0].metric("Buildings", f"{project['buildings']:,}")
+    project_metrics[1].metric("Need attention", f"{project['attention_records']:,}")
+    st.caption(
+        f"{project['in_progress']:,} in progress · "
+        f"{project['not_started']:,} not started · "
+        f"{project['verified_records']:,} records verified"
+    )
+
     active = active_company_row()
-    active_name = (
-        safe_text(active.get("Management/Owner", ""))
-        if active is not None
-        else "No company selected"
-    )
-
-    st.markdown(
-        f"""
-        <div class="db-side-context-card">
-            <span class="db-side-kicker">CURRENT PROJECT</span>
-            <strong>{escape(project_name)}</strong>
-            <div class="db-side-context-meta">
-                <span>{project['companies']:,} companies</span>
-                <span>{project['buildings']:,} records</span>
-            </div>
-        </div>
-        <div class="db-side-context-card company">
-            <span class="db-side-kicker">SELECTED COMPANY</span>
-            <strong>{escape(active_name)}</strong>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="db-side-section-label">WORKSPACE</div>', unsafe_allow_html=True)
-    sidebar_navigation = [
-        ("Dashboard", "▦  Dashboard"),
-        ("Research projects & companies", "◇  Project"),
-        ("Website scanner", "⌕  Research"),
-        ("Review records", "✓  Review"),
-        ("Analysis & report", "▤  Deliverables"),
-        ("Downloads", "⇩  Export"),
-    ]
-    current = str(st.session_state.get("db_section", "Dashboard"))
-    for section_key, label in sidebar_navigation:
-        if st.button(
-            label,
-            type="primary" if current == section_key else "secondary",
-            width="stretch",
-            key=f"db_side_nav_{norm_header(section_key)}",
-        ):
-            go_to(section_key)
+    st.divider()
+    st.caption("SELECTED COMPANY")
+    if active is None:
+        st.warning("No company is selected.")
+        st.caption("Open Project to add or choose the company you want to research.")
+        if st.button("Open project", type="primary", width="stretch", key="db_sidebar_open_project"):
+            go_to("Research projects & companies")
             st.rerun()
-
-    st.markdown('<div class="db-side-section-label progress">PROGRESS</div>', unsafe_allow_html=True)
-    progress_pct = int(round(float(project.get("progress", 0.0)) * 100))
-    st.markdown(
-        f"""
-        <div class="db-side-progress-card">
-            <div class="db-side-progress-head">
-                <span>Project readiness</span><strong>{progress_pct}%</strong>
-            </div>
-            <div class="db-side-progress-track"><span style="width:{max(0, min(progress_pct, 100))}%"></span></div>
-            <div class="db-side-progress-stats">
-                <span><strong>{project['completed']:,}</strong><small>Complete</small></span>
-                <span><strong>{project['in_progress']:,}</strong><small>In progress</small></span>
-                <span><strong>{project['attention_records']:,}</strong><small>Attention</small></span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if active is not None:
+    else:
         company = company_progress_snapshot(active, records)
+        st.markdown(f"**{company['company_name']}**")
+        st.caption(
+            f"{company['company_id']} · {company['status']}"
+        )
+        if company["collected"]:
+            st.progress(
+                company["progress"],
+                text=(
+                    f"{company['verified']:,} of {company['collected']:,} "
+                    "records verified"
+                ),
+            )
+        else:
+            st.progress(0.0, text="Research not started")
+
+        company_metrics = st.columns(2)
+        company_metrics[0].metric("Collected", f"{company['collected']:,}")
+        company_metrics[1].metric("Reviewed", f"{company['reviewed']:,}")
+        company_metrics[0].metric("Verified", f"{company['verified']:,}")
+        company_metrics[1].metric("Need attention", f"{company['attention']:,}")
+
         st.markdown(
-            f"""<div class="db-side-next">
-                <span>NEXT RECOMMENDED ACTION</span>
-                <strong>{escape(company['next_title'])}</strong>
-                <small>{escape(company['next_copy'])}</small>
-            </div>""",
+            f'<div class="db-next-action">'
+            f'<div class="db-next-action-label">NEXT RECOMMENDED ACTION</div>'
+            f'<strong>{escape(company["next_title"])}</strong>'
+            f'<span>{escape(company["next_copy"])}</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
         if st.button(
             company["next_button"],
+            type="primary",
             width="stretch",
             key=f"db_sidebar_continue_{company['company_id']}",
         ):
             go_to(company["next_section"])
             st.rerun()
 
-    st.markdown('<div class="db-side-section-label account">ACCOUNT</div>', unsafe_allow_html=True)
+    if project["company_rows"]:
+        with st.expander("All company progress", expanded=False):
+            st.markdown(
+                _sidebar_company_rows(
+                    project["company_rows"],
+                    str(st.session_state.get(S_ACTIVE_COMPANY, "")).strip(),
+                ),
+                unsafe_allow_html=True,
+            )
+            st.caption("Choose or change the active company from the Project page.")
+
+    st.divider()
     if st.session_state.get(S_DEMO_MODE):
-        with st.expander("Demo workspace", expanded=False):
-            st.caption("Sample information only. Changes are temporary.")
+        project_id = ""
+        with smart_expander("Account and access", status="Demo workspace", expanded=False):
+            st.caption("DEMO WORKSPACE")
+            st.write("Sample rental property information")
             if st.button("Leave Demo", width="stretch", key="db_sidebar_leave_demo"):
                 return_to_project_start()
                 st.rerun()
-        project_id = ""
     else:
         project_id = str(st.session_state.get(S_CLOUD_PROJECT_ID, "")).strip()
         role_label = st.session_state.get(S_PROJECT_ROLE, "owner").title()
-        with st.expander(f"{role_label} · Account", expanded=False):
-            st.caption(current_user_email())
+        with smart_expander("Account and access", status=role_label, expanded=False):
+            st.caption("SIGNED IN")
+            st.write(current_user_email())
+            st.caption(f"Role: {role_label}")
             if st.button("Sign out", width="stretch", key="db_sidebar_sign_out"):
                 sign_out_datablix()
                 st.rerun()
 
     if project_id and st.session_state.get(S_PROJECT_ROLE) == "owner":
         with st.expander("Share project", expanded=False):
+            st.caption("Add a team member by the same email they use for Datablix.")
             member_email = st.text_input("Team member email", key="db_share_member_email")
             member_role = st.selectbox("Access", ["editor", "viewer"], format_func=str.title, key="db_share_member_role")
-            if st.button("Save access", width="stretch", key="db_save_member_access"):
+            if st.button("Save access", type="primary", width="stretch", key="db_save_member_access"):
                 ok, message = add_project_member(project_id, member_email, member_role)
                 (st.success if ok else st.error)(message)
             members = list_project_members(project_id)
             if members:
+                st.caption("CURRENT MEMBERS")
                 for member in members:
                     email = str(member.get("member_email", ""))
                     role = str(member.get("role", "viewer")).title()
                     cols = st.columns([3, 1])
-                    cols[0].caption(f"{email} · {role}")
-                    if cols[1].button("×", key=f"db_remove_member_{hashlib.md5(email.encode()).hexdigest()[:8]}"):
+                    cols[0].write(f"{email} · {role}")
+                    if cols[1].button("Remove", key=f"db_remove_member_{hashlib.md5(email.encode()).hexdigest()[:8]}"):
                         if remove_project_member(project_id, email):
                             st.rerun()
+
+    st.divider()
+    utility_columns = st.columns(2)
+    if utility_columns[0].button("Project", width="stretch", key="db_sidebar_project"):
+        go_to("Research projects & companies")
+        st.rerun()
+    if utility_columns[1].button("Export", width="stretch", key="db_sidebar_save"):
+        go_to("Downloads")
+        st.rerun()
 
 
 st.html("""
@@ -12068,7 +12208,7 @@ h2{margin-bottom:.1rem}
 }
 .db-card-copy{min-height:3.6rem}
 
-[data-testid="stSidebar"]{
+div[data-testid="stSidebar"]{
     border-right:1px solid var(--db-border);
 }
 
@@ -12147,7 +12287,7 @@ button[data-testid="stSidebarCollapseButton"]{
     gap:.35rem !important;
 }
 button[data-testid="stSidebarCollapseButton"]::after{
-    content:"Menu";
+    content:"Progress";
     font-size:.86rem;
     font-weight:700;
     white-space:nowrap;
@@ -12632,361 +12772,6 @@ div[data-testid="stHorizontalBlock"] .stButton>button{
     .db-workspace-strip{gap:.4rem .8rem}
 }
 
-
-/* =========================================================
-   v96 SaaS shell — visual-only upgrade
-   ========================================================= */
-html, body, [data-testid="stAppViewContainer"]{
-    background:#F5F7FB !important;
-    color:#172033;
-}
-[data-testid="stHeader"]{
-    background:rgba(245,247,251,.92) !important;
-    border-bottom:1px solid rgba(15,23,42,.06);
-}
-.block-container{
-    max-width:1500px;
-    padding:1.45rem 2rem 4rem;
-}
-
-/* Sidebar shell */
-[data-testid="stSidebar"]{
-    width:288px !important;
-    min-width:288px !important;
-    background:#0C1824 !important;
-    border-right:0 !important;
-    box-shadow:8px 0 30px rgba(15,23,42,.14) !important;
-}
-[data-testid="stSidebar"] > div:first-child,
-[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
-    background:#0C1824 !important;
-}
-[data-testid="stSidebar"] > div{
-    background:#0C1824 !important;
-}
-[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
-    padding-top:.5rem;
-}
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] small,
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{
-    color:#AFC0D0 !important;
-}
-.db-side-brand{
-    display:flex;
-    align-items:center;
-    gap:.68rem;
-    padding:.35rem .15rem 1rem;
-    margin-bottom:.4rem;
-    border-bottom:1px solid rgba(255,255,255,.08);
-}
-.db-side-brand-mark{
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    width:2.05rem;
-    height:2.05rem;
-    border-radius:.62rem;
-    background:linear-gradient(145deg,#35A7EA,#0E6BA4);
-    color:white;
-    font-family:var(--db-display);
-    font-weight:800;
-    box-shadow:0 8px 22px rgba(18,135,206,.28);
-}
-.db-side-brand-name{
-    color:#F8FBFF;
-    font-family:var(--db-display);
-    font-weight:800;
-    letter-spacing:.08em;
-    font-size:.92rem;
-}
-.db-side-brand-sub{
-    margin-top:.08rem;
-    color:#6F879A;
-    font-size:.52rem;
-    font-weight:700;
-    letter-spacing:.12em;
-}
-.db-side-empty{
-    padding:.8rem;
-    border:1px solid rgba(255,255,255,.08);
-    border-radius:.7rem;
-    color:#9FB2C2;
-    background:rgba(255,255,255,.03);
-}
-.db-side-context-card{
-    display:flex;
-    flex-direction:column;
-    gap:.22rem;
-    padding:.72rem .78rem;
-    margin:.45rem 0;
-    border:1px solid rgba(255,255,255,.075);
-    border-radius:.75rem;
-    background:rgba(255,255,255,.035);
-}
-.db-side-context-card.company{margin-top:.35rem}
-.db-side-context-card strong{
-    color:#F4F8FC;
-    font-size:.82rem;
-    line-height:1.35;
-    overflow-wrap:anywhere;
-}
-.db-side-kicker,
-.db-side-section-label{
-    color:#71889A;
-    font-size:.56rem;
-    font-weight:800;
-    letter-spacing:.12em;
-}
-.db-side-context-meta{
-    display:flex;
-    gap:.65rem;
-    margin-top:.2rem;
-    color:#8EA4B6;
-    font-size:.63rem;
-}
-.db-side-section-label{
-    margin:1.05rem .12rem .4rem;
-}
-.db-side-section-label.progress{margin-top:1.15rem}
-.db-side-section-label.account{margin-top:1.1rem}
-
-[data-testid="stSidebar"] .stButton > button{
-    min-height:2.35rem;
-    justify-content:flex-start !important;
-    padding:.44rem .7rem;
-    border:1px solid transparent !important;
-    border-radius:.58rem !important;
-    box-shadow:none !important;
-    font-size:.78rem;
-    font-weight:650;
-}
-[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]{
-    color:#AFC0D0 !important;
-    background:transparent !important;
-}
-[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]:hover{
-    color:#F7FBFF !important;
-    background:rgba(255,255,255,.06) !important;
-}
-[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{
-    color:#FFFFFF !important;
-    background:linear-gradient(135deg,#1287CE,#0E6BA4) !important;
-    border-color:rgba(79,182,240,.24) !important;
-    box-shadow:0 7px 20px rgba(3,105,161,.22) !important;
-}
-.db-side-progress-card{
-    padding:.72rem .78rem;
-    border:1px solid rgba(255,255,255,.075);
-    border-radius:.75rem;
-    background:rgba(255,255,255,.035);
-}
-.db-side-progress-head{
-    display:flex;
-    justify-content:space-between;
-    gap:.6rem;
-    color:#AFC0D0;
-    font-size:.67rem;
-}
-.db-side-progress-head strong{color:#F5F9FD;font-variant-numeric:tabular-nums}
-.db-side-progress-track{
-    height:.32rem;
-    margin:.52rem 0 .68rem;
-    border-radius:999px;
-    background:rgba(255,255,255,.09);
-    overflow:hidden;
-}
-.db-side-progress-track span{
-    display:block;
-    height:100%;
-    border-radius:999px;
-    background:linear-gradient(90deg,#35A7EA,#5BC0EB);
-}
-.db-side-progress-stats{
-    display:grid;
-    grid-template-columns:repeat(3,1fr);
-    gap:.3rem;
-}
-.db-side-progress-stats span{display:flex;flex-direction:column;gap:.08rem}
-.db-side-progress-stats strong{color:#F5F9FD;font-size:.82rem}
-.db-side-progress-stats small{color:#70889B !important;font-size:.55rem}
-.db-side-next{
-    display:flex;
-    flex-direction:column;
-    gap:.2rem;
-    margin:.5rem 0 .45rem;
-    padding:.68rem .72rem;
-    border-left:3px solid #35A7EA;
-    border-radius:.5rem;
-    background:rgba(18,135,206,.11);
-}
-.db-side-next span{color:#68B9EB;font-size:.54rem;font-weight:800;letter-spacing:.1em}
-.db-side-next strong{color:#F3F8FC;font-size:.72rem;line-height:1.35}
-.db-side-next small{color:#8FA6B8 !important;font-size:.62rem;line-height:1.4}
-[data-testid="stSidebar"] details{
-    border-color:rgba(255,255,255,.08) !important;
-    background:rgba(255,255,255,.025) !important;
-}
-
-/* Main workspace */
-.db-workspace-strip{
-    margin:0 0 1.05rem;
-    padding:.62rem .85rem;
-    border:1px solid #E3E9F0;
-    border-left:0;
-    border-radius:9px;
-    background:#FFFFFF;
-    box-shadow:0 1px 3px rgba(15,23,42,.03);
-    color:#526173;
-    font-size:.76rem;
-}
-.db-workspace-strip .db-num{color:#0E6BA4}
-.db-nav-context{display:none}
-.st-key-db_nav_row{display:none !important}
-
-.db-page-head{
-    max-width:none;
-    margin:.15rem 0 1rem;
-    padding:0 0 .78rem;
-    border-bottom:0;
-}
-.db-page-head h2{font-size:clamp(1.55rem,2.5vw,2rem)}
-.db-page-head p{max-width:920px;color:#667588;opacity:1}
-
-/* Cards and bordered containers get the soft SaaS treatment. */
-div[data-testid="stVerticalBlockBorderWrapper"]{
-    border-color:#E2E8F0 !important;
-    border-radius:12px !important;
-    background:#FFFFFF;
-    box-shadow:0 1px 3px rgba(15,23,42,.025);
-}
-div[data-testid="stMetric"]{
-    background:#FFFFFF;
-    border:1px solid #E2E8F0;
-    border-top:0;
-    border-radius:12px;
-    box-shadow:0 1px 3px rgba(15,23,42,.03);
-}
-div[data-testid="stDataFrame"],div[data-testid="stDataEditor"]{
-    border-color:#E2E8F0;
-    background:#FFFFFF;
-    border-radius:10px;
-}
-
-/* Dashboard hero */
-.db-analytics-hero{
-    align-items:center;
-    margin:.1rem 0 .95rem;
-    padding:.2rem 0 .65rem;
-    border:0;
-    border-radius:0;
-    background:transparent;
-}
-.db-analytics-eyebrow{color:#4B86A8}
-.db-analytics-hero h2{
-    font-size:clamp(1.65rem,2.7vw,2.18rem);
-    color:#172033;
-}
-.db-analytics-hero p{color:#687789;opacity:1}
-.db-analytics-baseline{
-    flex:0 1 300px;
-    border:1px solid #DCE6EF;
-    background:#FFFFFF;
-    box-shadow:0 1px 3px rgba(15,23,42,.035);
-}
-.db-analytics-baseline span{color:#4B86A8}
-
-/* KPI cards mimic the reference dashboard. */
-.db-analytics-kpi-scroll{margin:.4rem 0 1rem}
-.db-analytics-kpi-grid{gap:.72rem}
-.db-analytics-kpi{
-    min-height:118px;
-    padding:.82rem .88rem;
-    border:1px solid #E0E7EF;
-    border-top:0;
-    border-radius:12px;
-    background:#FFFFFF;
-    box-shadow:0 2px 7px rgba(15,23,42,.035);
-}
-.db-analytics-kpi::after{
-    content:"";
-    position:absolute;
-    left:.88rem;
-    right:.88rem;
-    bottom:.72rem;
-    height:3px;
-    border-radius:99px;
-    background:#D9E5EE;
-}
-.db-analytics-kpi.accent::after{background:#1287CE}
-.db-analytics-kpi.positive::after{background:#16835F}
-.db-analytics-kpi.warning::after{background:#C27C0E}
-.db-analytics-kpi-top{
-    display:flex;
-    align-items:center;
-    gap:.46rem;
-}
-.db-analytics-kpi-icon{
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    width:1.55rem;
-    height:1.55rem;
-    border-radius:.48rem;
-    background:#EDF6FC;
-    color:#0E6BA4;
-    font-weight:800;
-    font-size:.72rem;
-}
-.db-analytics-kpi.positive .db-analytics-kpi-icon{background:#E9F6F1;color:#16835F}
-.db-analytics-kpi.warning .db-analytics-kpi-icon{background:#FFF5DD;color:#A86406}
-.db-analytics-kpi.neutral .db-analytics-kpi-icon{background:#F0F3F6;color:#607080}
-.db-analytics-kpi-label{min-height:auto;color:#526173;opacity:1}
-.db-analytics-kpi-value{margin:.42rem 0 .12rem;font-size:1.72rem;color:#172033}
-.db-analytics-kpi-helper{color:#7B8997;opacity:1;padding-bottom:.62rem}
-
-.db-analytics-callout{
-    border:1px solid #B9D8EA;
-    border-left:4px solid #1287CE;
-    border-radius:11px;
-    background:#F0F8FD;
-    box-shadow:0 1px 3px rgba(15,23,42,.025);
-}
-.db-analytics-section-head{border-bottom:0;margin:1.25rem 0 .55rem;padding-bottom:0}
-.db-analytics-section-head h3{color:#243044}
-.db-analytics-section-head p{color:#718093;opacity:1}
-
-/* Tabs look like a clean segmented control. */
-div[data-testid="stTabs"] div[data-baseweb="tab-list"]{
-    display:inline-flex;
-    gap:.18rem;
-    padding:.2rem;
-    border:1px solid #DFE6EE;
-    border-radius:10px;
-    background:#EEF2F6;
-}
-div[data-testid="stTabs"] button[data-baseweb="tab"]{
-    min-height:2.25rem;
-    padding:.4rem .8rem;
-    border-radius:7px;
-    font-size:.78rem;
-}
-div[data-testid="stTabs"] button[aria-selected="true"]{
-    background:#FFFFFF;
-    box-shadow:0 1px 3px rgba(15,23,42,.07);
-}
-
-.db-health-check{padding:.53rem 0}
-.db-health-check strong{font-size:.79rem;color:#334155}
-.db-health-check small{font-size:.68rem;color:#7B8997;line-height:1.35}
-
-@media(max-width:1050px){
-    [data-testid="stSidebar"]{width:260px !important;min-width:260px !important}
-    .block-container{padding-left:1.2rem;padding-right:1.2rem}
-}
-
-
 /* v57 chart-free health dashboard */
 .db-health-check { display:flex; gap:.7rem; align-items:flex-start; padding:.65rem 0; border-bottom:1px solid rgba(148,163,184,.22); }
 .db-health-check:last-child { border-bottom:0; }
@@ -13002,8 +12787,7 @@ render_public_entry_gate()
 render_auth_gate()
 if user_is_authenticated():
     restore_autosaved_project()
-if S_WORKING not in st.session_state:
-    render_brand_header()
+render_brand_header()
 if st.session_state.get(S_DEMO_MODE):
     st.info("Demo workspace: sample information only. Changes are temporary and will not be saved.")
 
@@ -13236,7 +13020,6 @@ qa = qa_checks(working) if has_records else None
 # Primary navigation
 # -----------------------------
 all_sections = [
-    "Dashboard",
     "Research projects & companies",
     "Website scanner",
     "Review records",
@@ -13245,7 +13028,6 @@ all_sections = [
 ]
 primary_sections = all_sections.copy()
 NAV_LABELS = {
-    "Dashboard": "Dashboard",
     "Research projects & companies": "Project",
     "Website scanner": "Research",
     "Review records": "Review",
@@ -13264,9 +13046,9 @@ legacy_sections = {
     "Download your work": "Downloads",
     "Analysis": "Analysis & report",
     "Report": "Analysis & report",
-    "Overview": "Dashboard",
+    "Overview": "Research projects & companies",
 }
-current_section = st.session_state.get("db_section", "Dashboard")
+current_section = st.session_state.get("db_section", "Research projects & companies")
 current_section = legacy_sections.get(current_section, current_section)
 if current_section not in all_sections:
     current_section = "Research projects & companies"
@@ -13325,7 +13107,6 @@ review_population = (
 )
 
 NAV_DESCRIPTIONS = {
-    "Dashboard": "Monitor project health, source reconciliation, review progress, and the next actions that matter most.",
     "Research projects & companies": "Set up your project and company workspaces.",
     "Website scanner": "Research the selected company and add or import building records.",
     "Review records": "Review & Quality — verify records, resolve quality issues, and approve clean records for export.",
@@ -13333,8 +13114,28 @@ NAV_DESCRIPTIONS = {
     "Downloads": "Choose the company, records, and columns, preview them, then download CSV.",
 }
 
-# Primary navigation is rendered in the left SaaS sidebar.
+# Keep all five navigation buttons in one horizontal row.
+# Arrows are added visually through CSS and therefore consume no columns.
+with st.container(key="db_nav_row"):
+    nav_columns = st.columns(5, gap="small")
+    for nav_column, section_key in zip(nav_columns, primary_sections):
+        is_active = visible_active_section == section_key
+        with nav_column:
+            if st.button(
+                NAV_LABELS[section_key],
+                type="primary" if is_active else "secondary",
+                width="stretch",
+                key=f"db_nav_{norm_header(section_key)}",
+            ):
+                go_to(section_key)
+                st.rerun()
+
 section = st.session_state["db_section"]
+st.markdown(
+    f'<div class="db-nav-context"><strong>{escape(NAV_LABELS[section])}</strong> — '
+    f'{escape(NAV_DESCRIPTIONS[section])}</div>',
+    unsafe_allow_html=True,
+)
 if st.session_state.get(S_PROJECT_ROLE) == "viewer":
     st.info("You have view-only access to this project. Ask the owner for Editor access to make changes.")
 
@@ -13355,15 +13156,9 @@ if not has_records and section in ["Analysis & report", "Downloads"]:
 
 
 # -----------------------------
-# Dashboard
-# -----------------------------
-if section == "Dashboard":
-    render_project_company_analytics(project_registry, working)
-
-# -----------------------------
 # Project and company setup
 # -----------------------------
-elif section == "Research projects & companies":
+if section == "Research projects & companies":
     project_context_token = hashlib.sha256(
         str(st.session_state.get(S_FILE, "project")).encode("utf-8")
     ).hexdigest()[:10]
@@ -14001,6 +13796,8 @@ elif section == "Research projects & companies":
                 st.error(str(error))
 
     st.divider()
+    render_project_company_analytics(project_registry, working)
+
     with st.expander("Project administration", expanded=False):
         st.caption(
             "Save the current master project before replacing it in this browser session."
